@@ -1,0 +1,4 @@
+psycopg[binary]>=3.1
+requests>=2.31
+tenacity>=8.2
+python-dotenv>=1.0

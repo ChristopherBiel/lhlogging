@@ -1,0 +1,9 @@
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Route logger — twice daily at 06:00 and 18:00 UTC
+0 6  * * *  root  cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
+0 18 * * *  root  cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
+
+# Fleet refresh — every Monday at 02:00 UTC
+0 2  * * 1  root  cd /app && python -m lhlogging.fleet_refresh >> /var/log/lhlogging/cron.log 2>&1
