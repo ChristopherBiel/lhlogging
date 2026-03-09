@@ -17,6 +17,10 @@ from lhlogging.utils import RateLimiter, setup_logging
 def main() -> int:
     logger = setup_logging("route_logger")
     logger.info("Route logger starting")
+    if config.TRACK_AIRCRAFT_TYPES:
+        logger.info(f"Aircraft type filter active: {sorted(config.TRACK_AIRCRAFT_TYPES)}")
+    else:
+        logger.info("No aircraft type filter — tracking all active aircraft")
 
     try:
         conn = db.get_connection()
@@ -35,7 +39,7 @@ def main() -> int:
     }
 
     try:
-        aircraft_list = db.get_active_aircraft(conn)
+        aircraft_list = db.get_active_aircraft(conn, config.TRACK_AIRCRAFT_TYPES)
     except Exception as e:
         logger.critical(f"Cannot fetch aircraft list: {e}")
         stats["status"] = "error"

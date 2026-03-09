@@ -40,6 +40,12 @@ OPENSKY_RATELIMIT_BACKOFF_S: int = int(_optional("OPENSKY_RATELIMIT_BACKOFF_S", 
 OPENSKY_LOOKBACK_HOURS: int = int(_optional("OPENSKY_LOOKBACK_HOURS", "36"))
 BATCH_MAX_ERRORS_BEFORE_ABORT: int = int(_optional("BATCH_MAX_ERRORS_BEFORE_ABORT", "50"))
 
+# Aircraft type filter (comma-separated ICAO type codes; empty = track all)
+_TRACK_TYPES_RAW: str = _optional("TRACK_AIRCRAFT_TYPES", "")
+TRACK_AIRCRAFT_TYPES: frozenset[str] | None = (
+    frozenset(t.strip().upper() for t in _TRACK_TYPES_RAW.split(",") if t.strip()) or None
+)
+
 # Logging
 LOG_DIR: str = _optional("LOG_DIR", "/var/log/lhlogging")
 LOG_LEVEL: str = _optional("LOG_LEVEL", "INFO")

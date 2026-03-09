@@ -27,6 +27,16 @@ services:
       - ./app:/app:ro
       - applogs:/var/log/lhlogging
 
+  dashboard:
+    build: ./dashboard
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
 volumes:
   pgdata:
   applogs:

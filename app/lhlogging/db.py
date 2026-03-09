@@ -17,11 +17,21 @@ def get_connection() -> psycopg.Connection:
     )
 
 
-def get_active_aircraft(conn: psycopg.Connection) -> list[dict]:
+def get_active_aircraft(
+    conn: psycopg.Connection, type_filter: frozenset[str] | None = None
+) -> list[dict]:
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT icao24, registration, aircraft_type FROM aircraft WHERE is_active = TRUE ORDER BY icao24"
-        )
+        if type_filter:
+            cur.execute(
+                "SELECT icao24, registration, aircraft_type FROM aircraft"
+                " WHERE is_active = TRUE AND aircraft_type = ANY(%s) ORDER BY icao24",
+                (list(type_filter),),
+            )
+        else:
+            cur.execute(
+                "SELECT icao24, registration, aircraft_type FROM aircraft"
+                " WHERE is_active = TRUE ORDER BY icao24"
+            )
         rows = cur.fetchall()
     return [{"icao24": r[0], "registration": r[1], "aircraft_type": r[2]} for r in rows]
 
