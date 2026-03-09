@@ -23,9 +23,13 @@ DB_USER: str = _require("POSTGRES_USER")
 DB_PASSWORD: str = _require("POSTGRES_PASSWORD")
 
 # OpenSky
-OPENSKY_USER: str = _require("OPENSKY_USER")
-OPENSKY_PASS: str = _require("OPENSKY_PASS")
+OPENSKY_CLIENT_ID: str = _require("OPENSKY_CLIENT_ID")
+OPENSKY_CLIENT_SECRET: str = _require("OPENSKY_CLIENT_SECRET")
 OPENSKY_BASE_URL: str = _optional("OPENSKY_BASE_URL", "https://opensky-network.org/api")
+OPENSKY_TOKEN_URL: str = _optional(
+    "OPENSKY_TOKEN_URL",
+    "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token",
+)
 
 # Planespotters
 PLANESPOTTERS_BASE_URL: str = _optional(
