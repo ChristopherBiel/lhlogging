@@ -80,6 +80,10 @@ class OpenSkyClient:
             if resp.status_code == 404:
                 return []
             if resp.status_code == 429:
+                self._logger.warning(
+                    f"OpenSky rate limit (429) for {icao24} — sleeping {config.OPENSKY_RATELIMIT_BACKOFF_S}s"
+                )
+                time.sleep(config.OPENSKY_RATELIMIT_BACKOFF_S)
                 raise OpenSkyError(f"OpenSky rate limit hit (429) for {icao24}")
             if not resp.ok:
                 raise OpenSkyError(
