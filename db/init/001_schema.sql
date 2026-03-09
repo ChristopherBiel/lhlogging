@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS aircraft (
     icao24           CHAR(6)      NOT NULL,
     registration     VARCHAR(10)  NOT NULL,
     aircraft_type    VARCHAR(10),
-    aircraft_subtype VARCHAR(20),
+    aircraft_subtype VARCHAR(50),
     airline_iata     VARCHAR(3)   NOT NULL DEFAULT 'LH',
     first_seen_date  DATE         NOT NULL DEFAULT CURRENT_DATE,
     last_seen_date   DATE,
