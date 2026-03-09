@@ -1,5 +1,5 @@
 """
-Weekly entrypoint: refreshes the Lufthansa fleet from Planespotters.net.
+Weekly entrypoint: refreshes the Lufthansa fleet from the OpenSky aircraft database CSV.
 
 Usage:
     python -m lhlogging.fleet_refresh
@@ -7,10 +7,10 @@ Usage:
 import sys
 
 from lhlogging import config, db
-from lhlogging.planespotters import PlanespottersClient, PlanespottersDataError, PlanespottersError
+from lhlogging.opensky_fleet import OpenSkyFleetClient, OpenSkyFleetError
 from lhlogging.utils import setup_logging
 
-# Minimum plausible fleet size — guards against retiring everything on an API failure
+# Minimum plausible fleet size — guards against retiring everything on a bad download
 _MIN_FLEET_SANITY = 50
 
 
@@ -28,10 +28,10 @@ def main() -> int:
     stats = {"ok": 0, "error": 0, "flights_upserted": 0, "status": "ok", "error_detail": None}
 
     try:
-        client = PlanespottersClient(logger)
+        client = OpenSkyFleetClient(logger)
         api_fleet = client.get_airline_fleet(config.PLANESPOTTERS_AIRLINE_ICAO)
-    except PlanespottersError as e:
-        logger.critical(f"Failed to fetch fleet from Planespotters: {e}")
+    except OpenSkyFleetError as e:
+        logger.critical(f"Failed to fetch fleet from OpenSky aircraft DB: {e}")
         stats["status"] = "error"
         stats["error_detail"] = str(e)
         db.log_batch_finish(conn, run_id, stats)
@@ -40,7 +40,7 @@ def main() -> int:
 
     if len(api_fleet) < _MIN_FLEET_SANITY:
         msg = (
-            f"Planespotters returned only {len(api_fleet)} aircraft "
+            f"OpenSky aircraft DB returned only {len(api_fleet)} aircraft for DLH "
             f"(minimum expected: {_MIN_FLEET_SANITY}). "
             "Aborting to avoid incorrectly retiring active aircraft."
         )
@@ -51,9 +51,8 @@ def main() -> int:
         conn.close()
         return 1
 
-    # --- Upsert all aircraft from API ---
+    # --- Upsert all aircraft from the CSV ---
     api_icao24_set: set[str] = set()
-    new_count = 0
     for aircraft in api_fleet:
         try:
             db.upsert_aircraft(conn, aircraft)
@@ -65,7 +64,7 @@ def main() -> int:
             conn.rollback()
     conn.commit()
 
-    # --- Retire aircraft no longer in the API response ---
+    # --- Retire aircraft no longer present in the CSV ---
     db_fleet = db.get_active_aircraft(conn)
     db_icao24_set = {a["icao24"] for a in db_fleet}
     retired = db_icao24_set - api_icao24_set
@@ -73,7 +72,7 @@ def main() -> int:
     for icao24 in retired:
         try:
             db.mark_aircraft_retired(conn, icao24)
-            logger.warning(f"Retired aircraft no longer in Planespotters fleet: {icao24}")
+            logger.warning(f"Retired aircraft no longer in OpenSky DB: {icao24}")
         except Exception as e:
             logger.error(f"Failed to retire {icao24}: {e}")
     conn.commit()

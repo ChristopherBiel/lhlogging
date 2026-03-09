@@ -31,16 +31,12 @@ OPENSKY_TOKEN_URL: str = _optional(
     "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token",
 )
 
-# Planespotters
-PLANESPOTTERS_BASE_URL: str = _optional(
-    "PLANESPOTTERS_BASE_URL", "https://api.planespotters.net/pub/flights"
-)
-PLANESPOTTERS_AIRLINE_ICAO: str = _optional("PLANESPOTTERS_AIRLINE_ICAO", "DLH")
+# Fleet
+PLANESPOTTERS_AIRLINE_ICAO: str = _optional("AIRLINE_OPERATOR_ICAO", "DLH")
 
 # Tuning
 OPENSKY_REQUEST_DELAY_S: float = float(_optional("OPENSKY_REQUEST_DELAY_S", "0.5"))
 OPENSKY_LOOKBACK_HOURS: int = int(_optional("OPENSKY_LOOKBACK_HOURS", "36"))
-PLANESPOTTERS_REQUEST_DELAY_S: float = float(_optional("PLANESPOTTERS_REQUEST_DELAY_S", "1.0"))
 BATCH_MAX_ERRORS_BEFORE_ABORT: int = int(_optional("BATCH_MAX_ERRORS_BEFORE_ABORT", "50"))
 
 # Logging
