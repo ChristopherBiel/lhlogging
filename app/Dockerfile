@@ -18,4 +18,4 @@ RUN chmod 0644 /etc/cron.d/lhlogging && crontab /etc/cron.d/lhlogging
 
 RUN mkdir -p /var/log/lhlogging
 
-CMD ["cron", "-f"]
+CMD printenv | sed 's/^\(.*\)$/export \1/g' > /etc/environment && cron -f
