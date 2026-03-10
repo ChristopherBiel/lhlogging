@@ -93,7 +93,36 @@ def api_stats():
             for r in rows
         ]
 
-        # --- Aircraft type breakdown (active) ---
+        # --- Last run per type ---
+        for run_type in ("route_logger", "fleet_refresh"):
+            row = _q(
+                conn,
+                """
+                SELECT started_at, finished_at, aircraft_total, aircraft_ok,
+                       aircraft_error, flights_upserted, status, error_detail
+                FROM batch_runs
+                WHERE run_type = %s
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (run_type,),
+            )
+            if row:
+                r = row[0]
+                stats[f"last_{run_type}"] = {
+                    "started_at": r[0].isoformat() if r[0] else None,
+                    "finished_at": r[1].isoformat() if r[1] else None,
+                    "aircraft_total": r[2],
+                    "aircraft_ok": r[3],
+                    "aircraft_error": r[4],
+                    "flights_upserted": r[5],
+                    "status": r[6],
+                    "error_detail": r[7],
+                }
+            else:
+                stats[f"last_{run_type}"] = None
+
+        # --- Aircraft type breakdown (active fleet) ---
         rows = _q(
             conn,
             """
@@ -105,6 +134,21 @@ def api_stats():
             """,
         )
         stats["aircraft_types"] = [{"type": r[0], "count": r[1]} for r in rows]
+
+        # --- Aircraft that flew in last 7 days by type ---
+        rows = _q(
+            conn,
+            """
+            SELECT COALESCE(a.aircraft_type, 'unknown'), COUNT(DISTINCT a.icao24)
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE f.flight_date >= CURRENT_DATE - 7
+              AND a.is_active
+            GROUP BY a.aircraft_type
+            ORDER BY COUNT(DISTINCT a.icao24) DESC
+            """,
+        )
+        stats["aircraft_flew_7d"] = [{"type": r[0], "count": r[1]} for r in rows]
 
         # --- Top 20 routes last 30 days ---
         rows = _q(
@@ -139,6 +183,21 @@ def api_stats():
         )
         stats["flights_per_day"] = [{"date": r[0], "count": r[1]} for r in rows]
 
+        # --- Unique callsigns (flight numbers) per day last 14 days ---
+        rows = _q(
+            conn,
+            """
+            SELECT flight_date::text, COUNT(DISTINCT callsign)
+            FROM flights
+            WHERE flight_date >= CURRENT_DATE - 13
+              AND callsign IS NOT NULL
+              AND callsign != ''
+            GROUP BY flight_date
+            ORDER BY flight_date
+            """,
+        )
+        stats["callsigns_per_day"] = [{"date": r[0], "count": r[1]} for r in rows]
+
         stats["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
 
     except Exception as e:
@@ -149,120 +208,457 @@ def api_stats():
     return jsonify(stats)
 
 
-_HTML = """<!DOCTYPE html>
+_HTML = """\
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LH Fleet Monitor</title>
 <style>
-  :root {
-    --bg: #0f1117; --card: #1a1d26; --border: #2a2d3a;
-    --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6;
-    --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
-  header { padding: 20px 32px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-  header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }
-  header h1 span { color: var(--accent); }
-  #last-updated { color: var(--muted); font-size: 12px; }
-  main { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
-  .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 0 0 12px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
-  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-  .card .value { font-size: 28px; font-weight: 700; letter-spacing: -1px; }
-  .card .sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }
-  .grid3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 20px; margin-bottom: 28px; }
-  .box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; padding: 6px 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); }
-  td { padding: 7px 8px; border-bottom: 1px solid rgba(42,45,58,0.5); }
-  tr:last-child td { border-bottom: none; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-  .badge-ok { background: rgba(34,197,94,0.15); color: var(--green); }
-  .badge-error { background: rgba(239,68,68,0.15); color: var(--red); }
-  .badge-running { background: rgba(59,130,246,0.15); color: var(--accent); }
-  .bar-chart { display: flex; flex-direction: column; gap: 6px; }
-  .bar-row { display: flex; align-items: center; gap: 8px; }
-  .bar-label { width: 80px; text-align: right; font-size: 12px; color: var(--muted); flex-shrink: 0; }
-  .bar-track { flex: 1; background: var(--border); border-radius: 3px; height: 18px; overflow: hidden; }
-  .bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s; }
-  .bar-count { width: 36px; font-size: 12px; color: var(--muted); }
-  .sparkline { display: flex; align-items: flex-end; gap: 3px; height: 48px; }
-  .spark-col { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; opacity: 0.8; }
-  .error-detail { font-size: 11px; color: var(--red); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #error-banner { display: none; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 12px 18px; margin-bottom: 20px; color: var(--red); }
-  @media (max-width: 800px) { .grid2, .grid3 { grid-template-columns: 1fr; } main { padding: 16px; } }
+:root {
+  --bg: #101114;
+  --surface: #191b20;
+  --surface2: #1f2128;
+  --border: #2a2c35;
+  --text: #c9cdd6;
+  --text-bright: #e4e7ed;
+  --muted: #6b7280;
+  --accent: #5b8def;
+  --accent-dim: rgba(91,141,239,0.12);
+  --green: #4ade80;
+  --green-dim: rgba(74,222,128,0.12);
+  --red: #f87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251,191,36,0.12);
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 0 16px 32px;
+}
+
+/* Header */
+.header {
+  padding: 16px 0 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+.header h1 {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-bright);
+  letter-spacing: -0.3px;
+}
+.header h1 span { color: var(--accent); font-weight: 700; }
+.header .updated {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Health strip */
+.health-strip {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.health-item {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  text-align: center;
+}
+.health-item .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.health-item .label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.health-item .info {
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* Section */
+.section {
+  margin-bottom: 20px;
+}
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* Metric row */
+.metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.metric {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.metric .label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.metric .value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-bright);
+  letter-spacing: -0.5px;
+}
+.metric .sub {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* Cards / boxes */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+/* Chart area */
+.chart-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 64px;
+}
+.chart-bars .bar {
+  flex: 1;
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  transition: height 0.3s ease;
+  position: relative;
+}
+.chart-bars .bar:hover { opacity: 1 !important; }
+.chart-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* Horizontal bar chart */
+.hbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.hbar-row:last-child { margin-bottom: 0; }
+.hbar-label {
+  width: 44px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.hbar-track {
+  flex: 1;
+  background: var(--surface2);
+  border-radius: 3px;
+  height: 20px;
+  overflow: hidden;
+}
+.hbar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+.hbar-count {
+  width: 28px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.hbar-flew {
+  width: 28px;
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Batch run rows */
+.batch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(42,44,53,0.5);
+  font-size: 12px;
+}
+.batch-row:last-child { border-bottom: none; }
+.batch-type {
+  font-weight: 500;
+  color: var(--text);
+  width: 90px;
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.batch-time {
+  color: var(--muted);
+  font-size: 11px;
+  width: 56px;
+  flex-shrink: 0;
+}
+.batch-detail {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.badge-ok { background: var(--green-dim); color: var(--green); }
+.badge-error { background: var(--red-dim); color: var(--red); }
+.badge-running { background: var(--accent-dim); color: var(--accent); }
+
+/* Route table */
+.route-row {
+  display: flex;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(42,44,53,0.3);
+  font-size: 12px;
+}
+.route-row:last-child { border-bottom: none; }
+.route-pair {
+  flex: 1;
+  color: var(--text);
+}
+.route-pair .arrow { color: var(--muted); margin: 0 4px; }
+.route-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+/* Error banner */
+#error-banner {
+  display: none;
+  background: var(--red-dim);
+  border: 1px solid rgba(248,113,113,0.25);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  color: var(--red);
+  font-size: 12px;
+}
+
+/* Tooltip */
+.tooltip {
+  position: fixed;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text);
+  pointer-events: none;
+  z-index: 100;
+  white-space: nowrap;
+  display: none;
+}
+
+/* Dual chart legend */
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.chart-legend .swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* Error text */
+.err-text {
+  font-size: 10px;
+  color: var(--red);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (min-width: 600px) {
+  .container { max-width: 540px; }
+}
+@media (min-width: 900px) {
+  .container { max-width: 720px; padding: 0 24px 40px; }
+  .metrics { grid-template-columns: repeat(3, 1fr); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .two-col > .card { margin-bottom: 0; }
+}
 </style>
 </head>
 <body>
-<header>
-  <h1>LH Fleet <span>Monitor</span></h1>
-  <span id="last-updated">Loading…</span>
-</header>
-<main>
+<div class="container">
+
+  <div class="header">
+    <h1>LH Fleet <span>Monitor</span></h1>
+    <span class="updated" id="last-updated"></span>
+  </div>
+
   <div id="error-banner"></div>
 
-  <p class="section-title">Fleet</p>
-  <div class="cards" id="fleet-cards"></div>
+  <!-- Health strip -->
+  <div class="health-strip" id="health-strip"></div>
 
-  <p class="section-title">Flights</p>
-  <div class="cards" id="flight-cards"></div>
+  <!-- Key metrics -->
+  <div class="section">
+    <div class="section-label">Fleet</div>
+    <div class="metrics" id="fleet-metrics"></div>
+  </div>
 
-  <div class="grid3">
-    <div class="box">
-      <p class="section-title">Batch Run History</p>
-      <table id="batch-table">
-        <thead><tr><th>Type</th><th>Started</th><th>Aircraft</th><th>Flights</th><th>Status</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="box">
-      <p class="section-title">Aircraft Types (active)</p>
-      <div class="bar-chart" id="type-bars"></div>
-    </div>
-    <div class="box">
-      <p class="section-title">Top Routes (30d)</p>
-      <table id="route-table">
-        <thead><tr><th>Dep</th><th>Arr</th><th>#</th></tr></thead>
-        <tbody></tbody>
-      </table>
+  <div class="section">
+    <div class="section-label">Flights</div>
+    <div class="metrics" id="flight-metrics"></div>
+  </div>
+
+  <!-- Flight trend chart -->
+  <div class="section">
+    <div class="card">
+      <div class="section-label">Daily flights &amp; unique routes (14d)</div>
+      <div class="chart-legend">
+        <span><span class="swatch" style="background:var(--accent)"></span>Flights</span>
+        <span><span class="swatch" style="background:var(--amber)"></span>Unique callsigns</span>
+      </div>
+      <div class="chart-bars" id="flight-chart" style="height:80px"></div>
+      <div class="chart-labels" id="flight-chart-labels"></div>
     </div>
   </div>
 
-  <div class="grid2">
-    <div class="box">
-      <p class="section-title" id="sparkline-title">Flights per day (14d)</p>
-      <div style="display:flex;align-items:flex-end;gap:4px;height:80px;margin-top:8px" id="sparkline"></div>
-      <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:11px;color:var(--muted)" id="sparkline-labels"></div>
-    </div>
-    <div class="box">
-      <p class="section-title">System</p>
-      <table id="system-table">
-        <tbody></tbody>
-      </table>
+  <!-- Fleet by type -->
+  <div class="section">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="section-label" style="margin-bottom:0">Aircraft by type</div>
+        <div style="font-size:10px;color:var(--muted)">
+          <span style="color:var(--accent)">In DB</span>
+          <span style="margin:0 4px">/</span>
+          <span style="color:var(--green)">Flew 7d</span>
+        </div>
+      </div>
+      <div id="type-chart"></div>
     </div>
   </div>
-</main>
+
+  <!-- Batch runs + Top routes -->
+  <div class="section two-col">
+    <div class="card">
+      <div class="section-label">Recent batch runs</div>
+      <div id="batch-list"></div>
+    </div>
+    <div class="card">
+      <div class="section-label">Top routes (30d)</div>
+      <div id="route-list"></div>
+    </div>
+  </div>
+
+  <!-- System -->
+  <div class="section">
+    <div class="card" id="system-info" style="font-size:12px;color:var(--muted)"></div>
+  </div>
+
+</div>
+
+<div class="tooltip" id="tooltip"></div>
 
 <script>
-function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
+const $ = id => document.getElementById(id);
+const fmt = n => n == null ? '\u2014' : n.toLocaleString();
+
 function ago(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso), now = new Date();
-  const s = Math.floor((now - d) / 1000);
+  if (!iso) return '\u2014';
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return s + 's ago';
   if (s < 3600) return Math.floor(s/60) + 'm ago';
   if (s < 86400) return Math.floor(s/3600) + 'h ago';
   return Math.floor(s/86400) + 'd ago';
 }
+
 function badge(status) {
-  const cls = status === 'ok' ? 'badge-ok' : status === 'running' ? 'badge-running' : 'badge-error';
-  return `<span class="badge ${cls}">${status}</span>`;
+  const c = status === 'ok' ? 'badge-ok' : status === 'running' ? 'badge-running' : 'badge-error';
+  return '<span class="badge ' + c + '">' + status + '</span>';
 }
+
+// Tooltip
+const tip = $('tooltip');
+document.addEventListener('mousemove', e => {
+  if (tip.style.display === 'block') {
+    tip.style.left = (e.clientX + 10) + 'px';
+    tip.style.top = (e.clientY - 28) + 'px';
+  }
+});
+
+function showTip(text, e) {
+  tip.textContent = text;
+  tip.style.display = 'block';
+  tip.style.left = (e.clientX + 10) + 'px';
+  tip.style.top = (e.clientY - 28) + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
 
 async function refresh() {
   let data;
@@ -270,87 +666,142 @@ async function refresh() {
     const r = await fetch('/api/stats');
     data = await r.json();
   } catch(e) {
-    document.getElementById('error-banner').style.display = 'block';
-    document.getElementById('error-banner').textContent = 'Failed to fetch stats: ' + e;
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = 'Connection error: ' + e;
     return;
   }
   if (data.error) {
-    document.getElementById('error-banner').style.display = 'block';
-    document.getElementById('error-banner').textContent = 'DB error: ' + data.error;
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = data.error;
     return;
   }
-  document.getElementById('error-banner').style.display = 'none';
+  $('error-banner').style.display = 'none';
 
-  // Fleet cards
-  document.getElementById('fleet-cards').innerHTML = `
-    <div class="card"><div class="label">Active Aircraft</div><div class="value">${fmt(data.aircraft_active)}</div></div>
-    <div class="card"><div class="label">Retired</div><div class="value">${fmt(data.aircraft_retired)}</div></div>
-    <div class="card"><div class="label">Total in DB</div><div class="value">${fmt(data.aircraft_total)}</div></div>
-  `;
+  // Health strip
+  const lr = data.last_route_logger;
+  const fr = data.last_fleet_refresh;
+  const lrOk = lr && lr.status === 'ok';
+  const frOk = fr && fr.status === 'ok';
+  // Check fleet_refresh is recent (within 8 days)
+  const frRecent = fr && fr.started_at &&
+    (Date.now() - new Date(fr.started_at).getTime()) < 8 * 86400 * 1000;
 
-  // Flight cards
-  document.getElementById('flight-cards').innerHTML = `
-    <div class="card"><div class="label">Flights Today</div><div class="value">${fmt(data.flights_today)}</div></div>
-    <div class="card"><div class="label">Last 7 Days</div><div class="value">${fmt(data.flights_7d)}</div></div>
-    <div class="card"><div class="label">All Time</div><div class="value">${fmt(data.flights_total)}</div></div>
-  `;
+  $('health-strip').innerHTML =
+    '<div class="health-item">' +
+      '<div class="label">Route Logger</div>' +
+      '<div class="info"><span class="dot" style="background:' + (lrOk ? 'var(--green)' : 'var(--red)') + '"></span>' +
+      (lr ? ago(lr.started_at) : 'never') + '</div>' +
+    '</div>' +
+    '<div class="health-item">' +
+      '<div class="label">Fleet Refresh</div>' +
+      '<div class="info"><span class="dot" style="background:' + (frOk && frRecent ? 'var(--green)' : !frRecent ? 'var(--amber)' : 'var(--red)') + '"></span>' +
+      (fr ? ago(fr.started_at) : 'never') + '</div>' +
+    '</div>' +
+    '<div class="health-item">' +
+      '<div class="label">Today</div>' +
+      '<div class="info" style="font-weight:600;font-size:15px">' + fmt(data.flights_today) + ' <span style="font-weight:400;font-size:10px;color:var(--muted)">flights</span></div>' +
+    '</div>';
 
-  // Batch run table
-  const btbody = document.querySelector('#batch-table tbody');
-  btbody.innerHTML = (data.batch_runs || []).map(r => `
-    <tr>
-      <td>${r.run_type}</td>
-      <td>${ago(r.started_at)}</td>
-      <td>${fmt(r.aircraft_ok)}/${fmt(r.aircraft_total)}</td>
-      <td>${fmt(r.flights_upserted)}</td>
-      <td>${badge(r.status)}${r.error_detail ? '<br><span class="error-detail" title="'+r.error_detail+'">'+r.error_detail+'</span>' : ''}</td>
-    </tr>
-  `).join('');
+  // Fleet metrics
+  $('fleet-metrics').innerHTML =
+    '<div class="metric"><div class="label">Active</div><div class="value">' + fmt(data.aircraft_active) + '</div></div>' +
+    '<div class="metric"><div class="label">Retired</div><div class="value">' + fmt(data.aircraft_retired) + '</div></div>' +
+    '<div class="metric"><div class="label">Total</div><div class="value">' + fmt(data.aircraft_total) + '</div></div>';
 
-  // Aircraft type bars
-  const types = data.aircraft_types || [];
-  const maxCount = types.length ? types[0].count : 1;
-  document.getElementById('type-bars').innerHTML = types.slice(0, 12).map(t => `
-    <div class="bar-row">
-      <div class="bar-label">${t.type}</div>
-      <div class="bar-track"><div class="bar-fill" style="width:${Math.round(t.count/maxCount*100)}%"></div></div>
-      <div class="bar-count">${t.count}</div>
-    </div>
-  `).join('');
+  // Flight metrics
+  $('flight-metrics').innerHTML =
+    '<div class="metric"><div class="label">Today</div><div class="value">' + fmt(data.flights_today) + '</div></div>' +
+    '<div class="metric"><div class="label">7 Days</div><div class="value">' + fmt(data.flights_7d) + '</div></div>' +
+    '<div class="metric"><div class="label">All Time</div><div class="value">' + fmt(data.flights_total) + '</div></div>';
 
-  // Top routes
-  const rtbody = document.querySelector('#route-table tbody');
-  rtbody.innerHTML = (data.top_routes || []).map(r => `
-    <tr><td>${r.dep}</td><td>${r.arr}</td><td>${r.count}</td></tr>
-  `).join('');
-
-  // Sparkline
+  // Flight trend chart (dual: flights + callsigns)
   const days = data.flights_per_day || [];
-  const maxF = days.length ? Math.max(...days.map(d => d.count)) : 1;
-  document.getElementById('sparkline').innerHTML = days.map(d =>
-    `<div title="${d.date}: ${d.count}" style="flex:1;background:var(--accent);border-radius:2px 2px 0 0;height:${Math.max(4, Math.round(d.count/maxF*76))}px;opacity:0.8"></div>`
-  ).join('');
+  const csdays = data.callsigns_per_day || [];
+  const csMap = {};
+  csdays.forEach(d => csMap[d.date] = d.count);
+  const maxF = days.length ? Math.max(...days.map(d => d.count), 1) : 1;
+
+  $('flight-chart').innerHTML = days.map(d => {
+    const h = Math.max(3, Math.round(d.count / maxF * 76));
+    const csCount = csMap[d.date] || 0;
+    const csH = Math.max(0, Math.round(csCount / maxF * 76));
+    return '<div style="flex:1;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-end;height:80px" ' +
+      'onmouseenter="showTip(\'' + d.date + ': ' + d.count + ' flights, ' + csCount + ' callsigns\', event)" onmouseleave="hideTip()">' +
+      '<div style="height:' + h + 'px;background:var(--accent);border-radius:2px 2px 0 0;opacity:0.7;position:relative">' +
+      (csH > 0 ? '<div style="position:absolute;bottom:0;left:0;right:0;height:' + Math.min(csH, h) + 'px;background:var(--amber);border-radius:0 0 0 0;opacity:0.6"></div>' : '') +
+      '</div></div>';
+  }).join('');
+
   if (days.length >= 2) {
-    const lblDiv = document.getElementById('sparkline-labels');
-    lblDiv.innerHTML = `<span>${days[0].date.slice(5)}</span><span>${days[days.length-1].date.slice(5)}</span>`;
+    $('flight-chart-labels').innerHTML =
+      '<span>' + days[0].date.slice(5) + '</span><span>' + days[days.length-1].date.slice(5) + '</span>';
   }
 
-  // System table
-  const lastRun = (data.batch_runs || [])[0];
-  document.querySelector('#system-table tbody').innerHTML = `
-    <tr><td style="color:var(--muted)">DB size</td><td>${data.db_size || '—'}</td></tr>
-    <tr><td style="color:var(--muted)">Last run</td><td>${lastRun ? ago(lastRun.started_at) + ' (' + lastRun.run_type + ')' : '—'}</td></tr>
-    <tr><td style="color:var(--muted)">Last status</td><td>${lastRun ? badge(lastRun.status) : '—'}</td></tr>
-  `;
+  // Aircraft type chart with flew-in-7d overlay
+  const types = data.aircraft_types || [];
+  const flew = data.aircraft_flew_7d || [];
+  const flewMap = {};
+  flew.forEach(f => flewMap[f.type] = f.count);
+  const maxT = types.length ? types[0].count : 1;
 
-  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  $('type-chart').innerHTML = types.map(t => {
+    const pct = Math.round(t.count / maxT * 100);
+    const flewCount = flewMap[t.type] || 0;
+    const flewPct = Math.round(flewCount / maxT * 100);
+    return '<div class="hbar-row">' +
+      '<div class="hbar-label">' + t.type + '</div>' +
+      '<div class="hbar-track">' +
+        '<div class="hbar-fill" style="width:' + pct + '%;background:var(--accent);opacity:0.5;position:relative">' +
+          '<div style="position:absolute;top:0;left:0;height:100%;width:' + (t.count > 0 ? Math.round(flewCount / t.count * 100) : 0) + '%;background:var(--green);border-radius:3px;opacity:0.8"></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="hbar-count">' + t.count + '</div>' +
+      '<div class="hbar-flew">' + (flewCount || '\u2014') + '</div>' +
+    '</div>';
+  }).join('');
+
+  // Batch runs
+  const runs = data.batch_runs || [];
+  $('batch-list').innerHTML = runs.length ? runs.map(r =>
+    '<div class="batch-row">' +
+      '<div class="batch-type">' + r.run_type.replace('_', ' ') + '</div>' +
+      '<div class="batch-time">' + ago(r.started_at) + '</div>' +
+      '<div class="batch-detail">' +
+        (r.run_type === 'route_logger'
+          ? fmt(r.aircraft_ok) + '/' + fmt(r.aircraft_total) + ' ac, ' + fmt(r.flights_upserted) + ' fl'
+          : fmt(r.aircraft_ok) + '/' + fmt(r.aircraft_total) + ' ac') +
+      '</div>' +
+      badge(r.status) +
+    '</div>' +
+    (r.error_detail ? '<div class="err-text" title="' + r.error_detail.replace(/"/g, '&quot;') + '">' + r.error_detail + '</div>' : '')
+  ).join('') : '<div style="color:var(--muted);font-size:12px">No runs recorded</div>';
+
+  // Top routes
+  const routes = data.top_routes || [];
+  $('route-list').innerHTML = routes.slice(0, 15).map(r =>
+    '<div class="route-row">' +
+      '<div class="route-pair">' + r.dep + '<span class="arrow">\u2192</span>' + r.arr + '</div>' +
+      '<div class="route-count">' + r.count + '</div>' +
+    '</div>'
+  ).join('');
+
+  // System info
+  $('system-info').innerHTML =
+    'DB size: <span style="color:var(--text)">' + (data.db_size || '\u2014') + '</span>' +
+    '<span style="margin:0 10px;color:var(--border)">\u00b7</span>' +
+    'Aircraft: <span style="color:var(--text)">' + fmt(data.aircraft_total) + '</span>' +
+    '<span style="margin:0 10px;color:var(--border)">\u00b7</span>' +
+    'Flights: <span style="color:var(--text)">' + fmt(data.flights_total) + '</span>';
+
+  $('last-updated').textContent = new Date().toLocaleTimeString();
 }
 
 refresh();
 setInterval(refresh, 30000);
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 
 @app.route("/")
