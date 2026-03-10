@@ -726,7 +726,7 @@ async function refresh() {
     const csCount = csMap[d.date] || 0;
     const csH = Math.max(0, Math.round(csCount / maxF * 76));
     return '<div style="flex:1;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-end;height:80px" ' +
-      'onmouseenter="showTip(\'' + d.date + ': ' + d.count + ' flights, ' + csCount + ' callsigns\', event)" onmouseleave="hideTip()">' +
+      'onmouseenter="showTip(\\'' + d.date + ': ' + d.count + ' flights, ' + csCount + ' callsigns\\', event)" onmouseleave="hideTip()">' +
       '<div style="height:' + h + 'px;background:var(--accent);border-radius:2px 2px 0 0;opacity:0.7;position:relative">' +
       (csH > 0 ? '<div style="position:absolute;bottom:0;left:0;right:0;height:' + Math.min(csH, h) + 'px;background:var(--amber);border-radius:0 0 0 0;opacity:0.6"></div>' : '') +
       '</div></div>';
