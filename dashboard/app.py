@@ -559,6 +559,7 @@ body {
   <div class="header">
     <h1>LH Fleet <span>Monitor</span></h1>
     <div style="display:flex;align-items:center;gap:12px">
+      <a href="/fleet" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">Fleet DB</a>
       <a href="/analysis" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">A380 Analysis &rarr;</a>
       <span class="updated" id="last-updated"></span>
     </div>
@@ -1297,7 +1298,8 @@ body {
 
   <div class="header">
     <h1>A380 Rotation <span>Analysis</span></h1>
-    <a class="nav-link" href="/">&larr; Fleet Monitor</a>
+    <a class="nav-link" href="/fleet">Fleet DB</a>
+    <a class="nav-link" href="/">&larr; Monitor</a>
   </div>
 
   <div class="error-banner" id="error-banner"></div>
@@ -1764,6 +1766,755 @@ init();
 @app.route("/analysis")
 def analysis():
     return render_template_string(_ANALYSIS_HTML)
+
+
+# ── Fleet Database ─────────────────────────────────────────────────
+
+
+@app.route("/api/fleet")
+def api_fleet():
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+    try:
+        rows = _q(
+            conn,
+            """
+            SELECT a.icao24, a.registration, a.aircraft_type, a.aircraft_subtype,
+                   a.is_active, a.first_seen_date::text, a.last_seen_date::text,
+                   COUNT(f.id)::int AS total_flights,
+                   COUNT(f.id) FILTER (WHERE f.flight_date >= CURRENT_DATE - 7)::int AS flights_7d,
+                   MAX(f.flight_date)::text AS last_flight
+            FROM aircraft a
+            LEFT JOIN flights f ON f.icao24 = a.icao24
+            GROUP BY a.id
+            ORDER BY a.registration
+            """,
+        )
+        aircraft = [
+            {
+                "icao24": r[0].strip(),
+                "registration": r[1].strip() if r[1] else "",
+                "aircraft_type": (r[2] or "").strip(),
+                "aircraft_subtype": (r[3] or "").strip(),
+                "is_active": r[4],
+                "first_seen": r[5],
+                "last_seen": r[6],
+                "total_flights": r[7],
+                "flights_7d": r[8],
+                "last_flight": r[9],
+            }
+            for r in rows
+        ]
+        # Collect distinct types for filter dropdown
+        types = sorted({a["aircraft_type"] for a in aircraft if a["aircraft_type"]})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+    conn.close()
+    return jsonify({"aircraft": aircraft, "types": types})
+
+
+@app.route("/api/fleet/<icao24>")
+def api_fleet_detail(icao24):
+    icao24 = icao24.strip().lower()
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+    try:
+        # Aircraft info
+        rows = _q(
+            conn,
+            """
+            SELECT icao24, registration, aircraft_type, aircraft_subtype,
+                   is_active, first_seen_date::text, last_seen_date::text,
+                   airline_iata
+            FROM aircraft WHERE icao24 = %s
+            """,
+            (icao24,),
+        )
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Aircraft not found"}), 404
+        r = rows[0]
+        info = {
+            "icao24": r[0].strip(),
+            "registration": (r[1] or "").strip(),
+            "aircraft_type": (r[2] or "").strip(),
+            "aircraft_subtype": (r[3] or "").strip(),
+            "is_active": r[4],
+            "first_seen": r[5],
+            "last_seen": r[6],
+            "airline_iata": (r[7] or "").strip(),
+        }
+
+        # Flight stats
+        info["total_flights"] = _q1(
+            conn, "SELECT COUNT(*) FROM flights WHERE icao24 = %s", (icao24,)
+        )
+        info["flights_7d"] = _q1(
+            conn,
+            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 7",
+            (icao24,),
+        )
+        info["flights_30d"] = _q1(
+            conn,
+            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 30",
+            (icao24,),
+        )
+
+        # Recent flights (last 100)
+        rows = _q(
+            conn,
+            """
+            SELECT callsign, departure_airport_icao, arrival_airport_icao,
+                   first_seen, last_seen, duration_minutes, flight_date::text
+            FROM flights
+            WHERE icao24 = %s
+            ORDER BY first_seen DESC
+            LIMIT 100
+            """,
+            (icao24,),
+        )
+        flights = [
+            {
+                "callsign": (r[0] or "").strip(),
+                "dep": (r[1] or "").strip(),
+                "arr": (r[2] or "").strip(),
+                "first_seen": r[3].isoformat() if r[3] else None,
+                "last_seen": r[4].isoformat() if r[4] else None,
+                "duration": r[5],
+                "date": r[6],
+            }
+            for r in rows
+        ]
+
+        # Top routes
+        rows = _q(
+            conn,
+            """
+            SELECT COALESCE(departure_airport_icao, '?') || '-' || COALESCE(arrival_airport_icao, '?') AS route,
+                   COUNT(*) AS cnt
+            FROM flights
+            WHERE icao24 = %s
+              AND departure_airport_icao IS NOT NULL
+              AND arrival_airport_icao IS NOT NULL
+            GROUP BY route
+            ORDER BY cnt DESC
+            LIMIT 20
+            """,
+            (icao24,),
+        )
+        routes = [{"route": r[0].strip(), "count": r[1]} for r in rows]
+
+        # Flights per day last 30 days
+        rows = _q(
+            conn,
+            """
+            SELECT flight_date::text, COUNT(*)
+            FROM flights
+            WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 29
+            GROUP BY flight_date ORDER BY flight_date
+            """,
+            (icao24,),
+        )
+        daily = [{"date": r[0], "count": r[1]} for r in rows]
+
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+    conn.close()
+    return jsonify({"info": info, "flights": flights, "routes": routes, "daily": daily})
+
+
+_FLEET_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LH Fleet Database</title>
+<style>
+:root {
+  --bg: #101114; --surface: #191b20; --surface2: #1f2128;
+  --border: #2a2c35; --text: #c9cdd6; --text-bright: #e4e7ed;
+  --muted: #6b7280; --accent: #5b8def; --accent-dim: rgba(91,141,239,0.12);
+  --green: #4ade80; --green-dim: rgba(74,222,128,0.12);
+  --red: #f87171; --red-dim: rgba(248,113,113,0.12);
+  --amber: #fbbf24; --radius: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1200px; margin: 0 auto; padding: 0 16px 40px; }
+.header {
+  padding: 16px 0 12px; display: flex; justify-content: space-between;
+  align-items: center; border-bottom: 1px solid var(--border); margin-bottom: 20px;
+}
+.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); letter-spacing: -0.3px; }
+.header h1 span { color: var(--accent); font-weight: 700; }
+.nav-link {
+  font-size: 12px; color: var(--accent); text-decoration: none;
+  padding: 4px 10px; border: 1px solid var(--accent); border-radius: 6px;
+}
+.nav-link:hover { background: var(--accent-dim); }
+
+/* Toolbar */
+.toolbar {
+  display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
+}
+.toolbar input[type="text"] {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-bright); padding: 7px 12px; font-size: 13px; flex: 1; min-width: 200px;
+  outline: none;
+}
+.toolbar input[type="text"]:focus { border-color: var(--accent); }
+.toolbar select {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); padding: 7px 10px; font-size: 12px; outline: none; cursor: pointer;
+}
+.toolbar .count { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+/* Toggle buttons */
+.toggle-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.toggle-btn {
+  background: var(--surface); border: none; color: var(--muted); padding: 6px 12px;
+  font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.toggle-btn:last-child { border-right: none; }
+.toggle-btn.active { background: var(--accent-dim); color: var(--accent); }
+.toggle-btn:hover:not(.active) { color: var(--text); }
+
+/* Table */
+.fleet-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.fleet-table th {
+  text-align: left; padding: 8px 10px; font-size: 10px; font-weight: 700;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--border); cursor: pointer; user-select: none;
+  white-space: nowrap;
+}
+.fleet-table th:hover { color: var(--accent); }
+.fleet-table th .sort-arrow { font-size: 9px; margin-left: 3px; opacity: 0.5; }
+.fleet-table th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+.fleet-table td {
+  padding: 7px 10px; border-bottom: 1px solid rgba(42,44,53,0.4);
+  color: var(--text); white-space: nowrap;
+}
+.fleet-table tr { cursor: pointer; transition: background 0.1s; }
+.fleet-table tbody tr:hover { background: var(--surface); }
+.fleet-table .reg { font-weight: 700; color: var(--text-bright); font-size: 13px; }
+.fleet-table .hex { font-family: monospace; font-size: 11px; color: var(--muted); }
+.fleet-table .type { color: var(--accent); font-weight: 600; }
+.fleet-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.badge-active {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; background: var(--green-dim); color: var(--green);
+}
+.badge-retired {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; background: var(--red-dim); color: var(--red);
+}
+
+.loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
+.error-banner {
+  display: none; background: var(--red-dim); border: 1px solid rgba(248,113,113,0.25);
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
+  color: var(--red); font-size: 12px;
+}
+
+@media (max-width: 800px) {
+  .fleet-table { font-size: 11px; }
+  .fleet-table th, .fleet-table td { padding: 5px 6px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>LH Fleet <span>Database</span></h1>
+    <div style="display:flex;gap:10px;align-items:center">
+      <a class="nav-link" href="/">&larr; Monitor</a>
+      <a class="nav-link" href="/analysis">A380 Analysis</a>
+    </div>
+  </div>
+
+  <div class="error-banner" id="error-banner"></div>
+  <div class="loading" id="loading">Loading fleet data&hellip;</div>
+
+  <div id="content" style="display:none">
+    <div class="toolbar">
+      <input type="text" id="search" placeholder="Search registration, ICAO24, type, model...">
+      <select id="type-filter"><option value="">All types</option></select>
+      <div class="toggle-group">
+        <button class="toggle-btn active" data-status="all">All</button>
+        <button class="toggle-btn" data-status="active">Active</button>
+        <button class="toggle-btn" data-status="retired">Retired</button>
+      </div>
+      <div class="count" id="count"></div>
+    </div>
+
+    <table class="fleet-table">
+      <thead>
+        <tr id="table-head">
+          <th data-key="registration">Reg <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="icao24">ICAO24 <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="aircraft_type">Type <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="aircraft_subtype">Model <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="is_active">Status <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="total_flights" class="num">Flights <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="flights_7d" class="num">7d <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="last_flight">Last Flight <span class="sort-arrow">&#9650;</span></th>
+          <th data-key="first_seen">First Seen <span class="sort-arrow">&#9650;</span></th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+let allAircraft = [];
+let sortKey = 'registration';
+let sortAsc = true;
+let statusFilter = 'all';
+
+async function init() {
+  let data;
+  try {
+    const r = await fetch('/api/fleet');
+    data = await r.json();
+  } catch(e) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = 'Connection error: ' + e;
+    $('loading').style.display = 'none';
+    return;
+  }
+  if (data.error) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = data.error;
+    $('loading').style.display = 'none';
+    return;
+  }
+  $('loading').style.display = 'none';
+  $('content').style.display = 'block';
+
+  allAircraft = data.aircraft;
+
+  // Populate type filter
+  const sel = $('type-filter');
+  data.types.forEach(t => {
+    const o = document.createElement('option');
+    o.value = t; o.textContent = t;
+    sel.appendChild(o);
+  });
+
+  render();
+}
+
+function getFiltered() {
+  const q = $('search').value.toLowerCase().trim();
+  const typeVal = $('type-filter').value;
+  return allAircraft.filter(a => {
+    if (statusFilter === 'active' && !a.is_active) return false;
+    if (statusFilter === 'retired' && a.is_active) return false;
+    if (typeVal && a.aircraft_type !== typeVal) return false;
+    if (q) {
+      const hay = (a.registration + ' ' + a.icao24 + ' ' + a.aircraft_type + ' ' + a.aircraft_subtype).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function getSorted(list) {
+  return [...list].sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (va == null) va = '';
+    if (vb == null) vb = '';
+    if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
+    if (typeof va === 'number') return sortAsc ? va - vb : vb - va;
+    va = String(va); vb = String(vb);
+    return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+}
+
+function render() {
+  const filtered = getFiltered();
+  const sorted = getSorted(filtered);
+
+  $('count').textContent = filtered.length + ' / ' + allAircraft.length + ' aircraft';
+
+  // Update sort indicators
+  document.querySelectorAll('#table-head th').forEach(th => {
+    th.classList.toggle('sorted', th.dataset.key === sortKey);
+    const arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.key === sortKey) {
+      arrow.innerHTML = sortAsc ? '&#9650;' : '&#9660;';
+    } else {
+      arrow.innerHTML = '&#9650;';
+    }
+  });
+
+  const tbody = $('table-body');
+  tbody.innerHTML = sorted.map(a => {
+    const statusBadge = a.is_active
+      ? '<span class="badge-active">active</span>'
+      : '<span class="badge-retired">retired</span>';
+    return '<tr onclick="location.href=\\'/fleet/' + a.icao24 + '\\'">' +
+      '<td class="reg">' + esc(a.registration) + '</td>' +
+      '<td class="hex">' + esc(a.icao24) + '</td>' +
+      '<td class="type">' + esc(a.aircraft_type || '\\u2014') + '</td>' +
+      '<td>' + esc(a.aircraft_subtype || '\\u2014') + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td class="num">' + a.total_flights + '</td>' +
+      '<td class="num">' + a.flights_7d + '</td>' +
+      '<td>' + (a.last_flight || '\\u2014') + '</td>' +
+      '<td>' + (a.first_seen || '\\u2014') + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Sort on header click
+document.querySelectorAll('#table-head th').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    if (sortKey === key) { sortAsc = !sortAsc; }
+    else { sortKey = key; sortAsc = true; }
+    render();
+  });
+});
+
+// Search
+$('search').addEventListener('input', render);
+
+// Type filter
+$('type-filter').addEventListener('change', render);
+
+// Status toggle
+document.querySelectorAll('.toggle-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    statusFilter = btn.dataset.status;
+    render();
+  });
+});
+
+init();
+</script>
+</body>
+</html>
+"""
+
+
+_FLEET_DETAIL_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aircraft Detail</title>
+<style>
+:root {
+  --bg: #101114; --surface: #191b20; --surface2: #1f2128;
+  --border: #2a2c35; --text: #c9cdd6; --text-bright: #e4e7ed;
+  --muted: #6b7280; --accent: #5b8def; --accent-dim: rgba(91,141,239,0.12);
+  --green: #4ade80; --green-dim: rgba(74,222,128,0.12);
+  --red: #f87171; --red-dim: rgba(248,113,113,0.12);
+  --amber: #fbbf24; --radius: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; }
+.header {
+  padding: 16px 0 12px; display: flex; justify-content: space-between;
+  align-items: center; border-bottom: 1px solid var(--border); margin-bottom: 20px;
+}
+.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); }
+.header h1 span { color: var(--accent); font-weight: 700; }
+.nav-link {
+  font-size: 12px; color: var(--accent); text-decoration: none;
+  padding: 4px 10px; border: 1px solid var(--accent); border-radius: 6px;
+}
+.nav-link:hover { background: var(--accent-dim); }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+}
+.card-title {
+  font-size: 13px; font-weight: 600; color: var(--text-bright); margin-bottom: 12px;
+}
+
+/* Info grid */
+.info-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.info-item .label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.info-item .value { font-size: 16px; font-weight: 700; color: var(--text-bright); }
+.info-item .value.small { font-size: 14px; }
+
+/* Metrics */
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+.metric {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px; text-align: center;
+}
+.metric .label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--muted); margin-bottom: 4px;
+}
+.metric .value { font-size: 22px; font-weight: 700; color: var(--text-bright); }
+
+.badge-active {
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; background: var(--green-dim); color: var(--green);
+}
+.badge-retired {
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; background: var(--red-dim); color: var(--red);
+}
+
+/* Route bars */
+.route-bar-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+}
+.route-label { width: 90px; text-align: right; font-size: 12px; color: var(--text); font-weight: 500; }
+.route-track { flex: 1; height: 18px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.route-fill { height: 100%; border-radius: 3px; background: var(--accent); opacity: 0.7; }
+.route-count { width: 30px; font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Activity chart */
+.chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 60px; }
+.chart-bar {
+  flex: 1; border-radius: 2px 2px 0 0; min-height: 0; background: var(--accent); opacity: 0.7;
+}
+.chart-labels {
+  display: flex; justify-content: space-between; font-size: 10px;
+  color: var(--muted); margin-top: 4px;
+}
+
+/* Flight table */
+.flight-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.flight-table th {
+  text-align: left; padding: 6px 8px; font-size: 10px; font-weight: 700;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--border);
+}
+.flight-table td {
+  padding: 5px 8px; border-bottom: 1px solid rgba(42,44,53,0.3); color: var(--text);
+}
+.flight-table .cs { font-weight: 600; color: var(--text-bright); }
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
+.error-banner {
+  display: none; background: var(--red-dim); border: 1px solid rgba(248,113,113,0.25);
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
+  color: var(--red); font-size: 12px;
+}
+
+@media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1 id="page-title">Aircraft <span>Detail</span></h1>
+    <div style="display:flex;gap:10px">
+      <a class="nav-link" href="/fleet">&larr; Fleet DB</a>
+      <a class="nav-link" href="/">Monitor</a>
+    </div>
+  </div>
+
+  <div class="error-banner" id="error-banner"></div>
+  <div class="loading" id="loading">Loading aircraft data&hellip;</div>
+
+  <div id="content" style="display:none">
+    <!-- Info card -->
+    <div class="card" id="info-card"></div>
+
+    <!-- Stats -->
+    <div class="metrics" id="stats"></div>
+
+    <!-- Activity + Routes -->
+    <div class="two-col">
+      <div class="card">
+        <div class="card-title">Activity (last 30 days)</div>
+        <div class="chart-bars" id="activity-chart"></div>
+        <div class="chart-labels" id="activity-labels"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Top Routes</div>
+        <div id="routes"></div>
+      </div>
+    </div>
+
+    <!-- Flight history -->
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Recent Flights (last 100)</div>
+      <div style="overflow-x:auto">
+        <table class="flight-table">
+          <thead>
+            <tr>
+              <th>Date</th><th>Callsign</th><th>From</th><th>To</th>
+              <th>Departure</th><th>Arrival</th><th>Duration</th>
+            </tr>
+          </thead>
+          <tbody id="flight-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const icao24 = location.pathname.split('/').pop();
+
+async function init() {
+  let data;
+  try {
+    const r = await fetch('/api/fleet/' + icao24);
+    data = await r.json();
+  } catch(e) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = 'Connection error: ' + e;
+    $('loading').style.display = 'none';
+    return;
+  }
+  if (data.error) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = data.error;
+    $('loading').style.display = 'none';
+    return;
+  }
+  $('loading').style.display = 'none';
+  $('content').style.display = 'block';
+
+  const info = data.info;
+  document.title = info.registration + ' - LH Fleet';
+  $('page-title').innerHTML = '<span>' + esc(info.registration) + '</span> ' + esc(info.aircraft_subtype || info.aircraft_type || '');
+
+  const statusBadge = info.is_active
+    ? '<span class="badge-active">active</span>'
+    : '<span class="badge-retired">retired</span>';
+
+  $('info-card').innerHTML = '<div class="info-grid">' +
+    item('Registration', info.registration) +
+    item('ICAO24', '<span style="font-family:monospace">' + info.icao24 + '</span>') +
+    item('Type', info.aircraft_type || '\\u2014') +
+    item('Model', info.aircraft_subtype || '\\u2014') +
+    item('Status', statusBadge) +
+    item('Airline', info.airline_iata || '\\u2014') +
+    item('First Seen', info.first_seen || '\\u2014') +
+    item('Last Seen', info.last_seen || '\\u2014') +
+  '</div>';
+
+  $('stats').innerHTML =
+    '<div class="metric"><div class="label">Total Flights</div><div class="value">' + (info.total_flights || 0) + '</div></div>' +
+    '<div class="metric"><div class="label">Last 30 Days</div><div class="value">' + (info.flights_30d || 0) + '</div></div>' +
+    '<div class="metric"><div class="label">Last 7 Days</div><div class="value">' + (info.flights_7d || 0) + '</div></div>';
+
+  // Activity chart
+  const daily = data.daily || [];
+  if (daily.length) {
+    const maxD = Math.max(...daily.map(d => d.count), 1);
+    $('activity-chart').innerHTML = daily.map(d =>
+      '<div class="chart-bar" style="height:' + Math.max(2, d.count / maxD * 56) + 'px" title="' + d.date + ': ' + d.count + '"></div>'
+    ).join('');
+    $('activity-labels').innerHTML = '<span>' + daily[0].date.slice(5) + '</span><span>' + daily[daily.length-1].date.slice(5) + '</span>';
+  }
+
+  // Routes
+  const routes = data.routes || [];
+  if (routes.length) {
+    const maxR = routes[0].count;
+    $('routes').innerHTML = routes.slice(0, 12).map(r => {
+      const parts = r.route.split('-');
+      const label = parts[0] + '\\u2192' + parts[1];
+      return '<div class="route-bar-row">' +
+        '<div class="route-label">' + label + '</div>' +
+        '<div class="route-track"><div class="route-fill" style="width:' + (r.count/maxR*100) + '%"></div></div>' +
+        '<div class="route-count">' + r.count + '</div></div>';
+    }).join('');
+  } else {
+    $('routes').innerHTML = '<div style="color:var(--muted)">No routes recorded</div>';
+  }
+
+  // Flights table
+  const flights = data.flights || [];
+  $('flight-body').innerHTML = flights.map(f => {
+    const dur = f.duration ? Math.floor(f.duration/60) + 'h ' + (f.duration%60) + 'm' : '\\u2014';
+    const dep = f.first_seen ? f.first_seen.slice(11,16) : '';
+    const arr = f.last_seen ? f.last_seen.slice(11,16) : '';
+    return '<tr>' +
+      '<td>' + (f.date || '\\u2014') + '</td>' +
+      '<td class="cs">' + (f.callsign || '\\u2014') + '</td>' +
+      '<td>' + (f.dep || '\\u2014') + '</td>' +
+      '<td>' + (f.arr || '\\u2014') + '</td>' +
+      '<td>' + dep + '</td>' +
+      '<td>' + arr + '</td>' +
+      '<td>' + dur + '</td>' +
+    '</tr>';
+  }).join('') || '<tr><td colspan="7" style="color:var(--muted);text-align:center">No flights recorded</td></tr>';
+}
+
+function item(label, value) {
+  return '<div class="info-item"><div class="label">' + label + '</div><div class="value small">' + value + '</div></div>';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+init();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/fleet")
+def fleet():
+    return render_template_string(_FLEET_HTML)
+
+
+@app.route("/fleet/<icao24>")
+def fleet_detail(icao24):
+    return render_template_string(_FLEET_DETAIL_HTML)
 
 
 if __name__ == "__main__":
