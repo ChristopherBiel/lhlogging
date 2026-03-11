@@ -3,6 +3,7 @@ LHLogging monitoring dashboard.
 Serves a single-page HTML dashboard and a /api/stats JSON endpoint.
 """
 import os
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import psycopg
@@ -557,7 +558,10 @@ body {
 
   <div class="header">
     <h1>LH Fleet <span>Monitor</span></h1>
-    <span class="updated" id="last-updated"></span>
+    <div style="display:flex;align-items:center;gap:12px">
+      <a href="/analysis" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">A380 Analysis &rarr;</a>
+      <span class="updated" id="last-updated"></span>
+    </div>
   </div>
 
   <div id="error-banner"></div>
@@ -807,6 +811,959 @@ setInterval(refresh, 30000);
 @app.route("/")
 def index():
     return render_template_string(_HTML)
+
+
+# ── A380 Rotation Analysis ──────────────────────────────────────────
+
+
+@app.route("/api/a380-analysis")
+def api_a380_analysis():
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+    try:
+        data = {}
+
+        # 1. Timeline: all A380 flights last 90 days
+        rows = _q(
+            conn,
+            """
+            SELECT a.registration,
+                   f.departure_airport_icao, f.arrival_airport_icao,
+                   f.first_seen, f.last_seen, f.callsign
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'A388'
+              AND f.flight_date >= CURRENT_DATE - 90
+              AND f.departure_airport_icao IS NOT NULL
+              AND f.arrival_airport_icao IS NOT NULL
+            ORDER BY a.registration, f.first_seen
+            """,
+        )
+        data["timeline"] = [
+            {
+                "reg": r[0].strip(),
+                "dep": r[1].strip(),
+                "arr": r[2].strip(),
+                "t0": r[3].isoformat(),
+                "t1": r[4].isoformat(),
+                "cs": (r[5] or "").strip(),
+            }
+            for r in rows
+        ]
+
+        # 2. MUC-BKK day-of-week heatmap
+        rows = _q(
+            conn,
+            """
+            SELECT a.registration,
+                   EXTRACT(DOW FROM f.first_seen AT TIME ZONE 'UTC')::int AS dow,
+                   COUNT(*)
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'A388'
+              AND f.departure_airport_icao = 'EDDM'
+              AND f.arrival_airport_icao = 'VTBS'
+            GROUP BY a.registration, dow
+            ORDER BY a.registration, dow
+            """,
+        )
+        data["dow_heatmap"] = [
+            {"reg": r[0].strip(), "dow": r[1], "count": r[2]} for r in rows
+        ]
+
+        # 3. MUC-BKK cycle lengths (computed in Python)
+        rows = _q(
+            conn,
+            """
+            SELECT a.registration, f.flight_date
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'A388'
+              AND f.departure_airport_icao = 'EDDM'
+              AND f.arrival_airport_icao = 'VTBS'
+            ORDER BY a.registration, f.flight_date
+            """,
+        )
+        reg_dates = defaultdict(list)
+        for r in rows:
+            reg_dates[r[0].strip()].append(r[1])
+
+        cycle_data = []
+        all_gaps = []
+        for reg, dates in sorted(reg_dates.items()):
+            gaps = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
+            cycle_data.append({"reg": reg, "gaps": gaps})
+            all_gaps.extend(gaps)
+        data["cycle_lengths"] = cycle_data
+        data["cycle_histogram"] = sorted(all_gaps)
+
+        # 4. Markov chain: route transitions for A380s
+        rows = _q(
+            conn,
+            """
+            WITH ordered AS (
+                SELECT f.departure_airport_icao || '-' || f.arrival_airport_icao AS route,
+                       LEAD(f.departure_airport_icao || '-' || f.arrival_airport_icao)
+                           OVER (PARTITION BY a.registration ORDER BY f.first_seen) AS next_route
+                FROM flights f
+                JOIN aircraft a ON a.icao24 = f.icao24
+                WHERE a.aircraft_type = 'A388'
+                  AND f.departure_airport_icao IS NOT NULL
+                  AND f.arrival_airport_icao IS NOT NULL
+            )
+            SELECT route, next_route, COUNT(*) AS cnt
+            FROM ordered
+            WHERE next_route IS NOT NULL
+            GROUP BY route, next_route
+            ORDER BY cnt DESC
+            LIMIT 80
+            """,
+        )
+        data["markov"] = [
+            {"from": r[0].strip(), "to": r[1].strip(), "count": r[2]} for r in rows
+        ]
+
+        # 5. Registration × Route affinity (top routes only)
+        rows = _q(
+            conn,
+            """
+            WITH top_routes AS (
+                SELECT f.departure_airport_icao || '-' || f.arrival_airport_icao AS route
+                FROM flights f
+                JOIN aircraft a ON a.icao24 = f.icao24
+                WHERE a.aircraft_type = 'A388'
+                  AND f.departure_airport_icao IS NOT NULL
+                  AND f.arrival_airport_icao IS NOT NULL
+                GROUP BY route
+                ORDER BY COUNT(*) DESC
+                LIMIT 20
+            )
+            SELECT a.registration,
+                   f.departure_airport_icao || '-' || f.arrival_airport_icao AS route,
+                   COUNT(*) AS cnt
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'A388'
+              AND f.departure_airport_icao IS NOT NULL
+              AND f.arrival_airport_icao IS NOT NULL
+              AND (f.departure_airport_icao || '-' || f.arrival_airport_icao)
+                  IN (SELECT route FROM top_routes)
+            GROUP BY a.registration, route
+            ORDER BY a.registration, cnt DESC
+            """,
+        )
+        data["affinity"] = [
+            {"reg": r[0].strip(), "route": r[1].strip(), "count": r[2]} for r in rows
+        ]
+
+        # 6. Preceding flights before MUC-BKK
+        rows = _q(
+            conn,
+            """
+            WITH muc_bkk AS (
+                SELECT f.icao24, f.first_seen
+                FROM flights f
+                JOIN aircraft a ON a.icao24 = f.icao24
+                WHERE a.aircraft_type = 'A388'
+                  AND f.departure_airport_icao = 'EDDM'
+                  AND f.arrival_airport_icao = 'VTBS'
+            ),
+            prev AS (
+                SELECT mb.icao24, mb.first_seen AS target,
+                       f.departure_airport_icao || '-' || f.arrival_airport_icao AS route,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY mb.icao24, mb.first_seen
+                           ORDER BY f.first_seen DESC
+                       ) AS rn
+                FROM muc_bkk mb
+                JOIN flights f ON f.icao24 = mb.icao24
+                                AND f.first_seen < mb.first_seen
+                WHERE f.departure_airport_icao IS NOT NULL
+                  AND f.arrival_airport_icao IS NOT NULL
+            )
+            SELECT rn AS steps_before, route, COUNT(*) AS cnt
+            FROM prev
+            WHERE rn <= 3
+            GROUP BY rn, route
+            ORDER BY rn, cnt DESC
+            """,
+        )
+        data["preceding"] = [
+            {"step": r[0], "route": r[1].strip(), "count": r[2]} for r in rows
+        ]
+
+        # 7. Fleet positions (last known location per A380)
+        rows = _q(
+            conn,
+            """
+            SELECT DISTINCT ON (a.registration)
+                   a.registration, f.arrival_airport_icao, f.last_seen,
+                   f.departure_airport_icao, f.callsign
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'A388'
+              AND a.is_active
+              AND f.arrival_airport_icao IS NOT NULL
+            ORDER BY a.registration, f.last_seen DESC
+            """,
+        )
+        data["fleet_positions"] = [
+            {
+                "reg": r[0].strip(),
+                "airport": r[1].strip(),
+                "last_seen": r[2].isoformat(),
+                "from": r[3].strip() if r[3] else "",
+                "cs": (r[4] or "").strip(),
+            }
+            for r in rows
+        ]
+
+        # 8. MUC-BKK flight history with registration
+        rows = _q(
+            conn,
+            """
+            SELECT a.registration, f.flight_date, f.callsign,
+                   f.first_seen, f.last_seen, f.duration_minutes
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'A388'
+              AND f.departure_airport_icao = 'EDDM'
+              AND f.arrival_airport_icao = 'VTBS'
+            ORDER BY f.flight_date DESC
+            """,
+        )
+        data["muc_bkk_history"] = [
+            {
+                "reg": r[0].strip(),
+                "date": r[1].isoformat(),
+                "cs": (r[2] or "").strip(),
+                "t0": r[3].isoformat(),
+                "t1": r[4].isoformat(),
+                "dur": r[5],
+            }
+            for r in rows
+        ]
+
+        data["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
+
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+    conn.close()
+    return jsonify(data)
+
+
+_ANALYSIS_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A380 Rotation Analysis</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+:root {
+  --bg: #101114;
+  --surface: #191b20;
+  --surface2: #1f2128;
+  --border: #2a2c35;
+  --text: #c9cdd6;
+  --text-bright: #e4e7ed;
+  --muted: #6b7280;
+  --accent: #5b8def;
+  --accent-dim: rgba(91,141,239,0.12);
+  --green: #4ade80;
+  --green-dim: rgba(74,222,128,0.12);
+  --red: #f87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251,191,36,0.12);
+  --cyan: #22d3ee;
+  --purple: #a78bfa;
+  --pink: #f472b6;
+  --radius: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; }
+
+/* Header */
+.header {
+  padding: 16px 0 12px;
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid var(--border); margin-bottom: 20px;
+}
+.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); letter-spacing: -0.3px; }
+.header h1 span { color: var(--accent); font-weight: 700; }
+.nav-link {
+  font-size: 12px; color: var(--accent); text-decoration: none;
+  padding: 4px 10px; border: 1px solid var(--accent); border-radius: 6px;
+}
+.nav-link:hover { background: var(--accent-dim); }
+
+/* Sections */
+.section { margin-bottom: 24px; }
+.section-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 1px; color: var(--muted); margin-bottom: 10px;
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; margin-bottom: 12px;
+}
+.card-title {
+  font-size: 13px; font-weight: 600; color: var(--text-bright);
+  margin-bottom: 10px;
+}
+.card-subtitle {
+  font-size: 11px; color: var(--muted); margin-bottom: 12px;
+}
+
+/* Fleet position cards */
+.fleet-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+.fleet-card {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px; text-align: center;
+}
+.fleet-card .reg {
+  font-size: 13px; font-weight: 700; color: var(--text-bright);
+  margin-bottom: 4px;
+}
+.fleet-card .airport {
+  font-size: 18px; font-weight: 700; letter-spacing: 1px;
+}
+.fleet-card .meta {
+  font-size: 10px; color: var(--muted); margin-top: 4px;
+}
+.fleet-card.at-muc .airport { color: var(--green); }
+.fleet-card.at-bkk .airport { color: var(--amber); }
+.fleet-card.at-other .airport { color: var(--text); }
+
+/* Gantt timeline */
+.gantt { overflow-x: auto; }
+.gantt-row {
+  display: flex; align-items: center; margin-bottom: 2px; height: 22px;
+}
+.gantt-label {
+  width: 70px; flex-shrink: 0; font-size: 11px; font-weight: 600;
+  color: var(--text-bright); text-align: right; padding-right: 8px;
+}
+.gantt-track {
+  flex: 1; position: relative; height: 18px; background: var(--surface2);
+  border-radius: 3px; overflow: hidden; min-width: 800px;
+}
+.gantt-flight {
+  position: absolute; height: 100%; border-radius: 2px;
+  min-width: 2px; cursor: pointer; opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.gantt-flight:hover { opacity: 1; z-index: 2; }
+.gantt-flight.muc-bkk { background: var(--accent); }
+.gantt-flight.bkk-muc { background: var(--green); }
+.gantt-flight.other { background: var(--muted); opacity: 0.4; }
+.gantt-axis {
+  display: flex; justify-content: space-between;
+  margin-left: 70px; min-width: 800px;
+  font-size: 10px; color: var(--muted); padding-top: 4px;
+}
+
+/* Heatmap */
+.heatmap-grid {
+  display: grid; gap: 2px;
+  grid-template-columns: 80px repeat(7, 1fr);
+}
+.heatmap-cell {
+  height: 28px; border-radius: 4px; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+}
+.heatmap-header {
+  font-size: 10px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.heatmap-label {
+  font-size: 11px; font-weight: 600; color: var(--text-bright);
+  text-align: right; padding-right: 8px;
+}
+
+/* Markov table */
+.markov-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  border-bottom: 1px solid rgba(42,44,53,0.3); font-size: 12px;
+}
+.markov-row:last-child { border-bottom: none; }
+.markov-from { width: 100px; color: var(--text); font-weight: 500; text-align: right; }
+.markov-arrow { color: var(--muted); font-size: 10px; }
+.markov-to { width: 100px; color: var(--text-bright); font-weight: 500; }
+.markov-bar { flex: 1; height: 16px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.markov-fill { height: 100%; border-radius: 3px; background: var(--accent); opacity: 0.7; }
+.markov-count { width: 40px; font-size: 11px; color: var(--muted); text-align: right; }
+.markov-pct { width: 40px; font-size: 11px; color: var(--accent); text-align: right; }
+
+/* Affinity matrix */
+.affinity-wrap { overflow-x: auto; }
+.affinity-table { border-collapse: collapse; font-size: 11px; }
+.affinity-table th {
+  padding: 4px 6px; font-weight: 600; color: var(--muted);
+  text-align: center; position: sticky; top: 0; background: var(--surface);
+}
+.affinity-table th.route-header {
+  writing-mode: vertical-lr; transform: rotate(180deg);
+  height: 80px; font-size: 10px; letter-spacing: 0.5px;
+}
+.affinity-table td {
+  padding: 4px 6px; text-align: center; border-radius: 3px;
+}
+.affinity-table td.reg-label {
+  font-weight: 600; color: var(--text-bright); text-align: right;
+  position: sticky; left: 0; background: var(--surface);
+}
+
+/* Preceding flow */
+.preceding-group { margin-bottom: 12px; }
+.preceding-label {
+  font-size: 11px; color: var(--accent); font-weight: 600;
+  margin-bottom: 6px;
+}
+.preceding-bar-row {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
+}
+.preceding-route { width: 90px; font-size: 11px; color: var(--text); text-align: right; }
+.preceding-track {
+  flex: 1; height: 14px; background: var(--surface2);
+  border-radius: 3px; overflow: hidden;
+}
+.preceding-fill { height: 100%; border-radius: 3px; }
+.preceding-count { width: 30px; font-size: 10px; color: var(--muted); }
+
+/* History table */
+.history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.history-table th {
+  text-align: left; padding: 6px 8px; font-size: 10px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.history-table td {
+  padding: 5px 8px; border-bottom: 1px solid rgba(42,44,53,0.3);
+  color: var(--text);
+}
+.history-table .reg-cell { font-weight: 700; color: var(--text-bright); }
+
+/* Chart containers */
+.chart-container { position: relative; height: 220px; }
+
+/* Two-col layout */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* Tooltip */
+.tooltip {
+  position: fixed; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--text);
+  pointer-events: none; z-index: 100; white-space: nowrap; display: none;
+  max-width: 300px;
+}
+
+/* Loading */
+.loading {
+  text-align: center; padding: 40px; color: var(--muted); font-size: 13px;
+}
+
+/* Error */
+.error-banner {
+  display: none; background: var(--red-dim); border: 1px solid rgba(248,113,113,0.25);
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
+  color: var(--red); font-size: 12px;
+}
+
+@media (max-width: 800px) {
+  .two-col { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>A380 Rotation <span>Analysis</span></h1>
+    <a class="nav-link" href="/">&larr; Fleet Monitor</a>
+  </div>
+
+  <div class="error-banner" id="error-banner"></div>
+  <div class="loading" id="loading">Loading A380 analysis data&hellip;</div>
+  <div id="content" style="display:none">
+
+  <!-- 1. Fleet positions -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">A380 Fleet Positions</div>
+      <div class="card-subtitle">Last known location of each active A380</div>
+      <div class="fleet-grid" id="fleet-grid"></div>
+    </div>
+  </div>
+
+  <!-- 2. MUC-BKK history -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">MUC &rarr; BKK Flight History</div>
+      <div class="card-subtitle">All recorded EDDM &rarr; VTBS flights by A380 aircraft</div>
+      <div id="history-table"></div>
+    </div>
+  </div>
+
+  <!-- 3. Rotation timeline -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">A380 Rotation Timeline (90 days)</div>
+      <div class="card-subtitle">
+        <span style="color:var(--accent)">&block;</span> MUC&rarr;BKK&ensp;
+        <span style="color:var(--green)">&block;</span> BKK&rarr;MUC&ensp;
+        <span style="color:var(--muted)">&block;</span> Other
+      </div>
+      <div class="gantt" id="gantt"></div>
+    </div>
+  </div>
+
+  <!-- 4. DoW heatmap + Cycle histogram -->
+  <div class="section two-col">
+    <div class="card">
+      <div class="card-title">MUC&rarr;BKK by Day of Week</div>
+      <div class="card-subtitle">Frequency of each registration per weekday</div>
+      <div id="dow-heatmap"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Rotation Cycle Length</div>
+      <div class="card-subtitle">Days between consecutive MUC&rarr;BKK flights (same aircraft)</div>
+      <div class="chart-container"><canvas id="cycle-chart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- 5. Markov transitions -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">Route Transition Probabilities</div>
+      <div class="card-subtitle">After an A380 flies route X, what is the most likely next route? Top transitions shown.</div>
+      <div id="markov-focus"></div>
+    </div>
+  </div>
+
+  <!-- 6. Registration × Route affinity -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">Registration &times; Route Affinity</div>
+      <div class="card-subtitle">How often each A380 registration flies the top 20 routes (darker = more flights)</div>
+      <div class="affinity-wrap" id="affinity"></div>
+    </div>
+  </div>
+
+  <!-- 7. Preceding flights -->
+  <div class="section two-col">
+    <div class="card">
+      <div class="card-title">Flights Before MUC&rarr;BKK</div>
+      <div class="card-subtitle">What routes does an A380 typically fly in the 1-3 flights before a MUC&rarr;BKK departure?</div>
+      <div id="preceding"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Per-Aircraft Cycle Gaps</div>
+      <div class="card-subtitle">Days between MUC&rarr;BKK appearances per registration</div>
+      <div id="per-reg-cycles"></div>
+    </div>
+  </div>
+
+  </div><!-- /content -->
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const tip = $('tooltip');
+
+document.addEventListener('mousemove', e => {
+  if (tip.style.display === 'block') {
+    tip.style.left = (e.clientX + 12) + 'px';
+    tip.style.top = (e.clientY - 32) + 'px';
+  }
+});
+function showTip(html, e) {
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  tip.style.left = (e.clientX + 12) + 'px';
+  tip.style.top = (e.clientY - 32) + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+
+function ago(iso) {
+  if (!iso) return '\\u2014';
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+const ICAO_NAMES = {
+  EDDM:'MUC', VTBS:'BKK', EDDF:'FRA', KJFK:'JFK', KLAX:'LAX',
+  KORD:'ORD', OMDB:'DXB', VHHH:'HKG', RJTT:'NRT', RKSI:'ICN',
+  WSSS:'SIN', FAOR:'JNB', SBGR:'GRU', LEMD:'MAD', EGLL:'LHR',
+  LFPG:'CDG', EDDB:'BER', EDDL:'DUS', EDDS:'STR', EDDH:'HAM',
+  RPLL:'MNL', ZSPD:'PVG', ZBAA:'PEK', WMKK:'KUL', VIDP:'DEL',
+  VABB:'BOM', LEBL:'BCN', LIRF:'FCO', YSSY:'SYD', OEJN:'JED',
+  OERK:'RUH', OTHH:'DOH', OMAA:'AUH', CYYZ:'YYZ', KIAH:'IAH',
+  KMIA:'MIA', KSFO:'SFO', CYVR:'YVR', RJAA:'NRT', LOWW:'VIE',
+  EHAM:'AMS', LSZH:'ZRH',
+};
+function icaoToCity(code) { return ICAO_NAMES[code] || code; }
+function routeName(r) {
+  const p = r.split('-');
+  return icaoToCity(p[0]) + '\\u2192' + icaoToCity(p[1]);
+}
+
+async function init() {
+  let data;
+  try {
+    const r = await fetch('/api/a380-analysis');
+    data = await r.json();
+  } catch(e) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = 'Connection error: ' + e;
+    $('loading').style.display = 'none';
+    return;
+  }
+  if (data.error) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = data.error;
+    $('loading').style.display = 'none';
+    return;
+  }
+  $('loading').style.display = 'none';
+  $('content').style.display = 'block';
+
+  renderFleetPositions(data.fleet_positions);
+  renderHistory(data.muc_bkk_history);
+  renderGantt(data.timeline);
+  renderDowHeatmap(data.dow_heatmap);
+  renderCycleChart(data.cycle_histogram);
+  renderMarkov(data.markov);
+  renderAffinity(data.affinity);
+  renderPreceding(data.preceding);
+  renderPerRegCycles(data.cycle_lengths);
+}
+
+/* ── 1. Fleet Positions ───────────────────────────────── */
+function renderFleetPositions(positions) {
+  const el = $('fleet-grid');
+  el.innerHTML = positions.map(p => {
+    const cls = p.airport === 'EDDM' ? 'at-muc' : p.airport === 'VTBS' ? 'at-bkk' : 'at-other';
+    return '<div class="fleet-card ' + cls + '">' +
+      '<div class="reg">' + p.reg + '</div>' +
+      '<div class="airport">' + icaoToCity(p.airport) + '</div>' +
+      '<div class="meta">' + (p.cs || '') + ' &middot; ' + ago(p.last_seen) + '</div>' +
+      '<div class="meta">' + icaoToCity(p.from) + '&rarr;' + icaoToCity(p.airport) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+/* ── 2. MUC-BKK History ──────────────────────────────── */
+function renderHistory(history) {
+  if (!history.length) { $('history-table').innerHTML = '<div style="color:var(--muted)">No MUC&rarr;BKK flights recorded yet</div>'; return; }
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  let html = '<table class="history-table"><thead><tr>' +
+    '<th>Date</th><th>Day</th><th>Registration</th><th>Callsign</th><th>Duration</th>' +
+    '</tr></thead><tbody>';
+  history.forEach(h => {
+    const d = new Date(h.date + 'T00:00:00');
+    const day = days[d.getUTCDay()];
+    const dur = h.dur ? Math.floor(h.dur/60) + 'h ' + (h.dur%60) + 'm' : '\\u2014';
+    html += '<tr><td>' + h.date + '</td><td>' + day + '</td>' +
+      '<td class="reg-cell">' + h.reg + '</td>' +
+      '<td>' + (h.cs || '\\u2014') + '</td><td>' + dur + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  $('history-table').innerHTML = html;
+}
+
+/* ── 3. Gantt Timeline ───────────────────────────────── */
+function renderGantt(timeline) {
+  if (!timeline.length) { $('gantt').innerHTML = '<div style="color:var(--muted)">No A380 flight data</div>'; return; }
+  const now = Date.now();
+  const t0 = now - 90*86400000;
+  const range = now - t0;
+
+  // Group by registration
+  const regs = {};
+  timeline.forEach(f => {
+    if (!regs[f.reg]) regs[f.reg] = [];
+    regs[f.reg].push(f);
+  });
+
+  let html = '';
+  Object.keys(regs).sort().forEach(reg => {
+    html += '<div class="gantt-row"><div class="gantt-label">' + reg + '</div><div class="gantt-track">';
+    regs[reg].forEach(f => {
+      const fs = new Date(f.t0).getTime();
+      const fe = new Date(f.t1).getTime();
+      const left = Math.max(0, (fs - t0) / range * 100);
+      const width = Math.max(0.15, (fe - fs) / range * 100);
+      const isMucBkk = f.dep === 'EDDM' && f.arr === 'VTBS';
+      const isBkkMuc = f.dep === 'VTBS' && f.arr === 'EDDM';
+      const cls = isMucBkk ? 'muc-bkk' : isBkkMuc ? 'bkk-muc' : 'other';
+      const tipText = f.reg + ' ' + icaoToCity(f.dep) + '&rarr;' + icaoToCity(f.arr) +
+        '<br>' + (f.cs || '') + ' &middot; ' + f.t0.slice(0,10);
+      html += '<div class="gantt-flight ' + cls + '" style="left:' + left + '%;width:' + width + '%"' +
+        ' onmouseenter="showTip(\\'' + tipText.replace(/'/g, "\\\\'") + '\\', event)" onmouseleave="hideTip()"></div>';
+    });
+    html += '</div></div>';
+  });
+
+  // Axis labels
+  html += '<div class="gantt-axis">';
+  for (let i = 0; i <= 6; i++) {
+    const d = new Date(t0 + (range * i / 6));
+    html += '<span>' + d.toISOString().slice(5,10) + '</span>';
+  }
+  html += '</div>';
+
+  $('gantt').innerHTML = html;
+}
+
+/* ── 4. Day-of-Week Heatmap ──────────────────────────── */
+function renderDowHeatmap(heatData) {
+  if (!heatData.length) { $('dow-heatmap').innerHTML = '<div style="color:var(--muted)">No MUC&rarr;BKK data yet</div>'; return; }
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const regSet = [...new Set(heatData.map(h => h.reg))].sort();
+  const maxCount = Math.max(...heatData.map(h => h.count), 1);
+
+  // Build lookup
+  const lookup = {};
+  heatData.forEach(h => { lookup[h.reg + '_' + h.dow] = h.count; });
+
+  let html = '<div class="heatmap-grid" style="grid-template-columns: 80px repeat(7,1fr)">';
+  // Header row
+  html += '<div></div>';
+  days.forEach(d => { html += '<div class="heatmap-cell heatmap-header">' + d + '</div>'; });
+  // Data rows
+  regSet.forEach(reg => {
+    html += '<div class="heatmap-cell heatmap-label">' + reg + '</div>';
+    for (let dow = 0; dow < 7; dow++) {
+      const cnt = lookup[reg + '_' + dow] || 0;
+      const intensity = cnt / maxCount;
+      const bg = cnt > 0
+        ? 'rgba(91,141,239,' + (0.15 + intensity * 0.75) + ')'
+        : 'var(--surface2)';
+      html += '<div class="heatmap-cell" style="background:' + bg + ';color:' +
+        (cnt > 0 ? 'var(--text-bright)' : 'var(--muted)') + '">' + (cnt || '&middot;') + '</div>';
+    }
+  });
+  html += '</div>';
+  $('dow-heatmap').innerHTML = html;
+}
+
+/* ── 5. Cycle Length Histogram ────────────────────────── */
+function renderCycleChart(gaps) {
+  if (!gaps.length) { $('cycle-chart').parentElement.innerHTML = '<div style="color:var(--muted);padding:20px">Not enough data for cycle analysis</div>'; return; }
+  // Bucket into bins
+  const maxGap = Math.max(...gaps);
+  const binSize = maxGap <= 30 ? 1 : maxGap <= 60 ? 2 : 5;
+  const bins = {};
+  gaps.forEach(g => {
+    const b = Math.floor(g / binSize) * binSize;
+    bins[b] = (bins[b] || 0) + 1;
+  });
+  const labels = Object.keys(bins).sort((a,b) => a-b).map(b => binSize === 1 ? b + 'd' : b + '-' + (parseInt(b)+binSize-1) + 'd');
+  const values = Object.keys(bins).sort((a,b) => a-b).map(b => bins[b]);
+
+  new Chart($('cycle-chart'), {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: values,
+        backgroundColor: 'rgba(91,141,239,0.6)',
+        borderColor: 'rgba(91,141,239,0.9)',
+        borderWidth: 1, borderRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { display: false } },
+        y: { ticks: { color: '#6b7280', font: { size: 10 }, stepSize: 1 }, grid: { color: 'rgba(42,44,53,0.5)' } }
+      }
+    }
+  });
+}
+
+/* ── 6. Markov Transitions ────────────────────────────── */
+function renderMarkov(markov) {
+  if (!markov.length) { $('markov-focus').innerHTML = '<div style="color:var(--muted)">Not enough data</div>'; return; }
+
+  // Group by "from" route, compute probabilities
+  const fromTotals = {};
+  markov.forEach(m => { fromTotals[m.from] = (fromTotals[m.from] || 0) + m.count; });
+
+  // Focus on routes relevant to MUC-BKK prediction
+  const focusRoutes = ['EDDM-VTBS', 'VTBS-EDDM'];
+  // Also find top routes by total transitions
+  const allFromRoutes = [...new Set(markov.map(m => m.from))];
+
+  // Show focused view first, then general top transitions
+  let html = '';
+
+  focusRoutes.forEach(fr => {
+    const transitions = markov.filter(m => m.from === fr);
+    if (!transitions.length) return;
+    const total = fromTotals[fr];
+    html += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px">After ' + routeName(fr) + ' (' + total + ' observed)</div>';
+    transitions.sort((a,b) => b.count - a.count).slice(0, 8).forEach(t => {
+      const pct = (t.count / total * 100).toFixed(0);
+      html += '<div class="markov-row">' +
+        '<div class="markov-from" style="width:auto">' + routeName(t.from) + '</div>' +
+        '<div class="markov-arrow">&rarr;</div>' +
+        '<div class="markov-to" style="width:auto">' + routeName(t.to) + '</div>' +
+        '<div class="markov-bar"><div class="markov-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="markov-count">' + t.count + '</div>' +
+        '<div class="markov-pct">' + pct + '%</div>' +
+      '</div>';
+    });
+    html += '</div>';
+  });
+
+  // General top 20
+  html += '<div style="margin-top:16px"><div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px">Top transitions overall</div>';
+  const maxCount = markov[0].count;
+  markov.slice(0, 25).forEach(t => {
+    const pct = (t.count / fromTotals[t.from] * 100).toFixed(0);
+    html += '<div class="markov-row">' +
+      '<div class="markov-from">' + routeName(t.from) + '</div>' +
+      '<div class="markov-arrow">&rarr;</div>' +
+      '<div class="markov-to">' + routeName(t.to) + '</div>' +
+      '<div class="markov-bar"><div class="markov-fill" style="width:' + (t.count/maxCount*100) + '%"></div></div>' +
+      '<div class="markov-count">' + t.count + '</div>' +
+      '<div class="markov-pct">' + pct + '%</div>' +
+    '</div>';
+  });
+  html += '</div>';
+
+  $('markov-focus').innerHTML = html;
+}
+
+/* ── 7. Affinity Matrix ───────────────────────────────── */
+function renderAffinity(affinity) {
+  if (!affinity.length) { $('affinity').innerHTML = '<div style="color:var(--muted)">Not enough data</div>'; return; }
+
+  // Collect unique routes and registrations
+  const routeCount = {};
+  affinity.forEach(a => { routeCount[a.route] = (routeCount[a.route] || 0) + a.count; });
+  const routes = Object.entries(routeCount).sort((a,b) => b[1]-a[1]).map(e => e[0]);
+  const regs = [...new Set(affinity.map(a => a.reg))].sort();
+
+  // Build lookup
+  const lookup = {};
+  let maxVal = 0;
+  affinity.forEach(a => {
+    lookup[a.reg + '|' + a.route] = a.count;
+    if (a.count > maxVal) maxVal = a.count;
+  });
+
+  let html = '<table class="affinity-table"><thead><tr><th></th>';
+  routes.forEach(r => {
+    html += '<th class="route-header">' + routeName(r) + '</th>';
+  });
+  html += '</tr></thead><tbody>';
+
+  regs.forEach(reg => {
+    html += '<tr><td class="reg-label">' + reg + '</td>';
+    routes.forEach(route => {
+      const cnt = lookup[reg + '|' + route] || 0;
+      const intensity = cnt / maxVal;
+      const isMucBkk = route === 'EDDM-VTBS';
+      const baseColor = isMucBkk ? '91,141,239' : '201,205,214';
+      const bg = cnt > 0
+        ? 'rgba(' + baseColor + ',' + (0.1 + intensity * 0.8) + ')'
+        : 'transparent';
+      html += '<td style="background:' + bg + ';color:' +
+        (cnt > 0 ? 'var(--text-bright)' : '') + '">' + (cnt || '') + '</td>';
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  $('affinity').innerHTML = html;
+}
+
+/* ── 8. Preceding Flights ─────────────────────────────── */
+function renderPreceding(preceding) {
+  if (!preceding.length) { $('preceding').innerHTML = '<div style="color:var(--muted)">Not enough data</div>'; return; }
+
+  const steps = [1, 2, 3];
+  const stepLabels = ['Flight N-1 (immediately before)', 'Flight N-2', 'Flight N-3'];
+  const colors = ['var(--accent)', 'var(--green)', 'var(--amber)'];
+  let html = '';
+
+  steps.forEach((step, idx) => {
+    const items = preceding.filter(p => p.step === step).slice(0, 8);
+    if (!items.length) return;
+    const maxC = items[0].count;
+    html += '<div class="preceding-group"><div class="preceding-label">' + stepLabels[idx] + '</div>';
+    items.forEach(item => {
+      const pct = (item.count / maxC * 100).toFixed(0);
+      html += '<div class="preceding-bar-row">' +
+        '<div class="preceding-route">' + routeName(item.route) + '</div>' +
+        '<div class="preceding-track"><div class="preceding-fill" style="width:' + pct + '%;background:' + colors[idx] + ';opacity:0.7"></div></div>' +
+        '<div class="preceding-count">' + item.count + '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+  });
+
+  $('preceding').innerHTML = html;
+}
+
+/* ── 9. Per-Registration Cycles ───────────────────────── */
+function renderPerRegCycles(cycleLengths) {
+  const withGaps = cycleLengths.filter(c => c.gaps.length > 0);
+  if (!withGaps.length) { $('per-reg-cycles').innerHTML = '<div style="color:var(--muted)">Not enough data</div>'; return; }
+
+  let html = '';
+  withGaps.forEach(c => {
+    const avg = (c.gaps.reduce((a,b) => a+b, 0) / c.gaps.length).toFixed(1);
+    html += '<div style="margin-bottom:10px">' +
+      '<div style="font-size:12px;font-weight:600;color:var(--text-bright)">' + c.reg +
+      ' <span style="font-weight:400;color:var(--muted);font-size:11px">avg ' + avg + 'd</span></div>' +
+      '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">';
+    c.gaps.forEach(g => {
+      const color = g <= 7 ? 'var(--green)' : g <= 14 ? 'var(--accent)' : g <= 21 ? 'var(--amber)' : 'var(--red)';
+      html += '<span style="background:var(--surface2);border:1px solid ' + color + ';color:' + color +
+        ';border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600">' + g + 'd</span>';
+    });
+    html += '</div></div>';
+  });
+  $('per-reg-cycles').innerHTML = html;
+}
+
+init();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/analysis")
+def analysis():
+    return render_template_string(_ANALYSIS_HTML)
 
 
 if __name__ == "__main__":
