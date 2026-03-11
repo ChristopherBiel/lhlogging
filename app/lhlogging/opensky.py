@@ -97,6 +97,53 @@ class OpenSkyClient:
 
         return _fetch()
 
+    def get_flights_all(
+        self, begin_unix: int, end_unix: int, fleet_icao24s: set[str]
+    ) -> list[dict]:
+        """
+        Fetch all global flights from /flights/all for one time chunk (max 2h).
+        Filters to fleet_icao24s client-side.
+        Returns parsed flights for matching aircraft only.
+        """
+        url = f"{config.OPENSKY_BASE_URL}/flights/all"
+        params = {"begin": begin_unix, "end": end_unix}
+
+        @self._retry
+        def _fetch():
+            self._ensure_token()
+            try:
+                resp = self._session.get(url, params=params, timeout=120)
+            except requests.RequestException as e:
+                raise OpenSkyError(f"Request failed for /flights/all: {e}") from e
+
+            if resp.status_code == 401:
+                self._access_token = None
+                raise OpenSkyError("OpenSky 401 — token may have expired")
+            if resp.status_code == 404:
+                return []
+            if resp.status_code == 429:
+                self._logger.warning(
+                    f"OpenSky rate limit (429) — sleeping {config.OPENSKY_RATELIMIT_BACKOFF_S}s"
+                )
+                time.sleep(config.OPENSKY_RATELIMIT_BACKOFF_S)
+                raise OpenSkyError("OpenSky rate limit hit (429)")
+            if not resp.ok:
+                raise OpenSkyError(
+                    f"HTTP {resp.status_code} from /flights/all: {resp.text[:200]}"
+                )
+
+            raw = resp.json()
+            if raw is None:
+                return []
+
+            return [
+                self._parse_flight(f)
+                for f in raw
+                if f and (f.get("icao24") or "").strip().lower() in fleet_icao24s
+            ]
+
+        return _fetch()
+
     def _parse_flight(self, raw: dict) -> dict:
         icao24 = (raw.get("icao24") or "").strip().lower()
         callsign = (raw.get("callsign") or "").strip().upper() or None

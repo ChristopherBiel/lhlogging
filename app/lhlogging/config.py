@@ -37,7 +37,8 @@ PLANESPOTTERS_AIRLINE_ICAO: str = _optional("AIRLINE_OPERATOR_ICAO", "DLH")
 # Tuning
 OPENSKY_REQUEST_DELAY_S: float = float(_optional("OPENSKY_REQUEST_DELAY_S", "2.0"))
 OPENSKY_RATELIMIT_BACKOFF_S: int = int(_optional("OPENSKY_RATELIMIT_BACKOFF_S", "60"))
-OPENSKY_LOOKBACK_HOURS: int = int(_optional("OPENSKY_LOOKBACK_HOURS", "36"))
+OPENSKY_LOOKBACK_HOURS: int = int(_optional("OPENSKY_LOOKBACK_HOURS", "26"))
+OPENSKY_CHUNK_SIZE_S: int = int(_optional("OPENSKY_CHUNK_SIZE_S", str(2 * 3600)))  # 2h
 BATCH_MAX_ERRORS_BEFORE_ABORT: int = int(_optional("BATCH_MAX_ERRORS_BEFORE_ABORT", "50"))
 
 # Aircraft type filter (comma-separated ICAO type codes; empty = track all)

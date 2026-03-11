@@ -1,9 +1,10 @@
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 
-# Route logger — twice daily at 06:00 and 18:00 UTC
-0 6  * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
-0 18 * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
+# Route logger — twice daily at 03:00 and 15:00 UTC (bulk /flights/all method)
+# Each run queries the last 26h → 14h overlap between runs (covers longest LH flight)
+0 3  * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
+0 15 * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
 
 # Fleet refresh — every Monday at 02:00 UTC
 0 2  * * 1  root  . /etc/environment && cd /app && python -m lhlogging.fleet_refresh >> /var/log/lhlogging/cron.log 2>&1
