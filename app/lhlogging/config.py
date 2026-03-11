@@ -33,6 +33,10 @@ OPENSKY_TOKEN_URL: str = _optional(
 
 # Fleet
 PLANESPOTTERS_AIRLINE_ICAO: str = _optional("AIRLINE_OPERATOR_ICAO", "DLH")
+PLANESPOTTERS_BASE_URL: str = _optional(
+    "PLANESPOTTERS_BASE_URL", "https://api.planespotters.net/pub/flights"
+)
+PLANESPOTTERS_REQUEST_DELAY_S: float = float(_optional("PLANESPOTTERS_REQUEST_DELAY_S", "1.0"))
 
 # Tuning
 OPENSKY_REQUEST_DELAY_S: float = float(_optional("OPENSKY_REQUEST_DELAY_S", "2.0"))

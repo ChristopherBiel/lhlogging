@@ -8,6 +8,7 @@ import sys
 
 from lhlogging import config, db
 from lhlogging.opensky_fleet import OpenSkyFleetClient, OpenSkyFleetError
+from lhlogging.planespotters import PlanespottersClient, PlanespottersError, PlanespottersRateLimitError
 from lhlogging.utils import setup_logging
 
 # Minimum plausible fleet size — guards against retiring everything on a bad download
@@ -50,6 +51,26 @@ def main() -> int:
         db.log_batch_finish(conn, run_id, stats)
         conn.close()
         return 1
+
+    # --- Enrich type data from Planespotters (OpenSky type codes are often missing/wrong) ---
+    ps_client = PlanespottersClient(logger)
+    logger.info(f"Enriching {len(api_fleet)} aircraft with Planespotters type data...")
+    ps_enriched = 0
+    for aircraft in api_fleet:
+        try:
+            ps_data = ps_client.get_aircraft(aircraft["icao24"])
+            if ps_data:
+                if ps_data.get("aircraft_type"):
+                    aircraft["aircraft_type"] = ps_data["aircraft_type"]
+                    ps_enriched += 1
+                if ps_data.get("aircraft_subtype"):
+                    aircraft["aircraft_subtype"] = ps_data["aircraft_subtype"]
+        except PlanespottersRateLimitError:
+            logger.warning("Planespotters rate limit hit — stopping enrichment early")
+            break
+        except PlanespottersError as e:
+            logger.warning(f"Planespotters lookup failed for {aircraft['icao24']}: {e}")
+    logger.info(f"Planespotters enriched {ps_enriched}/{len(api_fleet)} aircraft types")
 
     # --- Upsert all aircraft from the CSV ---
     api_icao24_set: set[str] = set()
