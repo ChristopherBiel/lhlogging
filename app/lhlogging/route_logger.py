@@ -1,12 +1,17 @@
 """
-Route logger entrypoint — runs twice daily via cron (03:00 and 15:00 UTC).
-Queries OpenSky /flights/all in 2-hour chunks over the last
-OPENSKY_LOOKBACK_HOURS (default 26h), filters to the active LH fleet
-client-side, and upserts matched flights into the database.
+DEPRECATED — replaced by state_poller + flight_detector.
 
-Uses the bulk /flights/all endpoint instead of per-aircraft queries to
-keep credit usage fixed regardless of fleet size (~780 credits/day for
-two runs with 26h lookback each, vs. 30 credits × N_aircraft per run).
+The /flights/all endpoint used here requires historical data access that
+is not available on our OpenSky account tier. The new approach polls
+/states/all every 5 minutes and infers flights from on_ground transitions.
+
+See: state_poller.py, flight_detector.py
+
+Original description:
+    Route logger entrypoint — runs twice daily via cron (03:00 and 15:00 UTC).
+    Queries OpenSky /flights/all in 2-hour chunks over the last
+    OPENSKY_LOOKBACK_HOURS (default 26h), filters to the active LH fleet
+    client-side, and upserts matched flights into the database.
 
 Usage:
     python -m lhlogging.route_logger

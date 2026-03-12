@@ -1,10 +1,14 @@
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 
-# Route logger — twice daily at 03:00 and 15:00 UTC (bulk /flights/all method)
-# Each run queries the last 26h → 14h overlap between runs (covers longest LH flight)
-0 3  * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
-0 15 * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_logger >> /var/log/lhlogging/cron.log 2>&1
+# State poller — every 5 minutes, captures live position snapshots from /states/all
+*/5 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.state_poller >> /var/log/lhlogging/cron.log 2>&1
+
+# Flight detector — every 30 minutes (offset to :15/:45), infers flights from position transitions
+15,45 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.flight_detector >> /var/log/lhlogging/cron.log 2>&1
+
+# Positions cleanup — daily at 04:00 UTC, deletes snapshots older than retention window
+0 4  * * *  root  . /etc/environment && cd /app && python -m lhlogging.positions_cleanup >> /var/log/lhlogging/cron.log 2>&1
 
 # Fleet refresh — every Monday at 02:00 UTC
 0 2  * * 1  root  . /etc/environment && cd /app && python -m lhlogging.fleet_refresh >> /var/log/lhlogging/cron.log 2>&1

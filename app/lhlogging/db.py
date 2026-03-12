@@ -82,6 +82,174 @@ def upsert_flight(conn: psycopg.Connection, flight: dict) -> None:
         )
 
 
+def insert_positions(conn: psycopg.Connection, snapshots: list[dict]) -> int:
+    """Bulk-insert position snapshots. Skips duplicates via ON CONFLICT DO NOTHING."""
+    if not snapshots:
+        return 0
+    inserted = 0
+    with conn.cursor() as cur:
+        for s in snapshots:
+            cur.execute(
+                """
+                INSERT INTO positions
+                    (icao24, callsign, captured_at, latitude, longitude,
+                     altitude_m, velocity_ms, heading, on_ground)
+                VALUES
+                    (%(icao24)s, %(callsign)s, %(captured_at)s, %(latitude)s, %(longitude)s,
+                     %(altitude_m)s, %(velocity_ms)s, %(heading)s, %(on_ground)s)
+                ON CONFLICT (icao24, captured_at) DO NOTHING
+                """,
+                s,
+            )
+            inserted += cur.rowcount
+    return inserted
+
+
+def get_positions_since(
+    conn: psycopg.Connection, since: datetime
+) -> list[dict]:
+    """Return all positions since the given timestamp, ordered for transition detection."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT icao24, callsign, captured_at, latitude, longitude, on_ground
+            FROM positions
+            WHERE captured_at >= %s
+            ORDER BY icao24, captured_at
+            """,
+            (since,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "icao24": r[0],
+            "callsign": r[1],
+            "captured_at": r[2],
+            "latitude": r[3],
+            "longitude": r[4],
+            "on_ground": r[5],
+        }
+        for r in rows
+    ]
+
+
+def get_open_flights(conn: psycopg.Connection) -> list[dict]:
+    """Return flights that have no arrival airport yet (still in progress)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT icao24, first_seen, callsign
+            FROM flights
+            WHERE arrival_airport_icao IS NULL
+            """
+        )
+        rows = cur.fetchall()
+    return [{"icao24": r[0], "first_seen": r[1], "callsign": r[2]} for r in rows]
+
+
+def get_latest_positions(
+    conn: psycopg.Connection, icao24s: list[str]
+) -> dict[str, dict]:
+    """Return the most recent position for each of the given icao24s."""
+    if not icao24s:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (icao24)
+                icao24, captured_at, latitude, longitude, on_ground, callsign
+            FROM positions
+            WHERE icao24 = ANY(%s)
+            ORDER BY icao24, captured_at DESC
+            """,
+            (icao24s,),
+        )
+        rows = cur.fetchall()
+    return {
+        r[0]: {
+            "captured_at": r[1],
+            "latitude": r[2],
+            "longitude": r[3],
+            "on_ground": r[4],
+            "callsign": r[5],
+        }
+        for r in rows
+    }
+
+
+def update_open_flight(
+    conn: psycopg.Connection,
+    icao24: str,
+    first_seen: datetime,
+    last_seen: datetime,
+    arr: str | None = None,
+    callsign: str | None = None,
+) -> None:
+    """Update a pending flight. Only touches flights where arrival is still NULL."""
+    with conn.cursor() as cur:
+        if arr:
+            cur.execute(
+                """
+                UPDATE flights SET
+                    arrival_airport_icao = %s,
+                    last_seen = %s,
+                    callsign = COALESCE(%s, callsign)
+                WHERE icao24 = %s AND first_seen = %s
+                    AND arrival_airport_icao IS NULL
+                """,
+                (arr, last_seen, callsign, icao24, first_seen),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE flights SET
+                    last_seen = %s,
+                    callsign = COALESCE(%s, callsign)
+                WHERE icao24 = %s AND first_seen = %s
+                    AND arrival_airport_icao IS NULL
+                """,
+                (last_seen, callsign, icao24, first_seen),
+            )
+
+
+def lookup_nearest_airport(
+    conn: psycopg.Connection, lat: float, lon: float, max_km: float | None = None
+) -> str | None:
+    """Find the nearest airport to the given lat/lon using earthdistance."""
+    if lat is None or lon is None:
+        return None
+    if max_km is None:
+        max_km = config.AIRPORT_LOOKUP_RADIUS_KM
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT icao_code,
+                   earth_distance(
+                       ll_to_earth(latitude, longitude),
+                       ll_to_earth(%s, %s)
+                   ) / 1000.0 AS dist_km
+            FROM airports
+            ORDER BY earth_distance(
+                ll_to_earth(latitude, longitude),
+                ll_to_earth(%s, %s)
+            )
+            LIMIT 1
+            """,
+            (lat, lon, lat, lon),
+        )
+        r = cur.fetchone()
+    if not r or r[1] > max_km:
+        return None
+    return r[0].strip()
+
+
+def delete_positions_before(conn: psycopg.Connection, before: datetime) -> int:
+    """Delete position snapshots older than the given timestamp. Returns rows deleted."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM positions WHERE captured_at < %s", (before,))
+        return cur.rowcount
+
+
 def log_batch_start(conn: psycopg.Connection, run_type: str) -> int:
     with conn.cursor() as cur:
         cur.execute(

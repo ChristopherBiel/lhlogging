@@ -51,6 +51,11 @@ TRACK_AIRCRAFT_TYPES: frozenset[str] | None = (
     frozenset(t.strip().upper() for t in _TRACK_TYPES_RAW.split(",") if t.strip()) or None
 )
 
+# Flight detection
+FLIGHT_DETECT_LOOKBACK_MINUTES: int = int(_optional("FLIGHT_DETECT_LOOKBACK_MINUTES", "60"))
+POSITIONS_RETENTION_DAYS: int = int(_optional("POSITIONS_RETENTION_DAYS", "30"))
+AIRPORT_LOOKUP_RADIUS_KM: float = float(_optional("AIRPORT_LOOKUP_RADIUS_KM", "50.0"))
+
 # Logging
 LOG_DIR: str = _optional("LOG_DIR", "/var/log/lhlogging")
 LOG_LEVEL: str = _optional("LOG_LEVEL", "INFO")

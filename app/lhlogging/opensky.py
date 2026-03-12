@@ -144,6 +144,65 @@ class OpenSkyClient:
 
         return _fetch()
 
+    def get_states_all(self, fleet_icao24s: set[str]) -> list[dict]:
+        """
+        Fetch current state vectors from /states/all (single call, no params).
+        Filters to fleet_icao24s client-side.
+        Returns parsed state dicts with captured_at from the server timestamp.
+        """
+        url = f"{config.OPENSKY_BASE_URL}/states/all"
+
+        @self._retry
+        def _fetch():
+            self._ensure_token()
+            try:
+                resp = self._session.get(url, timeout=60)
+            except requests.RequestException as e:
+                raise OpenSkyError(f"Request failed for /states/all: {e}") from e
+
+            if resp.status_code == 401:
+                self._access_token = None
+                raise OpenSkyError("OpenSky 401 — token may have expired")
+            if resp.status_code == 429:
+                self._logger.warning(
+                    f"OpenSky rate limit (429) — sleeping {config.OPENSKY_RATELIMIT_BACKOFF_S}s"
+                )
+                time.sleep(config.OPENSKY_RATELIMIT_BACKOFF_S)
+                raise OpenSkyError("OpenSky rate limit hit (429)")
+            if not resp.ok:
+                raise OpenSkyError(
+                    f"HTTP {resp.status_code} from /states/all: {resp.text[:200]}"
+                )
+
+            data = resp.json()
+            if not data or not data.get("states"):
+                return []
+
+            snapshot_ts = datetime.fromtimestamp(data["time"], tz=timezone.utc)
+
+            return [
+                self._parse_state(s, snapshot_ts)
+                for s in data["states"]
+                if s and (s[0] or "").strip().lower() in fleet_icao24s
+            ]
+
+        return _fetch()
+
+    @staticmethod
+    def _parse_state(s: list, captured_at: datetime) -> dict:
+        """Parse an OpenSky state vector array into a dict for the positions table."""
+        return {
+            "icao24": (s[0] or "").strip().lower(),
+            "callsign": (s[1] or "").strip().upper() or None,
+            "captured_at": captured_at,
+            "longitude": s[5],
+            "latitude": s[6],
+            "altitude_m": s[7],
+            "on_ground": s[8],
+            "velocity_ms": s[9],
+            "heading": s[10],
+        }
+
     def _parse_flight(self, raw: dict) -> dict:
         icao24 = (raw.get("icao24") or "").strip().lower()
         callsign = (raw.get("callsign") or "").strip().upper() or None
