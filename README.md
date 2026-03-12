@@ -10,7 +10,7 @@
 [![PostgreSQL](https://img.shields.io/badge/postgresql-16-4169E1?logo=postgresql&logoColor=white)](https://postgresql.org)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![OpenSky](https://img.shields.io/badge/data-OpenSky%20Network-1a1a2e)](https://opensky-network.org/)
-[![Credits/day](https://img.shields.io/badge/API%20cost-780%20credits%2Fday-brightgreen)](#credit-budget)
+[![Credits/day](https://img.shields.io/badge/API%20cost-~300%20credits%2Fday-brightgreen)](#credit-budget)
 
 Tracks every Lufthansa aircraft — from A320s to A380s — logging departure/arrival airports, flight times, and route data into a PostgreSQL database. A live monitoring dashboard gives you a bird's-eye view of fleet activity, route frequency, and system health.
 
@@ -23,44 +23,51 @@ Tracks every Lufthansa aircraft — from A320s to A380s — logging departure/ar
 ## How It Works
 
 ```
-                                         ┌─────────────────┐
-  ┌──────────────┐    /flights/all       │                 │
-  │  OpenSky API │◄────── 2h chunks ─────│   Route Logger  │──── twice daily
-  └──────────────┘    (bulk global data)  │   (cron jobs)   │     03:00 & 15:00 UTC
-                                         └────────┬────────┘
-                                                  │ upsert
-  ┌──────────────┐    Aircraft DB CSV    ┌────────▼────────┐
-  │  OpenSky CSV │◄──────────────────────│  Fleet Refresh  │──── weekly (Mon 02:00)
-  └──────────────┘                       └────────┬────────┘
-                                                  │
-                                         ┌────────▼────────┐
-                                         │   PostgreSQL     │
-                                         │   - aircraft     │
-                                         │   - flights      │
-                                         │   - batch_runs   │
-                                         └────────┬────────┘
-                                                  │
-                                         ┌────────▼────────┐
-                                         │   Dashboard      │──── :8080
-                                         │   (Flask)        │
-                                         └─────────────────┘
+                                         ┌──────────────────┐
+  ┌──────────────┐    /states/all        │                  │
+  │  OpenSky API │◄───── live poll ──────│  State Poller    │──── every 5 min
+  └──────────────┘    (all global        │                  │
+                       aircraft)         └────────┬─────────┘
+                                                  │ positions
+                                         ┌────────▼─────────┐
+                                         │                  │
+                                         │ Flight Detector  │──── every 30 min
+                                         │                  │
+                                         └────────┬─────────┘
+                                                  │ infers flights from
+  ┌──────────────┐    Aircraft DB CSV             │ on_ground transitions
+  │  OpenSky CSV │◄──────────────────────┐        │
+  └──────────────┘                       │        │
+                                  ┌──────▼────────▼─────────┐
+                                  │       PostgreSQL          │
+                                  │       - aircraft          │
+                                  │       - positions         │
+                                  │       - flights           │
+                                  │       - airports          │
+                                  │       - batch_runs        │
+                                  └────────────┬─────────────┘
+                                               │
+                                      ┌────────▼────────┐
+                                      │   Dashboard      │──── :8080
+                                      │   (Flask)        │
+                                      └─────────────────┘
 ```
 
-### The Credit-Efficient Approach
+### The Position-Snapshot Approach
 
-OpenSky charges **30 credits per API call** regardless of endpoint. Querying per-aircraft for a 300+ plane fleet would cost **9,000+ credits/day** — far exceeding the 4,000 credit daily budget.
+The OpenSky `/states/all` endpoint returns live state vectors for all aircraft globally in a single API call. Every 5 minutes the state poller fetches this snapshot, filters it to the Lufthansa fleet, and stores it in the `positions` table.
 
-Instead, the route logger uses the **bulk `/flights/all` endpoint**, fetching *all global flights* in 2-hour chunks and filtering to the Lufthansa fleet client-side:
+The flight detector runs every 30 minutes and walks each aircraft's position history looking for `on_ground` transitions:
+- **Ground → Air** = departure (airport identified from the last ground position lat/lon)
+- **Air → Ground** = arrival (airport identified from the first ground position lat/lon)
 
-| | Per-Aircraft (`/flights/aircraft`) | Bulk (`/flights/all`) |
-|---|---|---|
-| API calls for 300 aircraft | 300/run | 13/run |
-| Daily cost (2 runs) | ~18,000 credits | **~780 credits** |
-| Scales with fleet size? | Yes (linearly) | **No (fixed cost)** |
+Flights that are still in progress are inserted immediately as pending records and updated when the aircraft lands — so a 14-hour flight to Buenos Aires is handled just as well as a 90-minute hop to Munich.
 
-### Completeness Guarantee
+Airport identification uses the [OurAirports](https://ourairports.com/) dataset (~6,000 large/medium airports) stored locally, with nearest-neighbour lookup via PostgreSQL's `earthdistance` extension.
 
-Each run looks back **26 hours** with a 12-hour interval between runs, creating a **14-hour overlap** — longer than Lufthansa's longest route (FRA-EZE, ~13.5h). This ensures every flight is captured by at least one run, regardless of when it departed or arrived. Duplicates are handled by the database's `ON CONFLICT` upsert.
+### Why Not Per-Aircraft Queries?
+
+OpenSky's `/flights/aircraft` endpoint charges 30 credits per call. Querying all 400+ fleet aircraft twice daily would cost **24,000+ credits/day** — 6× the 4,000 credit budget. The `/states/all` live endpoint costs a flat rate per call regardless of how many aircraft are returned, making it scale-free.
 
 ---
 
@@ -74,10 +81,14 @@ lhlogging/
 │   │   ├── db.py                   # PostgreSQL operations & upserts
 │   │   ├── opensky.py              # OpenSky API client (OAuth2, retry, rate limiting)
 │   │   ├── opensky_fleet.py        # Aircraft database CSV downloader
-│   │   ├── planespotters.py        # Planespotters API client (alternate fleet source)
-│   │   ├── route_logger.py         # Main batch job — bulk flight collection
-│   │   ├── fleet_refresh.py        # Weekly fleet sync from OpenSky CSV
+│   │   ├── planespotters.py        # Planespotters API client (fleet type enrichment)
+│   │   ├── state_poller.py         # Every 5 min — snapshots live positions
+│   │   ├── flight_detector.py      # Every 30 min — infers flights from positions
+│   │   ├── positions_cleanup.py    # Daily — deletes old position snapshots
+│   │   ├── fleet_refresh.py        # Weekly — syncs fleet registry
 │   │   └── utils.py                # Logging, retry decorator, rate limiter
+│   ├── tools/
+│   │   └── load_airports.py        # One-off: populates airports table from OurAirports
 │   ├── crontab                     # Cron schedule (runs inside Docker)
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -87,9 +98,8 @@ lhlogging/
 │   └── requirements.txt
 ├── db/
 │   └── init/
-│       └── 001_schema.sql          # PostgreSQL schema (auto-applied on first run)
-├── tools/
-│   └── compare_methods.py          # Credit cost benchmarking tool
+│       ├── 001_schema.sql          # PostgreSQL schema (auto-applied on first run)
+│       └── 002_airports_and_positions.sql  # Airports table + indexes migration
 ├── docker-compose.yml              # Three services: db, app, dashboard
 └── .github/
     └── workflows/
@@ -101,14 +111,16 @@ lhlogging/
 | Table | Purpose |
 |---|---|
 | **aircraft** | Fleet registry — ICAO24, registration, type, active status |
+| **positions** | 5-minute position snapshots — lat/lon, altitude, on_ground, callsign |
 | **flights** | Route log — airports, callsign, timestamps, auto-calculated duration |
+| **airports** | Static airport lookup — ICAO code, lat/lon (from OurAirports) |
 | **batch_runs** | Audit trail — every job run with stats and error details |
-| **positions** | *(stub)* Future: real-time position snapshots |
 
 Key design decisions:
-- **Upsert on `(icao24, first_seen)`** — overlapping query windows are safe; duplicates are merged, not doubled
-- **Generated columns** — `flight_date` and `duration_minutes` are computed automatically from timestamps
-- **Foreign key from flights → aircraft** — ensures data integrity
+- **Pending flights** — flights are inserted when a departure is detected with `arrival_airport_icao = NULL`, then updated when the aircraft lands. Handles flights of any duration.
+- **Upsert on `(icao24, first_seen)`** — re-detecting an already-logged flight safely updates arrival info without creating duplicates.
+- **Generated columns** — `flight_date` and `duration_minutes` are computed automatically from timestamps.
+- **30-day position retention** — snapshots are cleaned up daily; only the derived `flights` records are kept permanently.
 
 ---
 
@@ -131,28 +143,32 @@ docker compose up -d
 ```
 
 This starts three containers:
-- **db** — PostgreSQL 16 (schema auto-initialized)
+- **db** — PostgreSQL 16 (schema auto-initialized from `db/init/`)
 - **app** — Python 3.12 with cron for scheduled jobs
 - **dashboard** — Flask app on port 8080
 
-### 3. Verify
+### 3. Load airport data (one-off)
+
+```bash
+docker compose exec app python tools/load_airports.py
+```
+
+This populates the `airports` table (~6,000 large/medium airports) used for identifying departure and arrival airports from lat/lon coordinates.
+
+### 4. Verify
 
 ```bash
 # Check services are healthy
 docker compose ps
 
-# Watch the route logger in action
+# Watch the state poller in action
 docker compose logs -f app
 
 # Open dashboard
 open http://localhost:8080
 ```
 
-The first route logger run occurs at the next scheduled time (03:00 or 15:00 UTC). To trigger a manual run:
-
-```bash
-docker compose exec app python -m lhlogging.route_logger
-```
+The first state poller run happens within 5 minutes of startup. The first flight detections appear within 35 minutes (after enough position history has accumulated).
 
 ---
 
@@ -167,11 +183,11 @@ All settings are environment variables (via `.env`):
 | `POSTGRES_USER` | *(required)* | Database user |
 | `POSTGRES_PASSWORD` | *(required)* | Database password |
 | `TRACK_AIRCRAFT_TYPES` | *(empty = all)* | Comma-separated ICAO type codes to filter (e.g. `A388,B748`) |
-| `OPENSKY_LOOKBACK_HOURS` | `26` | Hours to look back each run |
-| `OPENSKY_CHUNK_SIZE_S` | `7200` | Chunk size in seconds (2h = OpenSky max) |
+| `FLIGHT_DETECT_LOOKBACK_MINUTES` | `60` | How far back the detector scans for new departures |
+| `POSITIONS_RETENTION_DAYS` | `30` | How long position snapshots are kept |
+| `AIRPORT_LOOKUP_RADIUS_KM` | `50.0` | Max distance for nearest-airport matching |
 | `OPENSKY_REQUEST_DELAY_S` | `2.0` | Delay between API calls |
 | `OPENSKY_RATELIMIT_BACKOFF_S` | `60` | Sleep time on HTTP 429 |
-| `BATCH_MAX_ERRORS_BEFORE_ABORT` | `50` | Error threshold to abort a run |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ### Tracking Subsets
@@ -195,7 +211,9 @@ TRACK_AIRCRAFT_TYPES=
 
 | Job | Schedule | What it does |
 |---|---|---|
-| **Route Logger** | Daily at 03:00 and 15:00 UTC | Fetches global flight data in 2h chunks, filters to LH fleet, upserts routes |
+| **State Poller** | Every 5 min | Fetches `/states/all`, stores position snapshots for the LH fleet |
+| **Flight Detector** | Every 30 min (at :15 and :45) | Detects flights from on_ground transitions, closes pending arrivals |
+| **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Downloads OpenSky aircraft CSV, syncs fleet registry, retires removed aircraft |
 
 ---
@@ -205,7 +223,7 @@ TRACK_AIRCRAFT_TYPES=
 The monitoring dashboard runs on port **8080** and auto-refreshes every 30 seconds.
 
 **What it shows:**
-- System health — last run status for route logger and fleet refresh
+- System health — last run status for each job
 - Fleet breakdown — active/retired aircraft counts by type
 - Flight metrics — today, 7-day, and all-time counts
 - Daily trend chart — flights and unique callsigns over the last 14 days
@@ -228,31 +246,36 @@ Required GitHub secrets:
 - `DEPLOY_SSH_KEY` — private SSH key
 - `DEPLOY_PATH` — path to the repo on the server
 
----
+### First-time setup on a new server
 
-## Tools
-
-### Credit Cost Comparison
-
-`tools/compare_methods.py` benchmarks per-aircraft vs. bulk query approaches against the live API, measuring actual credit consumption:
+After the initial `docker compose up -d`, run the airport loader once:
 
 ```bash
-python3 tools/compare_methods.py
+docker compose exec app python tools/load_airports.py
 ```
+
+### Migrating an existing deployment
+
+If upgrading from the old `/flights/all`-based approach, apply the schema migration manually before deploying the new image:
+
+```bash
+ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
+  < db/init/002_airports_and_positions.sql
+```
+
+Then deploy and run the airport loader.
 
 ---
 
 ## Credit Budget
 
-With the bulk approach and default settings:
-
-| | Per run | Daily (2 runs) | % of 4,000 budget |
+| | Per call | Daily calls | Daily cost |
 |---|---|---|---|
-| Route logger | 13 chunks x 30 cr = **390** | **780** | 19.5% |
-| Fleet refresh | 1 CSV download (free) | **0** | 0% |
-| **Total** | | **780** | **19.5%** |
+| State poller | 1 credit | 288 (every 5 min) | **~288 credits** |
+| Fleet refresh | ~free (CSV download) | 1/week | **~0** |
+| **Total** | | | **~288 credits/day** |
 
-Remaining daily budget: **3,220 credits** — available as buffer for retries, 429 recovery, or additional queries.
+This uses **~7%** of the 4,000 credit daily budget, leaving ample headroom for retries and rate-limit recovery.
 
 ---
 

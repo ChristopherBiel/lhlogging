@@ -94,8 +94,30 @@ def api_stats():
             for r in rows
         ]
 
+        # --- Currently airborne ---
+        stats["aircraft_airborne"] = _q1(
+            conn,
+            """
+            SELECT COUNT(DISTINCT icao24)
+            FROM positions
+            WHERE on_ground = FALSE
+              AND captured_at = (SELECT MAX(captured_at) FROM positions)
+            """,
+        ) or 0
+
+        # --- Pending flights (departed, not yet landed) ---
+        stats["flights_pending"] = _q1(
+            conn, "SELECT COUNT(*) FROM flights WHERE arrival_airport_icao IS NULL"
+        ) or 0
+
+        # --- Minutes since last position poll ---
+        stats["last_poll_age_minutes"] = _q1(
+            conn,
+            "SELECT ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(captured_at))) / 60) FROM positions",
+        )
+
         # --- Last run per type ---
-        for run_type in ("route_logger", "fleet_refresh"):
+        for run_type in ("state_poller", "flight_detector", "fleet_refresh"):
             row = _q(
                 conn,
                 """
@@ -683,19 +705,26 @@ async function refresh() {
   $('error-banner').style.display = 'none';
 
   // Health strip
-  const lr = data.last_route_logger;
+  const sp = data.last_state_poller;
+  const fd = data.last_flight_detector;
   const fr = data.last_fleet_refresh;
-  const lrOk = lr && lr.status === 'ok';
+  const pollAge = data.last_poll_age_minutes;
+  const spOk = sp && sp.status === 'ok' && (pollAge === null || pollAge <= 10);
+  const fdOk = fd && fd.status === 'ok';
   const frOk = fr && fr.status === 'ok';
-  // Check fleet_refresh is recent (within 8 days)
   const frRecent = fr && fr.started_at &&
     (Date.now() - new Date(fr.started_at).getTime()) < 8 * 86400 * 1000;
 
   $('health-strip').innerHTML =
     '<div class="health-item">' +
-      '<div class="label">Route Logger</div>' +
-      '<div class="info"><span class="dot" style="background:' + (lrOk ? 'var(--green)' : 'var(--red)') + '"></span>' +
-      (lr ? ago(lr.started_at) : 'never') + '</div>' +
+      '<div class="label">State Poller</div>' +
+      '<div class="info"><span class="dot" style="background:' + (spOk ? 'var(--green)' : sp ? 'var(--amber)' : 'var(--red)') + '"></span>' +
+      (pollAge !== null && pollAge !== undefined ? pollAge + 'm ago' : (sp ? ago(sp.started_at) : 'never')) + '</div>' +
+    '</div>' +
+    '<div class="health-item">' +
+      '<div class="label">Flight Detector</div>' +
+      '<div class="info"><span class="dot" style="background:' + (fdOk ? 'var(--green)' : fd ? 'var(--red)' : 'var(--red)') + '"></span>' +
+      (fd ? ago(fd.started_at) : 'never') + '</div>' +
     '</div>' +
     '<div class="health-item">' +
       '<div class="label">Fleet Refresh</div>' +
@@ -703,8 +732,8 @@ async function refresh() {
       (fr ? ago(fr.started_at) : 'never') + '</div>' +
     '</div>' +
     '<div class="health-item">' +
-      '<div class="label">Today</div>' +
-      '<div class="info" style="font-weight:600;font-size:15px">' + fmt(data.flights_today) + ' <span style="font-weight:400;font-size:10px;color:var(--muted)">flights</span></div>' +
+      '<div class="label">Airborne Now</div>' +
+      '<div class="info" style="font-weight:600;font-size:15px">' + fmt(data.aircraft_airborne) + ' <span style="font-weight:400;font-size:10px;color:var(--muted)">aircraft</span></div>' +
     '</div>';
 
   // Fleet metrics
@@ -717,7 +746,8 @@ async function refresh() {
   $('flight-metrics').innerHTML =
     '<div class="metric"><div class="label">Today</div><div class="value">' + fmt(data.flights_today) + '</div></div>' +
     '<div class="metric"><div class="label">7 Days</div><div class="value">' + fmt(data.flights_7d) + '</div></div>' +
-    '<div class="metric"><div class="label">All Time</div><div class="value">' + fmt(data.flights_total) + '</div></div>';
+    '<div class="metric"><div class="label">All Time</div><div class="value">' + fmt(data.flights_total) + '</div></div>' +
+    '<div class="metric"><div class="label">Pending</div><div class="value" style="color:var(--amber)">' + fmt(data.flights_pending) + '</div></div>';
 
   // Flight trend chart (dual: flights + callsigns)
   const days = data.flights_per_day || [];
@@ -772,9 +802,13 @@ async function refresh() {
       '<div class="batch-type">' + r.run_type.replace('_', ' ') + '</div>' +
       '<div class="batch-time">' + ago(r.started_at) + '</div>' +
       '<div class="batch-detail">' +
-        (r.run_type === 'route_logger'
-          ? fmt(r.aircraft_ok) + '/' + fmt(r.aircraft_total) + ' ac, ' + fmt(r.flights_upserted) + ' fl'
-          : fmt(r.aircraft_ok) + '/' + fmt(r.aircraft_total) + ' ac') +
+        (r.run_type === 'state_poller'
+          ? fmt(r.aircraft_ok) + ' seen, ' + fmt(r.flights_upserted) + ' stored'
+          : r.run_type === 'flight_detector'
+            ? fmt(r.flights_upserted) + ' flights'
+            : r.run_type === 'pos_cleanup'
+              ? fmt(r.flights_upserted) + ' deleted'
+              : fmt(r.aircraft_ok) + '/' + fmt(r.aircraft_total) + ' ac') +
       '</div>' +
       badge(r.status) +
     '</div>' +
