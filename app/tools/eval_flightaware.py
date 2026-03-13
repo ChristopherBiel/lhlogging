@@ -49,15 +49,29 @@ def fetch_account_usage(session: requests.Session, logger) -> dict | None:
 
 
 def fetch_operator_flights(session: requests.Session, logger) -> list[dict]:
-    """Fetch all pages of /operators/{code}/flights."""
+    """Fetch all pages of /operators/{code}/flights with rate-limit handling."""
     flights = []
     url = f"{AEROAPI_BASE}/operators/{OPERATOR_CODE}/flights"
     pages = 0
+    # Personal tier: 10 requests/minute → need ~7s between requests to be safe
+    page_delay = 7.0
 
     while url:
-        logger.info(f"Fetching page {pages + 1}: {url}")
-        resp = session.get(url)
-        resp.raise_for_status()
+        logger.info(f"Fetching page {pages + 1}...")
+
+        for attempt in range(3):
+            resp = session.get(url)
+            if resp.status_code == 429:
+                wait = 30 * (attempt + 1)
+                logger.warning(f"Rate limited (429), waiting {wait}s before retry...")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            logger.critical("Rate limited 3 times in a row, aborting")
+            resp.raise_for_status()
+
         data = resp.json()
 
         page_flights = data.get("arrivals", []) + data.get("departures", []) + data.get("flights", [])
@@ -68,7 +82,8 @@ def fetch_operator_flights(session: requests.Session, logger) -> list[dict]:
         links = data.get("links")
         if links and links.get("next"):
             url = AEROAPI_BASE + links["next"]
-            time.sleep(0.5)  # be polite within rate limits
+            logger.info(f"  Got {len(page_flights)} flights, waiting {page_delay}s for rate limit...")
+            time.sleep(page_delay)
         else:
             url = None
 
@@ -205,18 +220,16 @@ def print_report(result: dict, usage_before: dict | None, usage_after: dict | No
 
     # --- Cost ---
     if usage_before and usage_after:
-        # The usage endpoint structure may vary; handle gracefully
         try:
-            before_cost = usage_before.get("account", {}).get("amount_used", 0)
-            after_cost = usage_after.get("account", {}).get("amount_used", 0)
-            budget = usage_before.get("account", {}).get("amount_credited", 0)
+            before_cost = usage_before.get("total_cost", 0)
+            after_cost = usage_after.get("total_cost", 0)
             query_cost = after_cost - before_cost
-            remaining = budget - after_cost
+            pages_used = usage_after.get("total_pages", 0) - usage_before.get("total_pages", 0)
             print(f"\n--- API Cost ---")
             print(f"  This query cost:    ${query_cost:.4f}")
-            print(f"  Total used:         ${after_cost:.4f}")
-            print(f"  Monthly budget:     ${budget:.4f}")
-            print(f"  Remaining:          ${remaining:.4f}")
+            print(f"  Pages fetched:      {pages_used}")
+            print(f"  Total spent (month):${after_cost:.4f} / $10.00")
+            print(f"  Remaining:          ${10.0 - after_cost:.4f}")
         except (TypeError, KeyError):
             print(f"\n--- API Cost ---")
             print(f"  Usage before: {usage_before}")
