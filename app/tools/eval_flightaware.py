@@ -48,8 +48,8 @@ def fetch_account_usage(session: requests.Session, logger) -> dict | None:
         return None
 
 
-def fetch_operator_flights(session: requests.Session, logger) -> list[dict]:
-    """Fetch all pages of /operators/{code}/flights with rate-limit handling."""
+def fetch_operator_flights(session: requests.Session, logger, max_pages: int = 15) -> list[dict]:
+    """Fetch pages of /operators/{code}/flights with rate-limit handling."""
     flights = []
     url = f"{AEROAPI_BASE}/operators/{OPERATOR_CODE}/flights"
     pages = 0
@@ -74,31 +74,24 @@ def fetch_operator_flights(session: requests.Session, logger) -> list[dict]:
 
         data = resp.json()
 
-        # Debug: dump keys and structure on first page
-        if pages == 0:
-            import json
-            logger.info(f"Response keys: {list(data.keys())}")
-            # Print first 2 items of each list-type key
-            for k, v in data.items():
-                if isinstance(v, list):
-                    logger.info(f"  '{k}': {len(v)} items")
-                    for item in v[:2]:
-                        logger.info(f"    sample: {json.dumps(item, default=str)[:300]}")
-                else:
-                    logger.info(f"  '{k}': {v}")
-
-        # Try all plausible keys for the flight list
-        page_flights = []
-        for key in data:
-            if isinstance(data[key], list):
-                page_flights.extend(data[key])
+        # Response has 'scheduled', 'arrivals', 'enroute' lists (15 items each)
+        page_flights = (
+            data.get("arrivals", [])
+            + data.get("enroute", [])
+            + data.get("scheduled", [])
+        )
 
         flights.extend(page_flights)
         pages += 1
 
-        # Stop if page returned no flights (avoid infinite pagination)
+        # Stop if page returned no flights
         if not page_flights:
             logger.info("Empty page — stopping pagination")
+            break
+
+        # Stop at max pages to control cost
+        if pages >= max_pages:
+            logger.info(f"Reached max pages ({max_pages}) — stopping to conserve credits")
             break
 
         # Follow cursor-based pagination
