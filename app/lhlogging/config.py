@@ -33,6 +33,10 @@ OPENSKY_TOKEN_URL: str = _optional(
 
 # Fleet
 PLANESPOTTERS_AIRLINE_ICAO: str = _optional("AIRLINE_OPERATOR_ICAO", "DLH")
+_REG_PREFIXES_RAW: str = _optional("AIRLINE_REGISTRATION_PREFIXES", "D-A")
+AIRLINE_REGISTRATION_PREFIXES: tuple[str, ...] = tuple(
+    p.strip().upper() for p in _REG_PREFIXES_RAW.split(",") if p.strip()
+)
 PLANESPOTTERS_BASE_URL: str = _optional(
     "PLANESPOTTERS_BASE_URL", "https://api.planespotters.net/pub/flights"
 )

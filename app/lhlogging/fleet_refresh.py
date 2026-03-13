@@ -30,7 +30,10 @@ def main() -> int:
 
     try:
         client = OpenSkyFleetClient(logger)
-        api_fleet = client.get_airline_fleet(config.PLANESPOTTERS_AIRLINE_ICAO)
+        api_fleet = client.get_airline_fleet(
+            config.PLANESPOTTERS_AIRLINE_ICAO,
+            registration_prefixes=config.AIRLINE_REGISTRATION_PREFIXES,
+        )
     except OpenSkyFleetError as e:
         logger.critical(f"Failed to fetch fleet from OpenSky aircraft DB: {e}")
         stats["status"] = "error"
