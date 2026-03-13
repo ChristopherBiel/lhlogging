@@ -74,9 +74,32 @@ def fetch_operator_flights(session: requests.Session, logger) -> list[dict]:
 
         data = resp.json()
 
-        page_flights = data.get("arrivals", []) + data.get("departures", []) + data.get("flights", [])
+        # Debug: dump keys and structure on first page
+        if pages == 0:
+            import json
+            logger.info(f"Response keys: {list(data.keys())}")
+            # Print first 2 items of each list-type key
+            for k, v in data.items():
+                if isinstance(v, list):
+                    logger.info(f"  '{k}': {len(v)} items")
+                    for item in v[:2]:
+                        logger.info(f"    sample: {json.dumps(item, default=str)[:300]}")
+                else:
+                    logger.info(f"  '{k}': {v}")
+
+        # Try all plausible keys for the flight list
+        page_flights = []
+        for key in data:
+            if isinstance(data[key], list):
+                page_flights.extend(data[key])
+
         flights.extend(page_flights)
         pages += 1
+
+        # Stop if page returned no flights (avoid infinite pagination)
+        if not page_flights:
+            logger.info("Empty page — stopping pagination")
+            break
 
         # Follow cursor-based pagination
         links = data.get("links")
