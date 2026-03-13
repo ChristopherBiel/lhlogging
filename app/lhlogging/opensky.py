@@ -150,6 +150,18 @@ class OpenSkyClient:
         Filters to fleet_icao24s client-side.
         Returns parsed state dicts with captured_at from the server timestamp.
         """
+        return self._fetch_states(lambda s: (s[0] or "").strip().lower() in fleet_icao24s)
+
+    def get_states_by_callsign_prefix(self, prefix: str) -> list[dict]:
+        """
+        Fetch all state vectors from /states/all and return only those whose
+        callsign starts with the given prefix (e.g. 'DLH' for Lufthansa).
+        """
+        up = prefix.upper()
+        return self._fetch_states(lambda s: ((s[1] or "").strip().upper()).startswith(up))
+
+    def _fetch_states(self, predicate) -> list[dict]:
+        """Shared helper: fetch /states/all and filter with a predicate on raw state arrays."""
         url = f"{config.OPENSKY_BASE_URL}/states/all"
 
         @self._retry
@@ -183,7 +195,7 @@ class OpenSkyClient:
             return [
                 self._parse_state(s, snapshot_ts)
                 for s in data["states"]
-                if s and (s[0] or "").strip().lower() in fleet_icao24s
+                if s and predicate(s)
             ]
 
         return _fetch()

@@ -67,7 +67,14 @@ class OpenSkyFleetClient:
             row_reg = (row.get("registration") or "").strip().upper()
 
             matched_operator = row_op == op
-            matched_prefix = prefixes and any(row_reg.startswith(p) for p in prefixes)
+            # Only use registration prefix as a fallback for aircraft with no operator set —
+            # avoids pulling in other German airlines (Condor, Eurowings, etc.) that also
+            # use D-A* registrations but have their own operatoricao filled in.
+            matched_prefix = (
+                not row_op
+                and prefixes
+                and any(row_reg.startswith(p) for p in prefixes)
+            )
 
             if not matched_operator and not matched_prefix:
                 continue
@@ -89,6 +96,46 @@ class OpenSkyFleetClient:
             f"({by_operator} by operatoricao, {by_prefix} by registration prefix)"
         )
         return aircraft
+
+    def get_aircraft_by_icao24s(self, icao24s: set[str]) -> dict[str, dict]:
+        """
+        Downloads the OpenSky CSV and returns data for specific icao24 hex codes,
+        regardless of their operatoricao value. Returns {icao24: parsed_dict}.
+        """
+        if not icao24s:
+            return {}
+
+        self._logger.info(
+            f"Downloading OpenSky aircraft database to look up {len(icao24s)} aircraft"
+        )
+
+        @self._retry
+        def _fetch() -> bytes:
+            try:
+                resp = self._session.get(_CSV_URL, timeout=120, allow_redirects=True)
+            except requests.RequestException as e:
+                raise OpenSkyFleetError(f"Download failed: {e}") from e
+            if not resp.ok:
+                raise OpenSkyFleetError(f"HTTP {resp.status_code} fetching aircraft DB")
+            return resp.content
+
+        raw = _fetch()
+        targets = {h.strip().lower() for h in icao24s}
+        result: dict[str, dict] = {}
+
+        reader = csv.DictReader(io.StringIO(raw.decode("utf-8", errors="replace")))
+        for row in reader:
+            icao24 = (row.get("icao24") or "").strip().lower()
+            if icao24 not in targets:
+                continue
+            parsed = self._parse_row(row)
+            if parsed:
+                result[icao24] = parsed
+            if len(result) == len(targets):
+                break  # found all, no need to read the rest
+
+        self._logger.info(f"Found {len(result)}/{len(icao24s)} aircraft in OpenSky CSV")
+        return result
 
     def _parse_row(self, row: dict) -> dict | None:
         icao24 = (row.get("icao24") or "").strip().lower()

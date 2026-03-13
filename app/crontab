@@ -10,5 +10,8 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Positions cleanup — daily at 04:00 UTC, deletes snapshots older than retention window
 0 4  * * *  root  . /etc/environment && cd /app && python -m lhlogging.positions_cleanup >> /var/log/lhlogging/cron.log 2>&1
 
+# Fleet discovery — every 6 hours, discovers new aircraft via live callsign matching
+0 */6 * * *  root  . /etc/environment && cd /app && python -m lhlogging.fleet_discovery >> /var/log/lhlogging/cron.log 2>&1
+
 # Fleet refresh — every Monday at 02:00 UTC
 0 2  * * 1  root  . /etc/environment && cd /app && python -m lhlogging.fleet_refresh >> /var/log/lhlogging/cron.log 2>&1
