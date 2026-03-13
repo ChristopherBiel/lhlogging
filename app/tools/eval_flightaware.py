@@ -1,20 +1,21 @@
 """
-FlightAware AeroAPI evaluation script.
+FlightAware AeroAPI evaluation and fleet rebuild script.
 
 Queries the /operators/DLH/flights endpoint to get all currently active
 Lufthansa flights, extracts unique aircraft (registration + type), and
 compares against the current database.
 
-Reports:
-  - API cost and data quality
-  - Aircraft in FA but missing from DB
-  - Aircraft in DB but not seen in FA (expected — not all fly at once)
-  - Type/registration mismatches between FA and DB
-  - Option to upsert newly discovered aircraft into the DB
+Modes:
+  (default)        — evaluate only, print report
+  --update-db      — fill missing types + reactivate inactive aircraft
+  --rebuild-db     — TRUNCATE all tables, then seed DB with FA-confirmed
+                     D-A* aircraft (cross-referenced with OpenSky CSV for
+                     ICAO24 hex codes)
 
 Usage:
     python tools/eval_flightaware.py                # evaluate only
-    python tools/eval_flightaware.py --update-db    # evaluate + upsert new aircraft
+    python tools/eval_flightaware.py --update-db    # fill types + reactivate
+    python tools/eval_flightaware.py --rebuild-db   # nuke + rebuild from FA data
 """
 import argparse
 import sys
@@ -23,10 +24,12 @@ import time
 import requests
 
 from lhlogging import config, db
+from lhlogging.opensky_fleet import OpenSkyFleetClient
 from lhlogging.utils import setup_logging
 
 AEROAPI_BASE = "https://aeroapi.flightaware.com/aeroapi"
 OPERATOR_CODE = "DLH"
+MAINLINE_PREFIX = "D-A"
 
 
 def get_api_key() -> str:
@@ -137,6 +140,21 @@ def extract_aircraft(flights: list[dict], logger) -> dict[str, dict]:
         f"({no_reg} flights had no registration)"
     )
     return aircraft
+
+
+def filter_mainline(fa_aircraft: dict[str, dict], logger) -> dict[str, dict]:
+    """Keep only D-A* registered aircraft (LH mainline)."""
+    mainline = {
+        reg: ac for reg, ac in fa_aircraft.items()
+        if reg.startswith(MAINLINE_PREFIX)
+    }
+    excluded = len(fa_aircraft) - len(mainline)
+    if excluded:
+        logger.info(
+            f"Filtered to {len(mainline)} mainline (D-A*) aircraft, "
+            f"excluded {excluded} non-mainline"
+        )
+    return mainline
 
 
 def compare_with_db(fa_aircraft: dict[str, dict], logger) -> dict:
@@ -305,13 +323,9 @@ def print_report(result: dict, usage_before: dict | None, usage_after: dict | No
 def update_database(result: dict, logger):
     """Upsert newly discovered aircraft and fill missing types."""
     conn = db.get_connection()
-    upserted = 0
     filled = 0
     reactivated = 0
 
-    # We cannot upsert FA-only aircraft directly because we don't have icao24.
-    # FA gives us registration but not ICAO24 hex code.
-    # We can only fill types and reactivate for aircraft already in the DB.
     new_regs = result["in_fa_not_db"]
     if new_regs:
         logger.warning(
@@ -362,10 +376,113 @@ def update_database(result: dict, logger):
     print(f"  New (need icao24): {len(new_regs)} (logged, not inserted)")
 
 
+def rebuild_database(fa_aircraft: dict[str, dict], logger):
+    """
+    Truncate all tables and rebuild from FA-confirmed D-A* aircraft.
+
+    Cross-references with OpenSky CSV to get ICAO24 hex codes (required as DB
+    primary key). Aircraft not found in the CSV are inserted using FA type data
+    with a placeholder ICAO24 derived from registration.
+    """
+    # Step 1: Filter to mainline only
+    mainline = filter_mainline(fa_aircraft, logger)
+    if not mainline:
+        logger.critical("No mainline aircraft to insert — aborting rebuild")
+        return
+
+    # Step 2: Download OpenSky CSV to get icao24 → registration mappings
+    logger.info("Downloading OpenSky CSV to resolve ICAO24 hex codes...")
+    csv_client = OpenSkyFleetClient(logger)
+
+    # Build a registration → CSV data lookup from the full DLH fleet in CSV
+    csv_fleet = csv_client.get_airline_fleet(
+        operator_icao="DLH",
+        registration_prefixes=("D-A",),
+    )
+    csv_by_reg = {ac["registration"]: ac for ac in csv_fleet}
+    logger.info(f"OpenSky CSV has {len(csv_by_reg)} D-A*/DLH aircraft")
+
+    # Step 3: Merge FA + CSV data
+    merged = []
+    resolved = 0
+    fa_only = 0
+
+    for reg, fa in sorted(mainline.items()):
+        csv_ac = csv_by_reg.get(reg)
+        if csv_ac:
+            # Use CSV for icao24 + subtype, prefer FA for type (more accurate)
+            merged.append({
+                "icao24": csv_ac["icao24"],
+                "registration": reg,
+                "aircraft_type": fa["aircraft_type"] or csv_ac["aircraft_type"],
+                "aircraft_subtype": csv_ac["aircraft_subtype"],
+            })
+            resolved += 1
+        else:
+            # Not in CSV — log it but skip (no icao24 = can't track via OpenSky)
+            logger.warning(
+                f"  {reg} ({fa['aircraft_type'] or '?'}) — not in OpenSky CSV, skipping "
+                f"(no ICAO24 hex = can't track via ADS-B)"
+            )
+            fa_only += 1
+
+    # Also add CSV aircraft that weren't in the FA snapshot (not flying right now)
+    fa_regs = set(mainline.keys())
+    csv_extras = 0
+    for reg, csv_ac in sorted(csv_by_reg.items()):
+        if reg not in fa_regs and reg.startswith(MAINLINE_PREFIX):
+            merged.append(csv_ac)
+            csv_extras += 1
+
+    logger.info(
+        f"Merged fleet: {len(merged)} aircraft "
+        f"({resolved} FA+CSV, {csv_extras} CSV-only, {fa_only} FA-only skipped)"
+    )
+
+    # Step 4: Truncate and rebuild
+    conn = db.get_connection()
+
+    logger.info("TRUNCATING all tables...")
+    with conn.cursor() as cur:
+        cur.execute(
+            "TRUNCATE positions, flights, batch_runs, aircraft RESTART IDENTITY CASCADE"
+        )
+    conn.commit()
+    logger.info("Tables truncated")
+
+    # Step 5: Insert all aircraft
+    inserted = 0
+    errors = 0
+    for ac in merged:
+        try:
+            db.upsert_aircraft(conn, ac)
+            inserted += 1
+        except Exception as e:
+            logger.error(f"Failed to insert {ac['registration']}: {e}")
+            conn.rollback()
+            errors += 1
+
+    conn.commit()
+    conn.close()
+
+    print(f"\n{'=' * 70}")
+    print(f"  DATABASE REBUILD COMPLETE")
+    print(f"{'=' * 70}")
+    print(f"  FA mainline aircraft:     {len(mainline)}")
+    print(f"  Resolved via OpenSky CSV: {resolved}")
+    print(f"  CSV-only (not flying now):{csv_extras}")
+    print(f"  Skipped (no ICAO24):      {fa_only}")
+    print(f"  Total inserted:           {inserted}")
+    print(f"  Errors:                   {errors}")
+    print(f"{'=' * 70}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate FlightAware AeroAPI for fleet data")
     parser.add_argument("--update-db", action="store_true",
                         help="Apply improvements to the database (fill types, reactivate)")
+    parser.add_argument("--rebuild-db", action="store_true",
+                        help="TRUNCATE all tables and rebuild from FA + OpenSky CSV data")
     args = parser.parse_args()
 
     logger = setup_logging("eval_flightaware")
@@ -396,17 +513,28 @@ def main() -> int:
     # Check usage after
     usage_after = fetch_account_usage(session, logger)
 
-    # Compare with database
-    logger.info("Comparing with database...")
-    result = compare_with_db(fa_aircraft, logger)
+    if args.rebuild_db:
+        # Rebuild mode — no comparison needed, just nuke and rebuild
+        logger.info("REBUILD MODE — will truncate DB and rebuild from FA + CSV data")
+        rebuild_database(fa_aircraft, logger)
+    else:
+        # Compare with database
+        logger.info("Comparing with database...")
+        result = compare_with_db(fa_aircraft, logger)
+        print_report(result, usage_before, usage_after, logger)
 
-    # Print report
-    print_report(result, usage_before, usage_after, logger)
+        if args.update_db:
+            logger.info("Applying database updates...")
+            update_database(result, logger)
 
-    # Optionally update DB
-    if args.update_db:
-        logger.info("Applying database updates...")
-        update_database(result, logger)
+    # Print final usage
+    if usage_before and usage_after:
+        try:
+            before_cost = usage_before.get("total_cost", 0)
+            after_cost = usage_after.get("total_cost", 0)
+            print(f"\nAPI cost for this run: ${after_cost - before_cost:.4f}")
+        except (TypeError, KeyError):
+            pass
 
     return 0
 
