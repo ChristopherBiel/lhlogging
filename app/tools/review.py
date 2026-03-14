@@ -12,12 +12,12 @@ Usage:
     # Export to a custom path
     python -m tools.review export --file /tmp/review.md
 
-The default file path is /app/review.md (inside the container).
+The default file path is /var/log/lhlogging/review.md (inside the container).
 
 Workflow:
     1. SSH into the VPS
     2. docker exec -it <app-container> python -m tools.review export
-    3. Edit /app/review.md  (vi, nano, etc.)
+    3. Edit /var/log/lhlogging/review.md  (vi, nano, etc.)
     4. docker exec -it <app-container> python -m tools.review apply
 """
 import argparse
@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from lhlogging import db
 from lhlogging.utils import setup_logging
 
-_DEFAULT_FILE = "/app/review.md"
+_DEFAULT_FILE = "/var/log/lhlogging/review.md"
 
 
 def _export(conn, path: str, logger) -> int:
