@@ -84,11 +84,13 @@ lhlogging/
 │   │   ├── planespotters.py        # Planespotters API client (fleet type enrichment)
 │   │   ├── state_poller.py         # Every 5 min — snapshots live positions
 │   │   ├── flight_detector.py      # Every 30 min — infers flights from positions
+│   │   ├── fleet_discovery.py      # Every 6h — discovers new aircraft via DLH callsigns
 │   │   ├── positions_cleanup.py    # Daily — deletes old position snapshots
-│   │   ├── fleet_refresh.py        # Weekly — syncs fleet registry
+│   │   ├── fleet_refresh.py        # Weekly — updates type data, retires decommissioned aircraft
 │   │   └── utils.py                # Logging, retry decorator, rate limiter
 │   ├── tools/
-│   │   └── load_airports.py        # One-off: populates airports table from OurAirports
+│   │   ├── load_airports.py        # One-off: populates airports table from OurAirports
+│   │   └── eval_flightaware.py     # FlightAware AeroAPI evaluation + fleet rebuild tool
 │   ├── crontab                     # Cron schedule (runs inside Docker)
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -183,11 +185,12 @@ All settings are environment variables (via `.env`):
 | `POSTGRES_USER` | *(required)* | Database user |
 | `POSTGRES_PASSWORD` | *(required)* | Database password |
 | `TRACK_AIRCRAFT_TYPES` | *(empty = all)* | Comma-separated ICAO type codes to filter (e.g. `A388,B748`) |
-| `FLIGHT_DETECT_LOOKBACK_MINUTES` | `60` | How far back the detector scans for new departures |
+| `FLIGHT_DETECT_LOOKBACK_MINUTES` | `60` | How far back the detector scans for new departures (recommended: `90`) |
 | `POSITIONS_RETENTION_DAYS` | `30` | How long position snapshots are kept |
 | `AIRPORT_LOOKUP_RADIUS_KM` | `50.0` | Max distance for nearest-airport matching |
 | `OPENSKY_REQUEST_DELAY_S` | `2.0` | Delay between API calls |
 | `OPENSKY_RATELIMIT_BACKOFF_S` | `60` | Sleep time on HTTP 429 |
+| `FLIGHTAWARE_API_KEY` | *(optional)* | For `tools/eval_flightaware.py` — fleet evaluation and rebuild |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ### Tracking Subsets
@@ -213,8 +216,9 @@ TRACK_AIRCRAFT_TYPES=
 |---|---|---|
 | **State Poller** | Every 5 min | Fetches `/states/all`, stores position snapshots for the LH fleet |
 | **Flight Detector** | Every 30 min (at :15 and :45) | Detects flights from on_ground transitions, closes pending arrivals |
+| **Fleet Discovery** | Every 6 hours | Discovers new aircraft via live DLH callsign matching (OpenSky + Planespotters) |
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
-| **Fleet Refresh** | Mondays at 02:00 UTC | Downloads OpenSky aircraft CSV, syncs fleet registry, retires removed aircraft |
+| **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 
 ---
 
@@ -267,13 +271,44 @@ Then deploy and run the airport loader.
 
 ---
 
+## Fleet Management
+
+The fleet is managed through two complementary mechanisms:
+
+- **Fleet Discovery** (every 6h) — the sole path for adding new aircraft. Monitors live ADS-B data for DLH callsigns, discovers unknown aircraft, and enriches them via OpenSky CSV and Planespotters. This ensures only aircraft actually flying LH mainline flights enter the database.
+- **Fleet Refresh** (weekly) — updates type/subtype data for existing aircraft and retires those no longer in the OpenSky registry. Does **not** add new aircraft to prevent database bloat from the OpenSky CSV's broad registration-prefix matching.
+
+**Why this separation matters:** The OpenSky CSV contains ~900+ aircraft matching `operatoricao=DLH` or `D-A*` registration prefix (including non-LH carriers like Condor, Eurowings). Allowing fleet_refresh to add aircraft would re-bloat the database. Fleet discovery uses callsign-based confirmation to ensure only genuine LH mainline aircraft are tracked.
+
+### FlightAware AeroAPI Tool
+
+The `tools/eval_flightaware.py` script uses the FlightAware AeroAPI (requires `FLIGHTAWARE_API_KEY` in `.env`) for fleet evaluation and one-off database rebuilds:
+
+```bash
+# Evaluate: compare FA data against current DB
+docker compose exec app python tools/eval_flightaware.py
+
+# Rebuild: truncate DB and seed with FA-confirmed D-A* aircraft
+docker compose exec app python tools/eval_flightaware.py --rebuild-db
+
+# Update: fill missing types and reactivate aircraft
+docker compose exec app python tools/eval_flightaware.py --update-db
+```
+
+The rebuild mode cross-references FlightAware (source of truth for in-service aircraft) with the OpenSky CSV (source of ICAO24 hex codes needed for ADS-B tracking). Aircraft confirmed by FA but missing from the CSV are picked up by fleet_discovery within hours.
+
+**Cost:** $10/month free credit as an ADS-B data contributor. A single evaluation run uses ~15 pages (~$0.75 estimated, though actual billing has shown $0.00).
+
+---
+
 ## Credit Budget
 
 | | Per call | Daily calls | Daily cost |
 |---|---|---|---|
 | State poller | 1 credit | 288 (every 5 min) | **~288 credits** |
+| Fleet discovery | 1 credit | 4 (every 6h) | **~4 credits** |
 | Fleet refresh | ~free (CSV download) | 1/week | **~0** |
-| **Total** | | | **~288 credits/day** |
+| **Total** | | | **~292 credits/day** |
 
 This uses **~7%** of the 4,000 credit daily budget, leaving ample headroom for retries and rate-limit recovery.
 
