@@ -40,13 +40,16 @@ def upsert_aircraft(conn: psycopg.Connection, aircraft: dict) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO aircraft (icao24, registration, aircraft_type, aircraft_subtype, is_active, updated_at)
-            VALUES (%(icao24)s, %(registration)s, %(aircraft_type)s, %(aircraft_subtype)s, TRUE, NOW())
+            INSERT INTO aircraft (icao24, registration, aircraft_type, aircraft_subtype,
+                                  is_active, needs_review, updated_at)
+            VALUES (%(icao24)s, %(registration)s, %(aircraft_type)s, %(aircraft_subtype)s,
+                    TRUE, %(needs_review)s, NOW())
             ON CONFLICT (icao24) DO UPDATE SET
                 registration     = EXCLUDED.registration,
                 aircraft_type    = EXCLUDED.aircraft_type,
                 aircraft_subtype = EXCLUDED.aircraft_subtype,
                 is_active        = TRUE,
+                needs_review     = EXCLUDED.needs_review,
                 updated_at       = NOW()
             """,
             aircraft,
@@ -70,13 +73,16 @@ def upsert_flight(conn: psycopg.Connection, flight: dict) -> None:
         cur.execute(
             """
             INSERT INTO flights
-                (icao24, callsign, departure_airport_icao, arrival_airport_icao, first_seen, last_seen)
+                (icao24, callsign, departure_airport_icao, arrival_airport_icao,
+                 first_seen, last_seen, needs_review)
             VALUES
-                (%(icao24)s, %(callsign)s, %(dep)s, %(arr)s, %(first_seen)s, %(last_seen)s)
+                (%(icao24)s, %(callsign)s, %(dep)s, %(arr)s,
+                 %(first_seen)s, %(last_seen)s, %(needs_review)s)
             ON CONFLICT (icao24, first_seen) DO UPDATE SET
                 callsign               = EXCLUDED.callsign,
                 arrival_airport_icao   = EXCLUDED.arrival_airport_icao,
-                last_seen              = EXCLUDED.last_seen
+                last_seen              = EXCLUDED.last_seen,
+                needs_review           = EXCLUDED.needs_review
             """,
             flight,
         )
@@ -138,13 +144,21 @@ def get_open_flights(conn: psycopg.Connection) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT icao24, first_seen, callsign
+            SELECT icao24, first_seen, callsign, departure_airport_icao
             FROM flights
             WHERE arrival_airport_icao IS NULL
             """
         )
         rows = cur.fetchall()
-    return [{"icao24": r[0], "first_seen": r[1], "callsign": r[2]} for r in rows]
+    return [
+        {
+            "icao24": r[0],
+            "first_seen": r[1],
+            "callsign": r[2],
+            "departure_airport_icao": r[3],
+        }
+        for r in rows
+    ]
 
 
 def get_latest_positions(
@@ -184,6 +198,7 @@ def update_open_flight(
     last_seen: datetime,
     arr: str | None = None,
     callsign: str | None = None,
+    needs_review: bool = False,
 ) -> None:
     """Update a pending flight. Only touches flights where arrival is still NULL."""
     with conn.cursor() as cur:
@@ -193,11 +208,12 @@ def update_open_flight(
                 UPDATE flights SET
                     arrival_airport_icao = %s,
                     last_seen = %s,
-                    callsign = COALESCE(%s, callsign)
+                    callsign = COALESCE(%s, callsign),
+                    needs_review = %s
                 WHERE icao24 = %s AND first_seen = %s
                     AND arrival_airport_icao IS NULL
                 """,
-                (arr, last_seen, callsign, icao24, first_seen),
+                (arr, last_seen, callsign, needs_review, icao24, first_seen),
             )
         else:
             cur.execute(

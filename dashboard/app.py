@@ -57,16 +57,17 @@ def api_stats():
         stats["flights_today"] = _q1(
             conn,
             "SELECT COUNT(*) FROM flights WHERE flight_date = CURRENT_DATE"
-            " AND departure_airport_icao IS NOT NULL",
+            " AND departure_airport_icao IS NOT NULL AND NOT needs_review",
         )
         stats["flights_7d"] = _q1(
             conn,
             "SELECT COUNT(*) FROM flights WHERE flight_date >= CURRENT_DATE - 7"
-            " AND departure_airport_icao IS NOT NULL",
+            " AND departure_airport_icao IS NOT NULL AND NOT needs_review",
         )
         stats["flights_total"] = _q1(
             conn,
-            "SELECT COUNT(*) FROM flights WHERE departure_airport_icao IS NOT NULL",
+            "SELECT COUNT(*) FROM flights WHERE departure_airport_icao IS NOT NULL"
+            " AND NOT needs_review",
         )
 
         # --- DB size ---
@@ -174,6 +175,7 @@ def api_stats():
             JOIN aircraft a ON a.icao24 = f.icao24
             WHERE f.flight_date >= CURRENT_DATE - 7
               AND a.is_active
+              AND NOT f.needs_review
             GROUP BY a.aircraft_type
             ORDER BY COUNT(DISTINCT a.icao24) DESC
             """,
@@ -191,6 +193,7 @@ def api_stats():
             WHERE flight_date >= CURRENT_DATE - 30
               AND departure_airport_icao IS NOT NULL
               AND arrival_airport_icao IS NOT NULL
+              AND NOT needs_review
             GROUP BY 1, 2
             ORDER BY cnt DESC
             LIMIT 20
@@ -207,6 +210,7 @@ def api_stats():
             SELECT flight_date::text, COUNT(*)
             FROM flights
             WHERE flight_date >= CURRENT_DATE - 13
+              AND NOT needs_review
             GROUP BY flight_date
             ORDER BY flight_date
             """,
@@ -222,6 +226,7 @@ def api_stats():
             WHERE flight_date >= CURRENT_DATE - 13
               AND callsign IS NOT NULL
               AND callsign != ''
+              AND NOT needs_review
             GROUP BY flight_date
             ORDER BY flight_date
             """,
@@ -881,6 +886,7 @@ def api_a380_analysis():
               AND f.flight_date >= CURRENT_DATE - 90
               AND f.departure_airport_icao IS NOT NULL
               AND f.arrival_airport_icao IS NOT NULL
+              AND NOT f.needs_review
             ORDER BY a.registration, f.first_seen
             """,
         )
@@ -908,6 +914,7 @@ def api_a380_analysis():
             WHERE a.aircraft_type = 'A388'
               AND f.departure_airport_icao = 'EDDM'
               AND f.arrival_airport_icao = 'VTBS'
+              AND NOT f.needs_review
             GROUP BY a.registration, dow
             ORDER BY a.registration, dow
             """,
@@ -926,6 +933,7 @@ def api_a380_analysis():
             WHERE a.aircraft_type = 'A388'
               AND f.departure_airport_icao = 'EDDM'
               AND f.arrival_airport_icao = 'VTBS'
+              AND NOT f.needs_review
             ORDER BY a.registration, f.flight_date
             """,
         )
@@ -955,6 +963,7 @@ def api_a380_analysis():
                 WHERE a.aircraft_type = 'A388'
                   AND f.departure_airport_icao IS NOT NULL
                   AND f.arrival_airport_icao IS NOT NULL
+                  AND NOT f.needs_review
             )
             SELECT route, next_route, COUNT(*) AS cnt
             FROM ordered
@@ -979,6 +988,7 @@ def api_a380_analysis():
                 WHERE a.aircraft_type = 'A388'
                   AND f.departure_airport_icao IS NOT NULL
                   AND f.arrival_airport_icao IS NOT NULL
+                  AND NOT f.needs_review
                 GROUP BY route
                 ORDER BY COUNT(*) DESC
                 LIMIT 20
@@ -991,6 +1001,7 @@ def api_a380_analysis():
             WHERE a.aircraft_type = 'A388'
               AND f.departure_airport_icao IS NOT NULL
               AND f.arrival_airport_icao IS NOT NULL
+              AND NOT f.needs_review
               AND (f.departure_airport_icao || '-' || f.arrival_airport_icao)
                   IN (SELECT route FROM top_routes)
             GROUP BY a.registration, route
@@ -1012,6 +1023,7 @@ def api_a380_analysis():
                 WHERE a.aircraft_type = 'A388'
                   AND f.departure_airport_icao = 'EDDM'
                   AND f.arrival_airport_icao = 'VTBS'
+                  AND NOT f.needs_review
             ),
             prev AS (
                 SELECT mb.icao24, mb.first_seen AS target,
@@ -1025,6 +1037,7 @@ def api_a380_analysis():
                                 AND f.first_seen < mb.first_seen
                 WHERE f.departure_airport_icao IS NOT NULL
                   AND f.arrival_airport_icao IS NOT NULL
+                  AND NOT f.needs_review
             )
             SELECT rn AS steps_before, route, COUNT(*) AS cnt
             FROM prev
@@ -1049,6 +1062,7 @@ def api_a380_analysis():
             WHERE a.aircraft_type = 'A388'
               AND a.is_active
               AND f.arrival_airport_icao IS NOT NULL
+              AND NOT f.needs_review
             ORDER BY a.registration, f.last_seen DESC
             """,
         )
@@ -1827,7 +1841,8 @@ def api_fleet():
                    a.is_active, a.first_seen_date::text, a.last_seen_date::text,
                    COUNT(f.id)::int AS total_flights,
                    COUNT(f.id) FILTER (WHERE f.flight_date >= CURRENT_DATE - 7)::int AS flights_7d,
-                   MAX(f.flight_date)::text AS last_flight
+                   MAX(f.flight_date)::text AS last_flight,
+                   a.needs_review
             FROM aircraft a
             LEFT JOIN flights f ON f.icao24 = a.icao24
             GROUP BY a.id
@@ -1846,6 +1861,7 @@ def api_fleet():
                 "total_flights": r[7],
                 "flights_7d": r[8],
                 "last_flight": r[9],
+                "needs_review": r[10],
             }
             for r in rows
         ]
@@ -1874,7 +1890,7 @@ def api_fleet_detail(icao24):
             """
             SELECT icao24, registration, aircraft_type, aircraft_subtype,
                    is_active, first_seen_date::text, last_seen_date::text,
-                   airline_iata
+                   airline_iata, needs_review
             FROM aircraft WHERE icao24 = %s
             """,
             (icao24,),
@@ -1892,24 +1908,26 @@ def api_fleet_detail(icao24):
             "first_seen": r[5],
             "last_seen": r[6],
             "airline_iata": (r[7] or "").strip(),
+            "needs_review": r[8],
         }
 
         # Flight stats (only count flights with known departure)
         info["total_flights"] = _q1(
             conn,
-            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND departure_airport_icao IS NOT NULL",
+            "SELECT COUNT(*) FROM flights WHERE icao24 = %s"
+            " AND departure_airport_icao IS NOT NULL AND NOT needs_review",
             (icao24,),
         )
         info["flights_7d"] = _q1(
             conn,
             "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 7"
-            " AND departure_airport_icao IS NOT NULL",
+            " AND departure_airport_icao IS NOT NULL AND NOT needs_review",
             (icao24,),
         )
         info["flights_30d"] = _q1(
             conn,
             "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 30"
-            " AND departure_airport_icao IS NOT NULL",
+            " AND departure_airport_icao IS NOT NULL AND NOT needs_review",
             (icao24,),
         )
 
@@ -1951,6 +1969,7 @@ def api_fleet_detail(icao24):
             WHERE icao24 = %s
               AND departure_airport_icao IS NOT NULL
               AND arrival_airport_icao IS NOT NULL
+              AND NOT needs_review
             GROUP BY route
             ORDER BY cnt DESC
             LIMIT 20
@@ -1966,6 +1985,7 @@ def api_fleet_detail(icao24):
             SELECT flight_date::text, COUNT(*)
             FROM flights
             WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 29
+              AND NOT needs_review
             GROUP BY flight_date ORDER BY flight_date
             """,
             (icao24,),
@@ -2063,6 +2083,16 @@ body {
 .fleet-table .hex { font-family: monospace; font-size: 11px; color: var(--muted); }
 .fleet-table .type { color: var(--accent); font-weight: 600; }
 .fleet-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.review-toggle {
+  font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer;
+}
+.review-toggle input { cursor: pointer; }
+.fleet-table tr.review-row { background: rgba(255, 180, 50, 0.08); }
+.fleet-table tr.review-row:hover { background: rgba(255, 180, 50, 0.15); }
+.badge-review {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; background: rgba(255, 180, 50, 0.15); color: #ffb432;
+}
 .badge-active {
   display: inline-block; padding: 1px 7px; border-radius: 999px;
   font-size: 10px; font-weight: 600; background: var(--green-dim); color: var(--green);
@@ -2108,6 +2138,7 @@ body {
         <button class="toggle-btn" data-status="active">Active</button>
         <button class="toggle-btn" data-status="retired">Retired</button>
       </div>
+      <label class="review-toggle"><input type="checkbox" id="review-filter"> Needs Review</label>
       <div class="count" id="count"></div>
     </div>
 
@@ -2175,7 +2206,9 @@ async function init() {
 function getFiltered() {
   const q = $('search').value.toLowerCase().trim();
   const typeVal = $('type-filter').value;
+  const reviewOnly = $('review-filter').checked;
   return allAircraft.filter(a => {
+    if (reviewOnly && !a.needs_review) return false;
     if (statusFilter === 'active' && !a.is_active) return false;
     if (statusFilter === 'retired' && a.is_active) return false;
     if (typeVal && a.aircraft_type !== typeVal) return false;
@@ -2221,12 +2254,14 @@ function render() {
     const statusBadge = a.is_active
       ? '<span class="badge-active">active</span>'
       : '<span class="badge-retired">retired</span>';
-    return '<tr onclick="location.href=\\'/fleet/' + a.icao24 + '\\'">' +
+    const reviewBadge = a.needs_review ? ' <span class="badge-review">review</span>' : '';
+    const rowClass = a.needs_review ? ' class="review-row"' : '';
+    return '<tr' + rowClass + ' onclick="location.href=\\'/fleet/' + a.icao24 + '\\'">' +
       '<td class="reg">' + esc(a.registration) + '</td>' +
       '<td class="hex">' + esc(a.icao24) + '</td>' +
       '<td class="type">' + esc(a.aircraft_type || '\\u2014') + '</td>' +
       '<td>' + esc(a.aircraft_subtype || '\\u2014') + '</td>' +
-      '<td>' + statusBadge + '</td>' +
+      '<td>' + statusBadge + reviewBadge + '</td>' +
       '<td class="num">' + a.total_flights + '</td>' +
       '<td class="num">' + a.flights_7d + '</td>' +
       '<td>' + (a.last_flight || '\\u2014') + '</td>' +
@@ -2256,6 +2291,9 @@ $('search').addEventListener('input', render);
 
 // Type filter
 $('type-filter').addEventListener('change', render);
+
+// Needs review filter
+$('review-filter').addEventListener('change', render);
 
 // Status toggle
 document.querySelectorAll('.toggle-btn').forEach(btn => {

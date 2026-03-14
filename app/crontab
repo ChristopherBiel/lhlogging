@@ -1,8 +1,8 @@
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 
-# State poller — every 5 minutes, captures live position snapshots from /states/all
-*/5 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.state_poller >> /var/log/lhlogging/cron.log 2>&1
+# State poller — every minute, captures live position snapshots from /states/all
+*/1 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.state_poller >> /var/log/lhlogging/cron.log 2>&1
 
 # Flight detector — every 30 minutes (offset to :15/:45), infers flights from position transitions
 15,45 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.flight_detector >> /var/log/lhlogging/cron.log 2>&1

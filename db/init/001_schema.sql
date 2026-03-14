@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS aircraft (
     first_seen_date  DATE         NOT NULL DEFAULT CURRENT_DATE,
     last_seen_date   DATE,
     is_active        BOOLEAN      NOT NULL DEFAULT TRUE,
+    needs_review     BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS aircraft (
 CREATE INDEX IF NOT EXISTS idx_aircraft_icao24        ON aircraft (icao24);
 CREATE INDEX IF NOT EXISTS idx_aircraft_is_active     ON aircraft (is_active);
 CREATE INDEX IF NOT EXISTS idx_aircraft_registration  ON aircraft (registration);
+CREATE INDEX IF NOT EXISTS idx_aircraft_needs_review  ON aircraft (needs_review) WHERE needs_review = TRUE;
 
 
 -- ============================================================
@@ -37,6 +39,7 @@ CREATE TABLE IF NOT EXISTS flights (
     duration_minutes       INTEGER      GENERATED ALWAYS AS (
                                EXTRACT(EPOCH FROM (last_seen - first_seen))::INTEGER / 60
                            ) STORED,
+    needs_review           BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     CONSTRAINT flights_icao24_first_seen_unique UNIQUE (icao24, first_seen),
@@ -53,6 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_flights_departure   ON flights (departure_airport
 CREATE INDEX IF NOT EXISTS idx_flights_arrival     ON flights (arrival_airport_icao);
 CREATE INDEX IF NOT EXISTS idx_flights_callsign    ON flights (callsign);
 CREATE INDEX IF NOT EXISTS idx_flights_route_date  ON flights (departure_airport_icao, arrival_airport_icao, flight_date);
+CREATE INDEX IF NOT EXISTS idx_flights_needs_review ON flights (needs_review) WHERE needs_review = TRUE;
 
 
 -- ============================================================

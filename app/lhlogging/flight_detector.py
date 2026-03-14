@@ -53,6 +53,16 @@ def _detect_departures(conn, grouped: dict, logger) -> int:
                     arr_icao = db.lookup_nearest_airport(
                         conn, pos["latitude"], pos["longitude"]
                     )
+                    # dep == arr means we likely missed the real route;
+                    # close it but flag for manual review
+                    review = bool(
+                        dep_icao and arr_icao and dep_icao == arr_icao
+                    )
+                    if review:
+                        logger.info(
+                            f"Flagging {icao24} for review: dep==arr ({dep_icao})"
+                        )
+
                     flight = {
                         "icao24": icao24,
                         "callsign": departure["callsign"] or pos["callsign"],
@@ -60,6 +70,7 @@ def _detect_departures(conn, grouped: dict, logger) -> int:
                         "arr": arr_icao,
                         "first_seen": departure["first_seen"],
                         "last_seen": pos["captured_at"],
+                        "needs_review": review,
                     }
                     db.upsert_flight(conn, flight)
                     count += 1
@@ -85,6 +96,7 @@ def _detect_departures(conn, grouped: dict, logger) -> int:
                 "arr": None,
                 "first_seen": departure["first_seen"],
                 "last_seen": latest["captured_at"],
+                "needs_review": False,
             }
             db.upsert_flight(conn, flight)
             count += 1
@@ -121,6 +133,16 @@ def _close_pending_flights(conn, logger) -> int:
             arr_icao = db.lookup_nearest_airport(
                 conn, pos["latitude"], pos["longitude"]
             )
+            dep_icao = flight.get("departure_airport_icao")
+
+            # dep == arr means we likely missed the real route;
+            # close it but flag for manual review
+            review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
+            if review:
+                logger.info(
+                    f"Flagging {icao24} for review: dep==arr ({dep_icao})"
+                )
+
             db.update_open_flight(
                 conn,
                 icao24,
@@ -128,6 +150,7 @@ def _close_pending_flights(conn, logger) -> int:
                 pos["captured_at"],
                 arr=arr_icao,
                 callsign=pos["callsign"],
+                needs_review=review,
             )
             closed += 1
             logger.info(

@@ -87,8 +87,10 @@ def main() -> int:
     # Update existing DB aircraft with enriched CSV + Planespotters data
     to_update = db_icao24_set & api_icao24_set
     for icao24 in to_update:
+        ac = api_by_icao24[icao24]
+        ac["needs_review"] = not ac.get("aircraft_type")
         try:
-            db.upsert_aircraft(conn, api_by_icao24[icao24])
+            db.upsert_aircraft(conn, ac)
             stats["ok"] += 1
         except Exception as e:
             logger.error(f"Failed to update {icao24}: {e}")

@@ -121,6 +121,12 @@ def main() -> int:
                 "aircraft_subtype": None,
             }
 
+        # Flag for review if type or real registration is missing
+        aircraft["needs_review"] = (
+            not aircraft.get("aircraft_type")
+            or aircraft.get("registration", "").upper() == icao24.upper()
+        )
+
         try:
             db.upsert_aircraft(conn, aircraft)
             stats["ok"] += 1
