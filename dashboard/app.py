@@ -53,14 +53,21 @@ def api_stats():
         stats["aircraft_total"] = _q1(conn, "SELECT COUNT(*) FROM aircraft")
         stats["aircraft_retired"] = stats["aircraft_total"] - stats["aircraft_active"]
 
-        # --- Flight counts ---
+        # --- Flight counts (only completed flights with known departure) ---
         stats["flights_today"] = _q1(
-            conn, "SELECT COUNT(*) FROM flights WHERE flight_date = CURRENT_DATE"
+            conn,
+            "SELECT COUNT(*) FROM flights WHERE flight_date = CURRENT_DATE"
+            " AND departure_airport_icao IS NOT NULL",
         )
         stats["flights_7d"] = _q1(
-            conn, "SELECT COUNT(*) FROM flights WHERE flight_date >= CURRENT_DATE - 7"
+            conn,
+            "SELECT COUNT(*) FROM flights WHERE flight_date >= CURRENT_DATE - 7"
+            " AND departure_airport_icao IS NOT NULL",
         )
-        stats["flights_total"] = _q1(conn, "SELECT COUNT(*) FROM flights")
+        stats["flights_total"] = _q1(
+            conn,
+            "SELECT COUNT(*) FROM flights WHERE departure_airport_icao IS NOT NULL",
+        )
 
         # --- DB size ---
         stats["db_size"] = _q1(
@@ -1887,22 +1894,26 @@ def api_fleet_detail(icao24):
             "airline_iata": (r[7] or "").strip(),
         }
 
-        # Flight stats
+        # Flight stats (only count flights with known departure)
         info["total_flights"] = _q1(
-            conn, "SELECT COUNT(*) FROM flights WHERE icao24 = %s", (icao24,)
+            conn,
+            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND departure_airport_icao IS NOT NULL",
+            (icao24,),
         )
         info["flights_7d"] = _q1(
             conn,
-            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 7",
+            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 7"
+            " AND departure_airport_icao IS NOT NULL",
             (icao24,),
         )
         info["flights_30d"] = _q1(
             conn,
-            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 30",
+            "SELECT COUNT(*) FROM flights WHERE icao24 = %s AND flight_date >= CURRENT_DATE - 30"
+            " AND departure_airport_icao IS NOT NULL",
             (icao24,),
         )
 
-        # Recent flights (last 100)
+        # Recent flights (last 100, only with known departure)
         rows = _q(
             conn,
             """
@@ -1910,6 +1921,7 @@ def api_fleet_detail(icao24):
                    first_seen, last_seen, duration_minutes, flight_date::text
             FROM flights
             WHERE icao24 = %s
+              AND departure_airport_icao IS NOT NULL
             ORDER BY first_seen DESC
             LIMIT 100
             """,
@@ -1919,11 +1931,12 @@ def api_fleet_detail(icao24):
             {
                 "callsign": (r[0] or "").strip(),
                 "dep": (r[1] or "").strip(),
-                "arr": (r[2] or "").strip(),
+                "arr": (r[2] or "").strip() if r[2] else "",
                 "first_seen": r[3].isoformat() if r[3] else None,
                 "last_seen": r[4].isoformat() if r[4] else None,
                 "duration": r[5],
                 "date": r[6],
+                "pending": r[2] is None,
             }
             for r in rows
         ]
