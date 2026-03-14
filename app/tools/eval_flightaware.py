@@ -378,11 +378,11 @@ def update_database(result: dict, logger):
 
 def rebuild_database(fa_aircraft: dict[str, dict], logger):
     """
-    Truncate all tables and rebuild from FA-confirmed D-A* aircraft.
+    Truncate all tables and rebuild with ONLY FA-confirmed D-A* aircraft.
 
-    Cross-references with OpenSky CSV to get ICAO24 hex codes (required as DB
-    primary key). Aircraft not found in the CSV are inserted using FA type data
-    with a placeholder ICAO24 derived from registration.
+    Uses FlightAware as the sole source of truth for "in service at LH mainline".
+    Cross-references with OpenSky CSV to get ICAO24 hex codes. Aircraft not in
+    the CSV are skipped (fleet_discovery will catch them when they appear on ADS-B).
     """
     # Step 1: Filter to mainline only
     mainline = filter_mainline(fa_aircraft, logger)
@@ -390,53 +390,42 @@ def rebuild_database(fa_aircraft: dict[str, dict], logger):
         logger.critical("No mainline aircraft to insert — aborting rebuild")
         return
 
-    # Step 2: Download OpenSky CSV to get icao24 → registration mappings
+    # Step 2: Download OpenSky CSV to resolve registration → icao24
     logger.info("Downloading OpenSky CSV to resolve ICAO24 hex codes...")
     csv_client = OpenSkyFleetClient(logger)
 
-    # Build a registration → CSV data lookup from the full DLH fleet in CSV
+    # Get the full CSV — we search by registration, not by operator, to avoid
+    # the same bloat problem. We only care about registrations FA confirmed.
     csv_fleet = csv_client.get_airline_fleet(
         operator_icao="DLH",
         registration_prefixes=("D-A",),
     )
     csv_by_reg = {ac["registration"]: ac for ac in csv_fleet}
-    logger.info(f"OpenSky CSV has {len(csv_by_reg)} D-A*/DLH aircraft")
 
-    # Step 3: Merge FA + CSV data
-    merged = []
-    resolved = 0
-    fa_only = 0
+    # Step 3: Match FA aircraft to CSV for icao24
+    to_insert = []
+    skipped = []
 
     for reg, fa in sorted(mainline.items()):
         csv_ac = csv_by_reg.get(reg)
         if csv_ac:
-            # Use CSV for icao24 + subtype, prefer FA for type (more accurate)
-            merged.append({
+            # Use CSV for icao24 + subtype, prefer FA for aircraft_type (more accurate)
+            to_insert.append({
                 "icao24": csv_ac["icao24"],
                 "registration": reg,
                 "aircraft_type": fa["aircraft_type"] or csv_ac["aircraft_type"],
                 "aircraft_subtype": csv_ac["aircraft_subtype"],
             })
-            resolved += 1
         else:
-            # Not in CSV — log it but skip (no icao24 = can't track via OpenSky)
+            skipped.append(f"  {reg} ({fa['aircraft_type'] or '?'})")
             logger.warning(
-                f"  {reg} ({fa['aircraft_type'] or '?'}) — not in OpenSky CSV, skipping "
-                f"(no ICAO24 hex = can't track via ADS-B)"
+                f"  {reg} ({fa['aircraft_type'] or '?'}) — not in OpenSky CSV, "
+                f"skipping (fleet_discovery will catch it later)"
             )
-            fa_only += 1
-
-    # Also add CSV aircraft that weren't in the FA snapshot (not flying right now)
-    fa_regs = set(mainline.keys())
-    csv_extras = 0
-    for reg, csv_ac in sorted(csv_by_reg.items()):
-        if reg not in fa_regs and reg.startswith(MAINLINE_PREFIX):
-            merged.append(csv_ac)
-            csv_extras += 1
 
     logger.info(
-        f"Merged fleet: {len(merged)} aircraft "
-        f"({resolved} FA+CSV, {csv_extras} CSV-only, {fa_only} FA-only skipped)"
+        f"Ready to insert {len(to_insert)} aircraft "
+        f"({len(skipped)} skipped, pending fleet_discovery)"
     )
 
     # Step 4: Truncate and rebuild
@@ -450,10 +439,10 @@ def rebuild_database(fa_aircraft: dict[str, dict], logger):
     conn.commit()
     logger.info("Tables truncated")
 
-    # Step 5: Insert all aircraft
+    # Step 5: Insert FA-confirmed aircraft only
     inserted = 0
     errors = 0
-    for ac in merged:
+    for ac in to_insert:
         try:
             db.upsert_aircraft(conn, ac)
             inserted += 1
@@ -468,12 +457,14 @@ def rebuild_database(fa_aircraft: dict[str, dict], logger):
     print(f"\n{'=' * 70}")
     print(f"  DATABASE REBUILD COMPLETE")
     print(f"{'=' * 70}")
-    print(f"  FA mainline aircraft:     {len(mainline)}")
-    print(f"  Resolved via OpenSky CSV: {resolved}")
-    print(f"  CSV-only (not flying now):{csv_extras}")
-    print(f"  Skipped (no ICAO24):      {fa_only}")
-    print(f"  Total inserted:           {inserted}")
+    print(f"  FA mainline (D-A*):       {len(mainline)}")
+    print(f"  Inserted (FA + CSV match):{inserted}")
+    print(f"  Skipped (no ICAO24 yet):  {len(skipped)}")
     print(f"  Errors:                   {errors}")
+    if skipped:
+        print(f"\n  Skipped aircraft (will be caught by fleet_discovery):")
+        for s in skipped:
+            print(f"  {s}")
     print(f"{'=' * 70}")
 
 
