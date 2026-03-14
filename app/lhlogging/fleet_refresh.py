@@ -75,24 +75,35 @@ def main() -> int:
             logger.warning(f"Planespotters lookup failed for {aircraft['icao24']}: {e}")
     logger.info(f"Planespotters enriched {ps_enriched}/{len(api_fleet)} aircraft types")
 
-    # --- Upsert all aircraft from the CSV ---
-    api_icao24_set: set[str] = set()
-    for aircraft in api_fleet:
+    # --- Only update aircraft already in the DB (don't add new ones) ---
+    # New aircraft are added exclusively via fleet_discovery (callsign-based),
+    # which ensures we only track confirmed LH mainline aircraft.
+    db_fleet = db.get_active_aircraft(conn)
+    db_icao24_set = {a["icao24"].strip() for a in db_fleet}
+
+    api_by_icao24 = {ac["icao24"]: ac for ac in api_fleet}
+    api_icao24_set = set(api_by_icao24.keys())
+
+    # Update existing DB aircraft with enriched CSV + Planespotters data
+    to_update = db_icao24_set & api_icao24_set
+    for icao24 in to_update:
         try:
-            db.upsert_aircraft(conn, aircraft)
-            api_icao24_set.add(aircraft["icao24"])
+            db.upsert_aircraft(conn, api_by_icao24[icao24])
             stats["ok"] += 1
         except Exception as e:
-            logger.error(f"Failed to upsert {aircraft}: {e}")
+            logger.error(f"Failed to update {icao24}: {e}")
             stats["error"] += 1
             conn.rollback()
     conn.commit()
 
-    # --- Retire aircraft no longer present in the CSV ---
-    db_fleet = db.get_active_aircraft(conn)
-    db_icao24_set = {a["icao24"] for a in db_fleet}
-    retired = db_icao24_set - api_icao24_set
+    skipped_new = api_icao24_set - db_icao24_set
+    logger.info(
+        f"Skipped {len(skipped_new)} CSV aircraft not in DB "
+        f"(fleet_discovery handles additions)"
+    )
 
+    # --- Retire DB aircraft no longer in the CSV ---
+    retired = db_icao24_set - api_icao24_set
     for icao24 in retired:
         try:
             db.mark_aircraft_retired(conn, icao24)
@@ -101,10 +112,11 @@ def main() -> int:
             logger.error(f"Failed to retire {icao24}: {e}")
     conn.commit()
 
-    stats["aircraft_total"] = len(api_fleet)
+    stats["aircraft_total"] = len(to_update)
     logger.info(
         f"Fleet refresh done — "
-        f"upserted: {stats['ok']}, errors: {stats['error']}, retired: {len(retired)}"
+        f"updated: {stats['ok']}, errors: {stats['error']}, "
+        f"retired: {len(retired)}, skipped new: {len(skipped_new)}"
     )
     db.log_batch_finish(conn, run_id, stats)
     conn.close()
