@@ -17,7 +17,7 @@ The default file path is /var/log/lhlogging/review.md (inside the container).
 Workflow:
     1. SSH into the VPS
     2. docker exec -it <app-container> python -m tools.review export
-    3. Edit /var/log/lhlogging/review.md  (vi, nano, etc.)
+    3. Edit /var/log/lhlogging/review.md  (nano is installed in the container)
     4. docker exec -it <app-container> python -m tools.review apply
 """
 import argparse

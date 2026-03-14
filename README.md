@@ -341,7 +341,7 @@ Flagged records are excluded from all dashboard statistics but remain visible in
 docker exec -it <app-container> python -m tools.review export
 
 # 2. Edit the generated markdown file
-docker exec -it <app-container> vi /var/log/lhlogging/review.md
+docker exec -it <app-container> nano /var/log/lhlogging/review.md
 
 # 3. Apply your changes back to the database
 docker exec -it <app-container> python -m tools.review apply
