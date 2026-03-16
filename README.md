@@ -195,6 +195,9 @@ All settings are environment variables (via `.env`):
 | `FLIGHT_DETECT_LOOKBACK_MINUTES` | `60` | How far back the detector scans for new departures (recommended: `90`) |
 | `LANDING_VELOCITY_THRESHOLD_MS` | `30.0` | Velocity fallback: below this (m/s) + altitude threshold = on ground |
 | `LANDING_ALTITUDE_THRESHOLD_M` | `300.0` | Altitude fallback: below this (m) + velocity threshold = on ground |
+| `MISSED_DEPARTURE_ALTITUDE_M` | `3000.0` | High-confidence inferred departure if aircraft below this altitude |
+| `MISSED_DEPARTURE_DISTANCE_KM` | `100.0` | High-confidence inferred departure if within this distance of last arrival |
+| `MISSED_DEPARTURE_MAX_GAP_H` | `48` | Max hours since last landing to infer departure from that airport |
 | `POSITIONS_RETENTION_DAYS` | `30` | How long position snapshots are kept |
 | `AIRPORT_LOOKUP_RADIUS_KM` | `50.0` | Max distance for nearest-airport matching |
 | `OPENSKY_REQUEST_DELAY_S` | `2.0` | Delay between API calls |
@@ -224,7 +227,7 @@ TRACK_AIRCRAFT_TYPES=
 | Job | Schedule | What it does |
 |---|---|---|
 | **State Poller** | Every 2 min | Fetches `/states/all`, stores position snapshots for the LH fleet |
-| **Flight Detector** | Every 30 min (at :15 and :45) | Detects flights from on_ground transitions, closes pending arrivals, flags dep==arr flights for review |
+| **Flight Detector** | Every 30 min (at :15 and :45) | Detects flights from ground/air transitions (with velocity+altitude fallback), closes pending arrivals, auto-closes stale flights (>24h), infers missed departures for airborne aircraft with no open flight |
 | **Fleet Discovery** | Every 6 hours | Discovers new aircraft via live DLH callsign matching (OpenSky + Planespotters) |
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |

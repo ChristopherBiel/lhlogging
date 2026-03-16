@@ -234,6 +234,157 @@ def _close_pending_flights(conn, logger) -> int:
     return closed
 
 
+def _infer_missed_departures(conn, logger) -> int:
+    """
+    Find aircraft that are airborne (recent position with on_ground=False)
+    but have no open flight. These are missed departures — the ground→air
+    transition was not captured (e.g. poor ADS-B coverage at departure airport).
+
+    High confidence (altitude < 3000m or within 100km of last arrival):
+        Create pending flight with last arrival airport as departure.
+    Low confidence (at cruise altitude, far from last airport):
+        Create pending flight with unknown departure, flagged for review.
+
+    Returns the number of inferred departures.
+    """
+    # Get all aircraft with an open flight — we skip these
+    open_flights = db.get_open_flights(conn)
+    has_open_flight = {f["icao24"].strip() for f in open_flights}
+
+    # Get all active aircraft and their latest positions
+    active = db.get_active_aircraft(conn)
+    all_icao24s = [a["icao24"] for a in active]
+    latest = db.get_latest_positions(conn, all_icao24s)
+
+    # Find aircraft that are airborne but have no open flight.
+    # Only consider positions from the last hour to avoid acting on stale data.
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    airborne_no_flight = []
+    for icao24, pos in latest.items():
+        icao24_stripped = icao24.strip()
+        if icao24_stripped in has_open_flight:
+            continue
+        if pos["captured_at"] < cutoff:
+            continue
+        ground = _is_on_ground(pos)
+        if ground is False:
+            airborne_no_flight.append((icao24_stripped, pos))
+
+    if not airborne_no_flight:
+        return 0
+
+    logger.info(f"Found {len(airborne_no_flight)} aircraft airborne with no open flight")
+
+    inferred = 0
+    for icao24, pos in airborne_no_flight:
+        # Look up the most recent completed flight for this aircraft
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT arrival_airport_icao, last_seen
+                FROM flights
+                WHERE icao24 = %s
+                  AND arrival_airport_icao IS NOT NULL
+                  AND arrival_airport_icao != 'UNKN'
+                ORDER BY last_seen DESC
+                LIMIT 1
+                """,
+                (icao24,),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            # No completed flight history — can't infer departure
+            logger.info(
+                f"  {icao24}: airborne, no open flight, no completed flight history — "
+                f"creating pending flight with unknown departure"
+            )
+            db.upsert_flight(conn, {
+                "icao24": icao24,
+                "callsign": pos["callsign"],
+                "dep": None,
+                "arr": None,
+                "first_seen": pos["captured_at"],
+                "last_seen": pos["captured_at"],
+                "needs_review": True,
+            })
+            inferred += 1
+            continue
+
+        last_arr_icao = row[0].strip()
+        last_landed = row[1]
+
+        # Don't infer if the last flight was too long ago
+        gap = pos["captured_at"] - last_landed
+        max_gap = timedelta(hours=config.MISSED_DEPARTURE_MAX_GAP_H)
+        if gap > max_gap:
+            logger.info(
+                f"  {icao24}: airborne, last landed {last_arr_icao} "
+                f"{gap.total_seconds() / 3600:.0f}h ago — too old, skipping"
+            )
+            continue
+
+        # Check confidence: altitude and distance from last arrival airport
+        alt = pos.get("altitude_m")
+        low_altitude = alt is not None and alt < config.MISSED_DEPARTURE_ALTITUDE_M
+
+        # Get distance from last arrival airport
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT earth_distance(
+                    ll_to_earth(a.latitude, a.longitude),
+                    ll_to_earth(%s, %s)
+                ) / 1000.0 AS dist_km
+                FROM airports a
+                WHERE a.icao_code = %s
+                """,
+                (pos["latitude"], pos["longitude"], last_arr_icao),
+            )
+            dist_row = cur.fetchone()
+
+        near_airport = (
+            dist_row is not None
+            and dist_row[0] < config.MISSED_DEPARTURE_DISTANCE_KM
+        )
+
+        if low_altitude or near_airport:
+            # High confidence — use last arrival as departure
+            logger.info(
+                f"  {icao24}: inferred departure from {last_arr_icao} "
+                f"(alt={alt}, near={near_airport}, gap={gap.total_seconds() / 3600:.1f}h)"
+            )
+            db.upsert_flight(conn, {
+                "icao24": icao24,
+                "callsign": pos["callsign"],
+                "dep": last_arr_icao,
+                "arr": None,
+                "first_seen": pos["captured_at"],
+                "last_seen": pos["captured_at"],
+                "needs_review": False,
+            })
+        else:
+            # Low confidence — unknown departure, flagged for review
+            logger.info(
+                f"  {icao24}: airborne far from {last_arr_icao} "
+                f"(alt={alt}, dist={dist_row[0]:.0f}km, gap={gap.total_seconds() / 3600:.1f}h) "
+                f"— unknown departure, flagged for review"
+            )
+            db.upsert_flight(conn, {
+                "icao24": icao24,
+                "callsign": pos["callsign"],
+                "dep": None,
+                "arr": None,
+                "first_seen": pos["captured_at"],
+                "last_seen": pos["captured_at"],
+                "needs_review": True,
+            })
+
+        inferred += 1
+
+    return inferred
+
+
 def main() -> int:
     logger = setup_logging("flight_detector")
     logger.info("Flight detector starting")
@@ -304,6 +455,15 @@ def main() -> int:
         stats["error"] += 1
         stale = 0
 
+    # --- Part 4: infer missed departures ---
+    try:
+        inferred = _infer_missed_departures(conn, logger)
+    except Exception as e:
+        logger.error(f"Error inferring missed departures: {e}")
+        conn.rollback()
+        stats["error"] += 1
+        inferred = 0
+
     try:
         conn.commit()
     except Exception as e:
@@ -315,10 +475,12 @@ def main() -> int:
         conn.close()
         return 1
 
-    stats["ok"] = new_flights + closed + stale
-    stats["flights_upserted"] = new_flights + closed + stale
+    total = new_flights + closed + stale + inferred
+    stats["ok"] = total
+    stats["flights_upserted"] = total
     logger.info(
-        f"Flight detector done — {new_flights} new/pending, {closed} closed, {stale} stale"
+        f"Flight detector done — {new_flights} new/pending, {closed} closed, "
+        f"{stale} stale, {inferred} inferred departures"
     )
     db.log_batch_finish(conn, run_id, stats)
     conn.close()
