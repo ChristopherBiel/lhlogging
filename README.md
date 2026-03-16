@@ -232,12 +232,12 @@ TRACK_AIRCRAFT_TYPES=
 The monitoring dashboard runs on port **8080** and auto-refreshes every 30 seconds.
 
 **What it shows:**
-- System health — last run status for each job
+- System health — last run status, result details, and timing for each job (state poller, flight detector, fleet discovery, fleet refresh)
 - Fleet breakdown — active/retired aircraft counts by type
 - Flight metrics — today, 7-day, and all-time counts (excludes `needs_review` flights)
 - Daily trend chart — flights and unique callsigns over the last 14 days
+- Recent errors — any job failures in the last 48 hours (hidden when all clear)
 - Top routes — most frequent city pairs (30-day window)
-- Batch run history — last 10 runs with status, stats, and error details
 - Fleet table — sortable/filterable list with a "Needs Review" checkbox to find aircraft missing type or registration data
 
 ---

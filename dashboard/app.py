@@ -75,7 +75,7 @@ def api_stats():
             conn, "SELECT pg_size_pretty(pg_database_size(current_database()))"
         )
 
-        # --- Latest batch runs (last 10) ---
+        # --- Recent errors (last 48h) ---
         rows = _q(
             conn,
             """
@@ -83,11 +83,12 @@ def api_stats():
                    aircraft_total, aircraft_ok, aircraft_error,
                    flights_upserted, status, error_detail
             FROM batch_runs
+            WHERE status != 'ok'
+              AND started_at > NOW() - INTERVAL '48 hours'
             ORDER BY started_at DESC
-            LIMIT 10
             """,
         )
-        stats["batch_runs"] = [
+        stats["recent_errors"] = [
             {
                 "run_type": r[0],
                 "started_at": r[1].isoformat() if r[1] else None,
@@ -125,7 +126,7 @@ def api_stats():
         )
 
         # --- Last run per type ---
-        for run_type in ("state_poller", "flight_detector", "fleet_refresh"):
+        for run_type in ("state_poller", "flight_detector", "fleet_discovery", "fleet_refresh"):
             row = _q(
                 conn,
                 """
@@ -643,12 +644,16 @@ body {
     </div>
   </div>
 
-  <!-- Batch runs + Top routes -->
-  <div class="section two-col">
+  <!-- Recent errors (48h) -->
+  <div class="section" id="errors-section" style="display:none">
     <div class="card">
-      <div class="section-label">Recent batch runs</div>
-      <div id="batch-list"></div>
+      <div class="section-label">Errors (last 48h)</div>
+      <div id="error-list"></div>
     </div>
+  </div>
+
+  <!-- Top routes -->
+  <div class="section">
     <div class="card">
       <div class="section-label">Top routes (30d)</div>
       <div id="route-list"></div>
@@ -719,6 +724,7 @@ async function refresh() {
   // Health strip
   const sp = data.last_state_poller;
   const fd = data.last_flight_detector;
+  const fdisc = data.last_fleet_discovery;
   const fr = data.last_fleet_refresh;
   const pollAge = data.last_poll_age_minutes;
   const spOk = sp && sp.status === 'ok' && (pollAge === null || pollAge <= 10);
@@ -726,22 +732,44 @@ async function refresh() {
   const frOk = fr && fr.status === 'ok';
   const frRecent = fr && fr.started_at &&
     (Date.now() - new Date(fr.started_at).getTime()) < 8 * 86400 * 1000;
+  const fdiscOk = fdisc && fdisc.status === 'ok';
+  const fdiscRecent = fdisc && fdisc.started_at &&
+    (Date.now() - new Date(fdisc.started_at).getTime()) < 7 * 3600 * 1000;
+
+  function healthDetail(run, type) {
+    if (!run) return '';
+    let detail = '';
+    if (type === 'state_poller') detail = fmt(run.aircraft_ok) + ' seen, ' + fmt(run.flights_upserted) + ' stored';
+    else if (type === 'flight_detector') detail = fmt(run.flights_upserted) + ' flights';
+    else if (type === 'fleet_discovery') detail = fmt(run.aircraft_ok) + ' discovered';
+    else detail = fmt(run.aircraft_ok) + '/' + fmt(run.aircraft_total) + ' updated';
+    return '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + detail + '</div>';
+  }
 
   $('health-strip').innerHTML =
     '<div class="health-item">' +
       '<div class="label">State Poller</div>' +
       '<div class="info"><span class="dot" style="background:' + (spOk ? 'var(--green)' : sp ? 'var(--amber)' : 'var(--red)') + '"></span>' +
       (pollAge !== null && pollAge !== undefined ? pollAge + 'm ago' : (sp ? ago(sp.started_at) : 'never')) + '</div>' +
+      healthDetail(sp, 'state_poller') +
     '</div>' +
     '<div class="health-item">' +
       '<div class="label">Flight Detector</div>' +
       '<div class="info"><span class="dot" style="background:' + (fdOk ? 'var(--green)' : fd ? 'var(--red)' : 'var(--red)') + '"></span>' +
       (fd ? ago(fd.started_at) : 'never') + '</div>' +
+      healthDetail(fd, 'flight_detector') +
+    '</div>' +
+    '<div class="health-item">' +
+      '<div class="label">Discovery</div>' +
+      '<div class="info"><span class="dot" style="background:' + (fdiscOk && fdiscRecent ? 'var(--green)' : !fdiscRecent ? 'var(--amber)' : 'var(--red)') + '"></span>' +
+      (fdisc ? ago(fdisc.started_at) : 'never') + '</div>' +
+      healthDetail(fdisc, 'fleet_discovery') +
     '</div>' +
     '<div class="health-item">' +
       '<div class="label">Fleet Refresh</div>' +
       '<div class="info"><span class="dot" style="background:' + (frOk && frRecent ? 'var(--green)' : !frRecent ? 'var(--amber)' : 'var(--red)') + '"></span>' +
       (fr ? ago(fr.started_at) : 'never') + '</div>' +
+      healthDetail(fr, 'fleet_refresh') +
     '</div>' +
     '<div class="health-item">' +
       '<div class="label">Airborne Now</div>' +
@@ -807,25 +835,23 @@ async function refresh() {
     '</div>';
   }).join('');
 
-  // Batch runs
-  const runs = data.batch_runs || [];
-  $('batch-list').innerHTML = runs.length ? runs.map(r =>
-    '<div class="batch-row">' +
-      '<div class="batch-type">' + r.run_type.replace('_', ' ') + '</div>' +
-      '<div class="batch-time">' + ago(r.started_at) + '</div>' +
-      '<div class="batch-detail">' +
-        (r.run_type === 'state_poller'
-          ? fmt(r.aircraft_ok) + ' seen, ' + fmt(r.flights_upserted) + ' stored'
-          : r.run_type === 'flight_detector'
-            ? fmt(r.flights_upserted) + ' flights'
-            : r.run_type === 'pos_cleanup'
-              ? fmt(r.flights_upserted) + ' deleted'
-              : fmt(r.aircraft_ok) + '/' + fmt(r.aircraft_total) + ' ac') +
-      '</div>' +
-      badge(r.status) +
-    '</div>' +
-    (r.error_detail ? '<div class="err-text" title="' + r.error_detail.replace(/"/g, '&quot;') + '">' + r.error_detail + '</div>' : '')
-  ).join('') : '<div style="color:var(--muted);font-size:12px">No runs recorded</div>';
+  // Recent errors (48h)
+  const errors = data.recent_errors || [];
+  if (errors.length) {
+    $('errors-section').style.display = '';
+    $('error-list').innerHTML = errors.map(r =>
+      '<div class="batch-row">' +
+        '<div class="batch-type">' + r.run_type.replace('_', ' ') + '</div>' +
+        '<div class="batch-time">' + ago(r.started_at) + '</div>' +
+        '<div class="batch-detail">' +
+          (r.error_detail || r.status) +
+        '</div>' +
+        badge(r.status) +
+      '</div>'
+    ).join('');
+  } else {
+    $('errors-section').style.display = 'none';
+  }
 
   // Top routes
   const routes = data.top_routes || [];

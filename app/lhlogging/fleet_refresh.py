@@ -55,6 +55,28 @@ def main() -> int:
         conn.close()
         return 1
 
+    # --- Reactivate retired aircraft that have been seen recently ---
+    # Catches aircraft that were incorrectly retired (e.g. not in CSV but still flying).
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE aircraft
+            SET is_active = TRUE, updated_at = NOW()
+            WHERE is_active = FALSE
+              AND icao24 IN (
+                  SELECT DISTINCT icao24 FROM positions
+                  WHERE captured_at > NOW() - INTERVAL '7 days'
+              )
+            RETURNING icao24
+            """
+        )
+        reactivated = [r[0].strip() for r in cur.fetchall()]
+    conn.commit()
+    if reactivated:
+        for icao24 in reactivated:
+            logger.info(f"Reactivated {icao24} — retired but seen in last 7 days")
+        logger.info(f"Reactivated {len(reactivated)} incorrectly retired aircraft")
+
     # --- Enrich type data from Planespotters (OpenSky type codes are often missing/wrong) ---
     ps_client = PlanespottersClient(logger)
     logger.info(f"Enriching {len(api_fleet)} aircraft with Planespotters type data...")
@@ -84,13 +106,27 @@ def main() -> int:
     api_by_icao24 = {ac["icao24"]: ac for ac in api_fleet}
     api_icao24_set = set(api_by_icao24.keys())
 
-    # Update existing DB aircraft with enriched CSV + Planespotters data
+    # Update existing DB aircraft with enriched CSV + Planespotters data.
+    # Use COALESCE so CSV data only fills in blanks — never overwrites
+    # manually-reviewed values. Don't re-flag aircraft already reviewed.
     to_update = db_icao24_set & api_icao24_set
     for icao24 in to_update:
         ac = api_by_icao24[icao24]
-        ac["needs_review"] = not ac.get("aircraft_type")
         try:
-            db.upsert_aircraft(conn, ac)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE aircraft SET
+                        registration     = COALESCE(NULLIF(aircraft.registration, aircraft.icao24),
+                                                    %(registration)s, aircraft.registration),
+                        aircraft_type    = COALESCE(aircraft.aircraft_type, %(aircraft_type)s),
+                        aircraft_subtype = COALESCE(aircraft.aircraft_subtype, %(aircraft_subtype)s),
+                        is_active        = TRUE,
+                        updated_at       = NOW()
+                    WHERE icao24 = %(icao24)s
+                    """,
+                    ac,
+                )
             stats["ok"] += 1
         except Exception as e:
             logger.error(f"Failed to update {icao24}: {e}")
@@ -105,10 +141,32 @@ def main() -> int:
     )
 
     # --- Retire DB aircraft no longer in the CSV ---
-    retired = db_icao24_set - api_icao24_set
-    for icao24 in retired:
+    # Only retire if the aircraft also has no recent positions (last 7 days).
+    # Aircraft discovered via fleet_discovery or added via review may not be
+    # in the CSV but are still actively flying.
+    candidates = db_icao24_set - api_icao24_set
+    retired = set()
+    for icao24 in candidates:
         try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM positions
+                        WHERE icao24 = %s
+                          AND captured_at > NOW() - INTERVAL '7 days'
+                    )
+                    """,
+                    (icao24,),
+                )
+                has_recent = cur.fetchone()[0]
+            if has_recent:
+                logger.info(
+                    f"Keeping {icao24} — not in CSV but seen in last 7 days"
+                )
+                continue
             db.mark_aircraft_retired(conn, icao24)
+            retired.add(icao24)
             logger.warning(f"Retired aircraft no longer in OpenSky DB: {icao24}")
         except Exception as e:
             logger.error(f"Failed to retire {icao24}: {e}")
