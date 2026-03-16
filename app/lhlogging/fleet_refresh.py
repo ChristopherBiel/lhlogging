@@ -77,11 +77,29 @@ def main() -> int:
             logger.info(f"Reactivated {icao24} — retired but seen in last 7 days")
         logger.info(f"Reactivated {len(reactivated)} incorrectly retired aircraft")
 
-    # --- Enrich type data from Planespotters (OpenSky type codes are often missing/wrong) ---
+    # --- Only update aircraft already in the DB (don't add new ones) ---
+    # New aircraft are added exclusively via fleet_discovery (callsign-based),
+    # which ensures we only track confirmed LH mainline aircraft.
+    db_fleet = db.get_active_aircraft(conn)
+    db_icao24_set = {a["icao24"].strip() for a in db_fleet}
+    db_by_icao24 = {a["icao24"].strip(): a for a in db_fleet}
+
+    api_by_icao24 = {ac["icao24"]: ac for ac in api_fleet}
+    api_icao24_set = set(api_by_icao24.keys())
+
+    to_update = db_icao24_set & api_icao24_set
+
+    # --- Enrich with Planespotters only for DB aircraft missing type data ---
+    needs_enrichment = [
+        api_by_icao24[icao24]
+        for icao24 in to_update
+        if not api_by_icao24[icao24].get("aircraft_type")
+        and not db_by_icao24.get(icao24, {}).get("aircraft_type")
+    ]
     ps_client = PlanespottersClient(logger)
-    logger.info(f"Enriching {len(api_fleet)} aircraft with Planespotters type data...")
+    logger.info(f"Enriching {len(needs_enrichment)}/{len(to_update)} aircraft missing type data...")
     ps_enriched = 0
-    for aircraft in api_fleet:
+    for aircraft in needs_enrichment:
         try:
             ps_data = ps_client.get_aircraft(aircraft["icao24"])
             if ps_data:
@@ -95,21 +113,11 @@ def main() -> int:
             break
         except PlanespottersError as e:
             logger.warning(f"Planespotters lookup failed for {aircraft['icao24']}: {e}")
-    logger.info(f"Planespotters enriched {ps_enriched}/{len(api_fleet)} aircraft types")
-
-    # --- Only update aircraft already in the DB (don't add new ones) ---
-    # New aircraft are added exclusively via fleet_discovery (callsign-based),
-    # which ensures we only track confirmed LH mainline aircraft.
-    db_fleet = db.get_active_aircraft(conn)
-    db_icao24_set = {a["icao24"].strip() for a in db_fleet}
-
-    api_by_icao24 = {ac["icao24"]: ac for ac in api_fleet}
-    api_icao24_set = set(api_by_icao24.keys())
+    logger.info(f"Planespotters enriched {ps_enriched}/{len(needs_enrichment)} aircraft types")
 
     # Update existing DB aircraft with enriched CSV + Planespotters data.
     # Use COALESCE so CSV data only fills in blanks — never overwrites
     # manually-reviewed values. Don't re-flag aircraft already reviewed.
-    to_update = db_icao24_set & api_icao24_set
     for icao24 in to_update:
         ac = api_by_icao24[icao24]
         try:
