@@ -3,6 +3,10 @@ Flight detector — runs every 30 minutes via cron.
 Reads position snapshots from the positions table and detects flights
 by looking for on_ground transitions (ground→air = departure, air→ground = arrival).
 
+When OpenSky's on_ground flag is unreliable, a velocity+altitude fallback
+is used: an aircraft with velocity < 30 m/s and altitude < 300 m is treated
+as on the ground.
+
 Departures within the lookback window are inserted as pending flights
 (arrival_airport_icao = NULL).  On subsequent runs, pending flights are
 closed when the aircraft is seen on the ground again — regardless of
@@ -19,6 +23,26 @@ from lhlogging import config, db
 from lhlogging.utils import setup_logging
 
 
+def _is_on_ground(pos: dict) -> bool | None:
+    """
+    Determine if an aircraft is on the ground using on_ground flag with
+    a velocity+altitude fallback for when OpenSky's flag is unreliable.
+
+    Returns True (on ground), False (airborne), or None (indeterminate).
+    """
+    if pos["on_ground"] is True:
+        return True
+    if pos["on_ground"] is None:
+        return None
+    # on_ground is False — check velocity+altitude fallback
+    vel = pos.get("velocity_ms")
+    alt = pos.get("altitude_m")
+    if vel is not None and alt is not None:
+        if vel < config.LANDING_VELOCITY_THRESHOLD_MS and alt < config.LANDING_ALTITUDE_THRESHOLD_M:
+            return True
+    return False
+
+
 def _detect_departures(conn, grouped: dict, logger) -> int:
     """
     Walk each aircraft's position sequence looking for on_ground transitions.
@@ -30,14 +54,16 @@ def _detect_departures(conn, grouped: dict, logger) -> int:
     for icao24, positions in grouped.items():
         departure = None
         prev = None
+        prev_ground = None
 
         for pos in positions:
-            if pos["on_ground"] is None:
+            cur_ground = _is_on_ground(pos)
+            if cur_ground is None:
                 continue
 
-            if prev is not None:
+            if prev is not None and prev_ground is not None:
                 # Ground → Air: departure
-                if prev["on_ground"] and not pos["on_ground"]:
+                if prev_ground and not cur_ground:
                     departure = {
                         "first_seen": prev["captured_at"],
                         "dep_lat": prev["latitude"],
@@ -46,7 +72,7 @@ def _detect_departures(conn, grouped: dict, logger) -> int:
                     }
 
                 # Air → Ground: arrival (only if we have a matching departure)
-                elif not prev["on_ground"] and pos["on_ground"] and departure:
+                elif not prev_ground and cur_ground and departure:
                     dep_icao = db.lookup_nearest_airport(
                         conn, departure["dep_lat"], departure["dep_lon"]
                     )
@@ -82,6 +108,7 @@ def _detect_departures(conn, grouped: dict, logger) -> int:
                     departure = None
 
             prev = pos
+            prev_ground = cur_ground
 
         # Open departure with no landing yet — insert as pending
         if departure:
@@ -140,7 +167,7 @@ def _close_stale_flights(conn, logger, max_age_hours: int = 24) -> int:
 def _close_pending_flights(conn, logger) -> int:
     """
     Find flights with no arrival yet. Check if the aircraft has landed
-    (most recent position on_ground=True) and close them.
+    (on_ground flag or velocity+altitude fallback) and close them.
     Also updates last_seen for still-airborne flights.
     Returns the number of flights closed.
     """
@@ -158,7 +185,15 @@ def _close_pending_flights(conn, logger) -> int:
         if not pos:
             continue
 
-        if pos["on_ground"]:
+        on_ground = _is_on_ground(pos)
+        if on_ground:
+            # Log when the fallback triggered (on_ground was False but vel+alt say landed)
+            if not pos["on_ground"]:
+                logger.info(
+                    f"Landing detected via velocity+altitude fallback for {icao24} "
+                    f"(vel={pos.get('velocity_ms')}, alt={pos.get('altitude_m')})"
+                )
+
             arr_icao = db.lookup_nearest_airport(
                 conn, pos["latitude"], pos["longitude"]
             )

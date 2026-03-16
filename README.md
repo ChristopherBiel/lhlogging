@@ -57,11 +57,13 @@ Tracks every Lufthansa aircraft — from A320s to A380s — logging departure/ar
 
 The OpenSky `/states/all` endpoint returns live state vectors for all aircraft globally in a single API call. Every 2 minutes the state poller fetches this snapshot, filters it to the Lufthansa fleet, and stores it in the `positions` table.
 
-The flight detector runs every 30 minutes and walks each aircraft's position history looking for `on_ground` transitions:
+The flight detector runs every 30 minutes and walks each aircraft's position history looking for ground/air transitions:
 - **Ground → Air** = departure (airport identified from the last ground position lat/lon)
 - **Air → Ground** = arrival (airport identified from the first ground position lat/lon)
 
-Flights that are still in progress are inserted immediately as pending records and updated when the aircraft lands — so a 14-hour flight to Buenos Aires is handled just as well as a 90-minute hop to Munich.
+Landing detection uses OpenSky's `on_ground` flag with a **velocity+altitude fallback**: if `on_ground` is false but velocity < 30 m/s and altitude < 300 m, the aircraft is treated as on the ground. This catches cases where OpenSky's flag is unreliable (e.g. aircraft clearly stationary at an airport but still reporting `on_ground=false`).
+
+Flights that are still in progress are inserted immediately as pending records and updated when the aircraft lands — so a 14-hour flight to Buenos Aires is handled just as well as a 90-minute hop to Munich. Pending flights older than 24 hours are automatically closed (with arrival `UNKN`) and flagged for review, preventing outages from leaving flights stuck open forever.
 
 **Dep == Arr detection:** When a flight's detected departure and arrival airport are the same (e.g. EDDF→EDDF), it usually means the system missed the real arrival and the subsequent departure, merging two separate flights into one. These flights are closed normally but flagged with `needs_review = TRUE` so they are excluded from statistics and can be corrected manually via the [review tool](#review-tool).
 
@@ -191,6 +193,8 @@ All settings are environment variables (via `.env`):
 | `POSTGRES_PASSWORD` | *(required)* | Database password |
 | `TRACK_AIRCRAFT_TYPES` | *(empty = all)* | Comma-separated ICAO type codes to filter (e.g. `A388,B748`) |
 | `FLIGHT_DETECT_LOOKBACK_MINUTES` | `60` | How far back the detector scans for new departures (recommended: `90`) |
+| `LANDING_VELOCITY_THRESHOLD_MS` | `30.0` | Velocity fallback: below this (m/s) + altitude threshold = on ground |
+| `LANDING_ALTITUDE_THRESHOLD_M` | `300.0` | Altitude fallback: below this (m) + velocity threshold = on ground |
 | `POSITIONS_RETENTION_DAYS` | `30` | How long position snapshots are kept |
 | `AIRPORT_LOOKUP_RADIUS_KM` | `50.0` | Max distance for nearest-airport matching |
 | `OPENSKY_REQUEST_DELAY_S` | `2.0` | Delay between API calls |

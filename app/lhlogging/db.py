@@ -118,7 +118,8 @@ def get_positions_since(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT icao24, callsign, captured_at, latitude, longitude, on_ground
+            SELECT icao24, callsign, captured_at, latitude, longitude,
+                   on_ground, velocity_ms, altitude_m
             FROM positions
             WHERE captured_at >= %s
             ORDER BY icao24, captured_at
@@ -134,6 +135,8 @@ def get_positions_since(
             "latitude": r[3],
             "longitude": r[4],
             "on_ground": r[5],
+            "velocity_ms": r[6],
+            "altitude_m": r[7],
         }
         for r in rows
     ]
@@ -171,7 +174,8 @@ def get_latest_positions(
         cur.execute(
             """
             SELECT DISTINCT ON (icao24)
-                icao24, captured_at, latitude, longitude, on_ground, callsign
+                icao24, captured_at, latitude, longitude, on_ground, callsign,
+                velocity_ms, altitude_m
             FROM positions
             WHERE icao24 = ANY(%s)
             ORDER BY icao24, captured_at DESC
@@ -186,6 +190,8 @@ def get_latest_positions(
             "longitude": r[3],
             "on_ground": r[4],
             "callsign": r[5],
+            "velocity_ms": r[6],
+            "altitude_m": r[7],
         }
         for r in rows
     }
