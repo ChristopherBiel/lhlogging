@@ -1,5 +1,5 @@
 """
-State poller — runs every minute via cron.
+State poller — runs every 2 minutes via cron.
 Calls OpenSky /states/all, filters to the active fleet client-side,
 and stores position snapshots in the positions table.
 
