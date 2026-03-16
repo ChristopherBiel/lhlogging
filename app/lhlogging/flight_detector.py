@@ -108,6 +108,35 @@ def _detect_departures(conn, grouped: dict, logger) -> int:
     return count
 
 
+def _close_stale_flights(conn, logger, max_age_hours: int = 24) -> int:
+    """
+    Close pending flights that have been open longer than max_age_hours.
+    These are flights where we missed the arrival (e.g. due to a polling outage).
+    Closed with arrival 'UNKN' and flagged for review.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE flights
+            SET arrival_airport_icao = 'UNKN',
+                needs_review = TRUE
+            WHERE arrival_airport_icao IS NULL
+              AND first_seen < NOW() - make_interval(hours => %s)
+            RETURNING icao24, callsign, departure_airport_icao, first_seen
+            """,
+            (max_age_hours,),
+        )
+        rows = cur.fetchall()
+
+    for r in rows:
+        logger.warning(
+            f"Closed stale flight {r[0].strip()} {r[2] or '?'}→UNKN "
+            f"(callsign={r[1] or '?'}, departed {r[3].strftime('%Y-%m-%d %H:%M')})"
+        )
+
+    return len(rows)
+
+
 def _close_pending_flights(conn, logger) -> int:
     """
     Find flights with no arrival yet. Check if the aircraft has landed
@@ -231,6 +260,15 @@ def main() -> int:
         stats["error"] += 1
         closed = 0
 
+    # --- Part 3: close stale flights (open > 24h, likely missed arrival) ---
+    try:
+        stale = _close_stale_flights(conn, logger)
+    except Exception as e:
+        logger.error(f"Error closing stale flights: {e}")
+        conn.rollback()
+        stats["error"] += 1
+        stale = 0
+
     try:
         conn.commit()
     except Exception as e:
@@ -242,10 +280,10 @@ def main() -> int:
         conn.close()
         return 1
 
-    stats["ok"] = new_flights + closed
-    stats["flights_upserted"] = new_flights + closed
+    stats["ok"] = new_flights + closed + stale
+    stats["flights_upserted"] = new_flights + closed + stale
     logger.info(
-        f"Flight detector done — {new_flights} new/pending, {closed} closed"
+        f"Flight detector done — {new_flights} new/pending, {closed} closed, {stale} stale"
     )
     db.log_batch_finish(conn, run_id, stats)
     conn.close()
