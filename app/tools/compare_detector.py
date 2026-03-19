@@ -111,6 +111,7 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
 
     flights = []
     open_flight = None
+    prev_session = None
 
     for session in sessions:
         if not session:
@@ -119,6 +120,23 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
         first_pos = session[0]
         session_cs = _get_session_callsign(session)
         starts_on_ground = _is_on_ground(first_pos)
+
+        # Evaluate previous session's tail for landing before classifying new session
+        if open_flight and prev_session:
+            tail = prev_session[-5:]
+            landing_info = _detect_landing(tail, conn)
+            if landing_info:
+                arr_icao = db.lookup_nearest_airport(
+                    conn, landing_info["lat"], landing_info["lon"]
+                )
+                dep_icao = open_flight.get("departure_airport_icao")
+                review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
+                open_flight["arrival_airport_icao"] = arr_icao
+                open_flight["last_seen"] = landing_info["captured_at"]
+                open_flight["needs_review"] = review
+                open_flight["case"] += "+land"
+                flights.append(open_flight)
+                open_flight = None
 
         if open_flight is None:
             if starts_on_ground is True:
@@ -287,6 +305,8 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
                         open_flight["last_seen"] = arr_result["captured_at"]
                         flights.append(open_flight)
                         open_flight = None
+
+        prev_session = session
 
     # Evaluate tail of last session
     if open_flight and sessions and sessions[-1]:

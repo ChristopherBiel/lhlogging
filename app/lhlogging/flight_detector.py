@@ -275,6 +275,7 @@ def _process_aircraft(
     Returns the number of flight records created or closed.
     """
     count = 0
+    prev_session = None
 
     for session in sessions:
         if not session:
@@ -283,6 +284,28 @@ def _process_aircraft(
         first_pos = session[0]
         session_cs = _get_session_callsign(session)
         starts_on_ground = _is_on_ground(first_pos)
+
+        # --- Evaluate session end (previous session's tail) ---
+        # Before classifying the new session start, check if the previous
+        # session's tail indicates a landing. This must happen first so that
+        # session-start classification sees the correct open_flight state.
+        if open_flight and prev_session:
+            tail = prev_session[-5:]
+            landing_info = _detect_landing(tail, conn)
+            if landing_info:
+                arr_icao = db.lookup_nearest_airport(
+                    conn, landing_info["lat"], landing_info["lon"]
+                )
+                dep_icao = open_flight.get("departure_airport_icao")
+                review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
+                flight_cs = (open_flight.get("callsign") or "").strip() or None
+                _close_flight(
+                    conn, open_flight, landing_info["captured_at"],
+                    arr=arr_icao, callsign=flight_cs,
+                    needs_review=review, logger=logger,
+                )
+                count += 1
+                open_flight = None
 
         # --- Evaluate session start ---
 
@@ -499,6 +522,8 @@ def _process_aircraft(
                     session[-1]["captured_at"],
                     callsign=session_cs or flight_cs,
                 )
+
+        prev_session = session
 
     # After all sessions: if flight is still open, update last_seen to latest position
     if open_flight and sessions and sessions[-1]:
