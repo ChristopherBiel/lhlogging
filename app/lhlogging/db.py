@@ -265,35 +265,41 @@ def lookup_nearest_airport(
     return r[0].strip()
 
 
-def get_first_position_since(
-    conn: psycopg.Connection, icao24: str, since: datetime
-) -> dict | None:
-    """Return the earliest position for an aircraft after the given timestamp."""
+def get_positions_for_aircraft_before(
+    conn: psycopg.Connection, icao24: str, before: datetime, limit: int = 5
+) -> list[dict]:
+    """Return the last `limit` positions for an aircraft before `before`, in chronological order."""
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT icao24, callsign, captured_at, latitude, longitude,
                    on_ground, velocity_ms, altitude_m
-            FROM positions
-            WHERE icao24 = %s AND captured_at > %s
+            FROM (
+                SELECT icao24, callsign, captured_at, latitude, longitude,
+                       on_ground, velocity_ms, altitude_m
+                FROM positions
+                WHERE icao24 = %s AND captured_at < %s
+                ORDER BY captured_at DESC
+                LIMIT %s
+            ) sub
             ORDER BY captured_at ASC
-            LIMIT 1
             """,
-            (icao24, since),
+            (icao24, before, limit),
         )
-        r = cur.fetchone()
-    if not r:
-        return None
-    return {
-        "icao24": r[0],
-        "callsign": r[1],
-        "captured_at": r[2],
-        "latitude": r[3],
-        "longitude": r[4],
-        "on_ground": r[5],
-        "velocity_ms": r[6],
-        "altitude_m": r[7],
-    }
+        rows = cur.fetchall()
+    return [
+        {
+            "icao24": r[0],
+            "callsign": r[1],
+            "captured_at": r[2],
+            "latitude": r[3],
+            "longitude": r[4],
+            "on_ground": r[5],
+            "velocity_ms": r[6],
+            "altitude_m": r[7],
+        }
+        for r in rows
+    ]
 
 
 def update_flight_departure(
