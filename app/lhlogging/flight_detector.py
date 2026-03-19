@@ -52,12 +52,13 @@ def _split_sessions(positions: list[dict]) -> list[list[dict]]:
     """Split a single aircraft's positions into sessions based on time gaps.
 
     A session boundary exists when the gap between consecutive positions
-    exceeds 2x the poll interval, indicating at least one missed sample.
+    exceeds 3x the poll interval, tolerating up to two missed samples
+    (common during taxi/takeoff due to patchy airport ADS-B coverage).
     """
     if not positions:
         return []
 
-    gap_threshold = timedelta(minutes=2 * config.STATE_POLL_INTERVAL_MINUTES)
+    gap_threshold = timedelta(minutes=4 * config.STATE_POLL_INTERVAL_MINUTES)
     sessions: list[list[dict]] = [[positions[0]]]
 
     for i in range(1, len(positions)):

@@ -98,7 +98,7 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
         return []
 
     # Split ALL positions into sessions using the full timeline
-    gap_threshold = timedelta(minutes=2 * config.STATE_POLL_INTERVAL_MINUTES)
+    gap_threshold = timedelta(minutes=4 * config.STATE_POLL_INTERVAL_MINUTES)
     sessions: list[list[dict]] = [[positions[0]]]
     for i in range(1, len(positions)):
         gap = positions[i]["captured_at"] - positions[i - 1]["captured_at"]
