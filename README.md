@@ -10,7 +10,7 @@
 [![PostgreSQL](https://img.shields.io/badge/postgresql-16-4169E1?logo=postgresql&logoColor=white)](https://postgresql.org)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![OpenSky](https://img.shields.io/badge/data-OpenSky%20Network-1a1a2e)](https://opensky-network.org/)
-[![Credits/day](https://img.shields.io/badge/API%20cost-~2%2C884%20credits%2Fday-yellow)](#credit-budget)
+[![Credits/day](https://img.shields.io/badge/API%20cost-~2%2C928%20credits%2Fday-yellow)](#credit-budget)
 
 Tracks every Lufthansa aircraft — from A320s to A380s — logging departure/arrival airports, flight times, and route data into a PostgreSQL database. A live monitoring dashboard gives you a bird's-eye view of fleet activity, route frequency, and system health.
 
@@ -88,7 +88,7 @@ lhlogging/
 │   │   ├── planespotters.py        # Planespotters API client (fleet type enrichment)
 │   │   ├── state_poller.py         # Every 2 min — snapshots live positions
 │   │   ├── flight_detector.py      # Every 30 min — infers flights from positions
-│   │   ├── fleet_discovery.py      # Every 6h — discovers new aircraft via DLH callsigns
+│   │   ├── fleet_discovery.py      # Every 30 min — discovers new aircraft via DLH callsigns
 │   │   ├── positions_cleanup.py    # Daily — deletes old position snapshots
 │   │   ├── fleet_refresh.py        # Weekly — updates type data, retires decommissioned aircraft
 │   │   └── utils.py                # Logging, retry decorator, rate limiter
@@ -228,7 +228,7 @@ TRACK_AIRCRAFT_TYPES=
 |---|---|---|
 | **State Poller** | Every 2 min | Fetches `/states/all`, stores position snapshots for the LH fleet |
 | **Flight Detector** | Every 30 min (at :15 and :45) | Detects flights from ground/air transitions (with velocity+altitude fallback), closes pending arrivals, auto-closes stale flights (>24h), infers missed departures for airborne aircraft with no open flight |
-| **Fleet Discovery** | Every 6 hours | Discovers new aircraft via live DLH callsign matching (OpenSky + Planespotters) |
+| **Fleet Discovery** | Every 30 min (at :00 and :30) | Discovers new aircraft via live DLH callsign matching (OpenSky + Planespotters) |
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 
@@ -293,7 +293,7 @@ Then deploy. The 003 migration also auto-flags existing aircraft that have missi
 
 The fleet is managed through two complementary mechanisms:
 
-- **Fleet Discovery** (every 6h) — the sole path for adding new aircraft. Monitors live ADS-B data for DLH callsigns, discovers unknown aircraft, and enriches them via OpenSky CSV and Planespotters. Aircraft with missing type or placeholder registrations are auto-flagged `needs_review` for manual correction.
+- **Fleet Discovery** (every 30 min) — the sole path for adding new aircraft. Monitors live ADS-B data for DLH callsigns, discovers unknown aircraft, and enriches them via OpenSky CSV and Planespotters. Aircraft with missing type or placeholder registrations are auto-flagged `needs_review` for manual correction.
 - **Fleet Refresh** (weekly) — updates type/subtype data for existing aircraft and retires those no longer in the OpenSky registry. Does **not** add new aircraft to prevent database bloat from the OpenSky CSV's broad registration-prefix matching. Clears the `needs_review` flag when enrichment fills in missing data.
 
 **Why this separation matters:** The OpenSky CSV contains ~900+ aircraft matching `operatoricao=DLH` or `D-A*` registration prefix (including non-LH carriers like Condor, Eurowings). Allowing fleet_refresh to add aircraft would re-bloat the database. Fleet discovery uses callsign-based confirmation to ensure only genuine LH mainline aircraft are tracked.
@@ -324,11 +324,11 @@ The rebuild mode cross-references FlightAware (source of truth for in-service ai
 | | Per call | Daily calls | Daily cost |
 |---|---|---|---|
 | State poller | 4 credits | 720 (every 2 min) | **~2,880 credits** |
-| Fleet discovery | 1 credit | 4 (every 6h) | **~4 credits** |
+| Fleet discovery | 1 credit | 48 (every 30 min) | **~48 credits** |
 | Fleet refresh | ~free (CSV download) | 1/week | **~0** |
-| **Total** | | | **~2,884 credits/day** |
+| **Total** | | | **~2,928 credits/day** |
 
-This uses **~72%** of the 4,000 credit daily budget, leaving headroom for retries and rate-limit recovery.
+This uses **~73%** of the 4,000 credit daily budget, leaving headroom for retries and rate-limit recovery.
 
 ---
 
