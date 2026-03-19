@@ -123,7 +123,7 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
 
         # Evaluate previous session's tail for landing before classifying new session
         if open_flight and prev_session:
-            tail = prev_session[-5:]
+            tail = prev_session[-15:]
             landing_info = _detect_landing(tail, conn)
             if landing_info:
                 arr_icao = db.lookup_nearest_airport(
@@ -177,6 +177,14 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
                         conn, dep_info["lat"], dep_info["lon"]
                     )
                     if dep_icao:
+                        review = False
+
+                # Fallback: use last closed flight's arrival as departure
+                if not dep_icao and flights:
+                    last_closed = flights[-1]
+                    last_arr = (last_closed.get("arrival_airport_icao") or "").strip()
+                    if last_arr and last_arr != "UNKN":
+                        dep_icao = last_arr
                         review = False
 
                 open_flight = {
@@ -310,7 +318,7 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
 
     # Evaluate tail of last session
     if open_flight and sessions and sessions[-1]:
-        tail = sessions[-1][-5:] if len(sessions[-1]) >= 5 else sessions[-1]
+        tail = sessions[-1][-15:]
         landing_info = _detect_landing(tail, conn)
         if landing_info:
             arr_icao = db.lookup_nearest_airport(

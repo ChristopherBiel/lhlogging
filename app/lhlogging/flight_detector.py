@@ -73,7 +73,12 @@ def _split_sessions(positions: list[dict]) -> list[list[dict]]:
 
 
 def _detect_landing(positions: list[dict], conn) -> dict | None:
-    """Analyze the last ~5 positions of a session for landing indicators.
+    """Analyze the tail positions of a session for landing indicators.
+
+    Handles three scenarios:
+    1. Direct on_ground detection (via _is_on_ground)
+    2. Descent + deceleration trend ending at low altitude near an airport
+    3. Frozen positions at low altitude near an airport (stale ADS-B after landing)
 
     Returns {"lat": ..., "lon": ..., "captured_at": ...} if landing detected,
     or None if the aircraft appears still airborne.
@@ -91,29 +96,45 @@ def _detect_landing(positions: list[dict], conn) -> dict | None:
             "captured_at": last["captured_at"],
         }
 
-    # Trend-based: descent + deceleration ending at low altitude near an airport
-    if len(positions) >= 2:
-        altitudes = [p["altitude_m"] for p in positions if p.get("altitude_m") is not None]
-        velocities = [p["velocity_ms"] for p in positions if p.get("velocity_ms") is not None]
+    last_alt = last.get("altitude_m")
+    low_altitude = (
+        last_alt is not None
+        and last_alt < config.PROXIMITY_LANDING_ALTITUDE_M
+    )
 
-        descending = len(altitudes) >= 2 and altitudes[-1] < altitudes[0]
-        decelerating = len(velocities) >= 2 and velocities[-1] < velocities[0]
-        low_altitude = (
-            last.get("altitude_m") is not None
-            and last["altitude_m"] < config.PROXIMITY_LANDING_ALTITUDE_M
+    if not low_altitude:
+        return None
+
+    # Collect altitude and velocity trends from non-null positions
+    altitudes = [p["altitude_m"] for p in positions if p.get("altitude_m") is not None]
+    velocities = [p["velocity_ms"] for p in positions if p.get("velocity_ms") is not None]
+
+    descending = len(altitudes) >= 2 and altitudes[-1] < altitudes[0]
+    decelerating = len(velocities) >= 2 and velocities[-1] < velocities[0]
+
+    # Check for frozen positions: last N positions have identical lat/lon/alt.
+    # This is a strong signal the transponder stopped updating after landing.
+    frozen = False
+    if len(positions) >= 3:
+        frozen = all(
+            p.get("latitude") == last["latitude"]
+            and p.get("longitude") == last["longitude"]
+            and p.get("altitude_m") == last_alt
+            for p in positions[-3:]
         )
 
-        if descending and low_altitude:
-            airport = db.lookup_nearest_airport(
-                conn, last["latitude"], last["longitude"],
-                max_km=config.PROXIMITY_LANDING_RADIUS_KM,
-            )
-            if airport and decelerating:
-                return {
-                    "lat": last["latitude"],
-                    "lon": last["longitude"],
-                    "captured_at": last["captured_at"],
-                }
+    # Landing detected if: low altitude near airport AND (descent trend OR frozen)
+    if descending or frozen:
+        airport = db.lookup_nearest_airport(
+            conn, last["latitude"], last["longitude"],
+            max_km=config.PROXIMITY_LANDING_RADIUS_KM,
+        )
+        if airport:
+            return {
+                "lat": last["latitude"],
+                "lon": last["longitude"],
+                "captured_at": last["captured_at"],
+            }
 
     return None
 
@@ -292,7 +313,7 @@ def _process_aircraft(
         # session's tail indicates a landing. This must happen first so that
         # session-start classification sees the correct open_flight state.
         if open_flight and prev_session:
-            tail = prev_session[-5:]
+            tail = prev_session[-15:]
             landing_info = _detect_landing(tail, conn)
             if landing_info:
                 arr_icao = db.lookup_nearest_airport(
@@ -363,6 +384,19 @@ def _process_aircraft(
                     if dep_icao:
                         review = False
 
+                # Fallback: if position-based detection failed (e.g. at cruise),
+                # use last completed flight's arrival airport as departure.
+                if not dep_icao and last_completed:
+                    dep_icao = (
+                        last_completed.get("arrival_airport_icao") or ""
+                    ).strip() or None
+                    if dep_icao and dep_icao != "UNKN":
+                        review = False
+                        logger.info(
+                            f"Case 2 fallback: using last arrival {dep_icao} "
+                            f"as departure for {icao24}"
+                        )
+
                 open_flight = _open_new_flight(
                     conn, icao24, session_cs, dep_icao,
                     session[0]["captured_at"], session[-1]["captured_at"],
@@ -398,7 +432,7 @@ def _process_aircraft(
                 # Use the last ~5 positions before this session for arrival
                 # airport resolution (descent trend).
                 landing_positions = db.get_positions_for_aircraft_before(
-                    conn, icao24, first_pos["captured_at"], limit=5
+                    conn, icao24, first_pos["captured_at"], limit=15
                 )
                 landing_info = _detect_landing(landing_positions, conn)
 
@@ -534,7 +568,7 @@ def _process_aircraft(
         latest_cs = _get_session_callsign(sessions[-1])
 
         # Evaluate the end of the last session for landing
-        tail = sessions[-1][-5:] if len(sessions[-1]) >= 5 else sessions[-1]
+        tail = sessions[-1][-15:]
         landing_info = _detect_landing(tail, conn)
         if landing_info:
             arr_icao = db.lookup_nearest_airport(
