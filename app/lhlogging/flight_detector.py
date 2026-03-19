@@ -385,17 +385,23 @@ def _process_aircraft(
                         review = False
 
                 # Fallback: if position-based detection failed (e.g. at cruise),
-                # use last completed flight's arrival airport as departure.
+                # use last completed flight's arrival airport as departure —
+                # but only if the gap is short enough that the aircraft likely
+                # didn't fly elsewhere in between.
                 if not dep_icao and last_completed:
-                    dep_icao = (
-                        last_completed.get("arrival_airport_icao") or ""
-                    ).strip() or None
-                    if dep_icao and dep_icao != "UNKN":
-                        review = False
-                        logger.info(
-                            f"Case 2 fallback: using last arrival {dep_icao} "
-                            f"as departure for {icao24}"
-                        )
+                    gap = first_pos["captured_at"] - last_completed["last_seen"]
+                    max_gap = timedelta(hours=config.MISSED_DEPARTURE_MAX_GAP_H)
+                    if gap <= max_gap:
+                        dep_icao = (
+                            last_completed.get("arrival_airport_icao") or ""
+                        ).strip() or None
+                        if dep_icao and dep_icao != "UNKN":
+                            review = False
+                            logger.info(
+                                f"Case 2 fallback: using last arrival {dep_icao} "
+                                f"as departure for {icao24} "
+                                f"(gap={gap.total_seconds() / 3600:.1f}h)"
+                            )
 
                 open_flight = _open_new_flight(
                     conn, icao24, session_cs, dep_icao,

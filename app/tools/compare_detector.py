@@ -179,13 +179,18 @@ def _simulate_detector(conn, icao24: str, positions: list[dict], logger) -> list
                     if dep_icao:
                         review = False
 
-                # Fallback: use last closed flight's arrival as departure
+                # Fallback: use last closed flight's arrival as departure,
+                # but only if gap is short enough
                 if not dep_icao and flights:
                     last_closed = flights[-1]
                     last_arr = (last_closed.get("arrival_airport_icao") or "").strip()
-                    if last_arr and last_arr != "UNKN":
-                        dep_icao = last_arr
-                        review = False
+                    last_seen = last_closed.get("last_seen")
+                    if last_arr and last_arr != "UNKN" and last_seen:
+                        gap = session[0]["captured_at"] - last_seen
+                        max_gap = timedelta(hours=config.MISSED_DEPARTURE_MAX_GAP_H)
+                        if gap <= max_gap:
+                            dep_icao = last_arr
+                            review = False
 
                 open_flight = {
                     "callsign": session_cs,
