@@ -1869,7 +1869,12 @@ def api_fleet():
                    COUNT(f.id)::int AS total_flights,
                    COUNT(f.id) FILTER (WHERE f.flight_date >= CURRENT_DATE - 7)::int AS flights_7d,
                    MAX(f.flight_date)::text AS last_flight,
-                   a.needs_review
+                   a.needs_review,
+                   EXISTS (
+                       SELECT 1 FROM positions p
+                       WHERE p.icao24 = a.icao24
+                         AND p.captured_at >= NOW() - INTERVAL '5 minutes'
+                   ) AS currently_tracking
             FROM aircraft a
             LEFT JOIN flights f ON f.icao24 = a.icao24
             GROUP BY a.id
@@ -1889,6 +1894,7 @@ def api_fleet():
                 "flights_7d": r[8],
                 "last_flight": r[9],
                 "needs_review": r[10],
+                "currently_tracking": r[11],
             }
             for r in rows
         ]
@@ -2128,6 +2134,10 @@ body {
   display: inline-block; padding: 1px 7px; border-radius: 999px;
   font-size: 10px; font-weight: 600; background: var(--red-dim); color: var(--red);
 }
+.badge-tracking {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; background: rgba(56, 189, 248, 0.15); color: #38bdf8;
+}
 
 .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
 .error-banner {
@@ -2164,6 +2174,7 @@ body {
         <button class="toggle-btn active" data-status="all">All</button>
         <button class="toggle-btn" data-status="active">Active</button>
         <button class="toggle-btn" data-status="retired">Retired</button>
+        <button class="toggle-btn" data-status="tracking">Tracking</button>
       </div>
       <label class="review-toggle"><input type="checkbox" id="review-filter"> Needs Review</label>
       <div class="count" id="count"></div>
@@ -2238,6 +2249,7 @@ function getFiltered() {
     if (reviewOnly && !a.needs_review) return false;
     if (statusFilter === 'active' && !a.is_active) return false;
     if (statusFilter === 'retired' && a.is_active) return false;
+    if (statusFilter === 'tracking' && !a.currently_tracking) return false;
     if (typeVal && a.aircraft_type !== typeVal) return false;
     if (q) {
       const hay = (a.registration + ' ' + a.icao24 + ' ' + a.aircraft_type + ' ' + a.aircraft_subtype).toLowerCase();
@@ -2281,6 +2293,7 @@ function render() {
     const statusBadge = a.is_active
       ? '<span class="badge-active">active</span>'
       : '<span class="badge-retired">retired</span>';
+    const trackingBadge = a.currently_tracking ? ' <span class="badge-tracking">tracking</span>' : '';
     const reviewBadge = a.needs_review ? ' <span class="badge-review">review</span>' : '';
     const rowClass = a.needs_review ? ' class="review-row"' : '';
     return '<tr' + rowClass + ' onclick="location.href=\\'/fleet/' + a.icao24 + '\\'">' +
@@ -2288,7 +2301,7 @@ function render() {
       '<td class="hex">' + esc(a.icao24) + '</td>' +
       '<td class="type">' + esc(a.aircraft_type || '\\u2014') + '</td>' +
       '<td>' + esc(a.aircraft_subtype || '\\u2014') + '</td>' +
-      '<td>' + statusBadge + reviewBadge + '</td>' +
+      '<td>' + statusBadge + trackingBadge + reviewBadge + '</td>' +
       '<td class="num">' + a.total_flights + '</td>' +
       '<td class="num">' + a.flights_7d + '</td>' +
       '<td>' + (a.last_flight || '\\u2014') + '</td>' +
