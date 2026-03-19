@@ -7,8 +7,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 import psycopg
+import psycopg.rows
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 
 load_dotenv()
 
@@ -2626,6 +2627,1052 @@ def fleet():
 @app.route("/fleet/<icao24>")
 def fleet_detail(icao24):
     return render_template_string(_FLEET_DETAIL_HTML)
+
+
+# ── Admin Interface ────────────────────────────────────────────────
+
+ADMIN_PATH_PREFIX = os.environ.get("ADMIN_PATH_PREFIX", "").strip().strip("/")
+
+
+def _db_dict():
+    """Connection returning dict rows for JSON-friendly results."""
+    return psycopg.connect(**DB_CONNECT, autocommit=True, row_factory=psycopg.rows.dict_row)
+
+
+def _serialize_row(row):
+    """Convert a dict row to JSON-safe types."""
+    from datetime import date as _date
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, datetime):
+            out[k] = v.isoformat()
+        elif isinstance(v, _date):
+            out[k] = v.isoformat()
+        elif isinstance(v, str):
+            out[k] = v.strip()
+        else:
+            out[k] = v
+    return out
+
+
+if ADMIN_PATH_PREFIX:
+    _pfx = f"/{ADMIN_PATH_PREFIX}"
+
+    # ── Aircraft API ──────────────────────────────────────────────
+
+    @app.route(f"{_pfx}/api/aircraft")
+    def admin_aircraft_list():
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            search = request.args.get("search", "").strip()
+            type_filter = request.args.get("type", "").strip()
+            status = request.args.get("status", "").strip()
+            needs_review = request.args.get("needs_review", "").strip()
+
+            sql = """
+                SELECT icao24, registration, aircraft_type, aircraft_subtype,
+                       airline_iata, is_active, needs_review,
+                       first_seen_date, last_seen_date,
+                       created_at, updated_at
+                FROM aircraft WHERE 1=1
+            """
+            params = []
+
+            if search:
+                sql += " AND (icao24 ILIKE %s OR registration ILIKE %s OR aircraft_subtype ILIKE %s)"
+                params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+            if type_filter:
+                sql += " AND aircraft_type = %s"
+                params.append(type_filter)
+            if status == "active":
+                sql += " AND is_active = TRUE"
+            elif status == "retired":
+                sql += " AND is_active = FALSE"
+            if needs_review == "true":
+                sql += " AND needs_review = TRUE"
+
+            sql += " ORDER BY registration"
+
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        return jsonify({"aircraft": [_serialize_row(r) for r in rows]})
+
+    @app.route(f"{_pfx}/api/aircraft/<icao24>")
+    def admin_aircraft_get(icao24):
+        icao24 = icao24.strip().lower()
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM aircraft WHERE icao24 = %s", (icao24,)
+                )
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(_serialize_row(row))
+
+    @app.route(f"{_pfx}/api/aircraft/<icao24>", methods=["PUT"])
+    def admin_aircraft_update(icao24):
+        icao24 = icao24.strip().lower()
+        data = request.get_json(force=True)
+        allowed = {"registration", "aircraft_type", "aircraft_subtype", "airline_iata", "needs_review"}
+        fields = {k: v for k, v in data.items() if k in allowed}
+        if not fields:
+            return jsonify({"error": "no valid fields to update"}), 400
+
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        vals = list(fields.values())
+        vals.append(icao24)
+
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE aircraft SET {sets}, updated_at = NOW() WHERE icao24 = %s RETURNING *",
+                    vals,
+                )
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(_serialize_row(row))
+
+    @app.route(f"{_pfx}/api/aircraft", methods=["POST"])
+    def admin_aircraft_create():
+        data = request.get_json(force=True)
+        icao24 = (data.get("icao24") or "").strip().lower()
+        registration = (data.get("registration") or "").strip().upper()
+        if not icao24 or not registration:
+            return jsonify({"error": "icao24 and registration are required"}), 400
+
+        aircraft_type = (data.get("aircraft_type") or "").strip().upper() or None
+        aircraft_subtype = (data.get("aircraft_subtype") or "").strip() or None
+        airline_iata = (data.get("airline_iata") or "LH").strip().upper()
+
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO aircraft (icao24, registration, aircraft_type, aircraft_subtype, airline_iata)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (icao24, registration, aircraft_type, aircraft_subtype, airline_iata),
+                )
+                row = cur.fetchone()
+        except psycopg.errors.UniqueViolation:
+            conn.close()
+            return jsonify({"error": f"aircraft {icao24} already exists"}), 409
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        return jsonify(_serialize_row(row)), 201
+
+    @app.route(f"{_pfx}/api/aircraft/<icao24>", methods=["DELETE"])
+    def admin_aircraft_delete(icao24):
+        icao24 = icao24.strip().lower()
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                # Check for flights
+                cur.execute("SELECT COUNT(*) AS cnt FROM flights WHERE icao24 = %s", (icao24,))
+                cnt = cur.fetchone()["cnt"]
+                if cnt > 0:
+                    conn.close()
+                    return jsonify({"error": f"cannot delete: {cnt} flights reference this aircraft"}), 409
+                cur.execute("DELETE FROM aircraft WHERE icao24 = %s RETURNING icao24", (icao24,))
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"deleted": icao24})
+
+    @app.route(f"{_pfx}/api/aircraft/<icao24>/retire", methods=["POST"])
+    def admin_aircraft_retire(icao24):
+        icao24 = icao24.strip().lower()
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE aircraft SET is_active = FALSE, last_seen_date = CURRENT_DATE, updated_at = NOW()
+                    WHERE icao24 = %s RETURNING *
+                    """,
+                    (icao24,),
+                )
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(_serialize_row(row))
+
+    @app.route(f"{_pfx}/api/aircraft/<icao24>/reactivate", methods=["POST"])
+    def admin_aircraft_reactivate(icao24):
+        icao24 = icao24.strip().lower()
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE aircraft SET is_active = TRUE, last_seen_date = NULL, updated_at = NOW()
+                    WHERE icao24 = %s RETURNING *
+                    """,
+                    (icao24,),
+                )
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(_serialize_row(row))
+
+    # ── Flight API ────────────────────────────────────────────────
+
+    @app.route(f"{_pfx}/api/flights")
+    def admin_flights_list():
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            icao24 = request.args.get("icao24", "").strip()
+            callsign = request.args.get("callsign", "").strip()
+            dep = request.args.get("dep", "").strip()
+            arr = request.args.get("arr", "").strip()
+            date_from = request.args.get("date_from", "").strip()
+            date_to = request.args.get("date_to", "").strip()
+            needs_review = request.args.get("needs_review", "").strip()
+            page = int(request.args.get("page", "1"))
+            per_page = min(int(request.args.get("per_page", "50")), 200)
+
+            sql = """
+                SELECT f.id, f.icao24, f.callsign,
+                       f.departure_airport_icao, f.arrival_airport_icao,
+                       f.first_seen, f.last_seen,
+                       f.flight_date, f.duration_minutes, f.needs_review,
+                       a.registration, a.aircraft_type
+                FROM flights f
+                JOIN aircraft a ON a.icao24 = f.icao24
+                WHERE 1=1
+            """
+            count_sql = "SELECT COUNT(*) AS cnt FROM flights f WHERE 1=1"
+            params = []
+            count_params = []
+
+            if icao24:
+                clause = " AND f.icao24 = %s"
+                sql += clause
+                count_sql += clause
+                params.append(icao24.lower())
+                count_params.append(icao24.lower())
+            if callsign:
+                clause = " AND f.callsign ILIKE %s"
+                sql += clause
+                count_sql += clause
+                params.append(f"%{callsign}%")
+                count_params.append(f"%{callsign}%")
+            if dep:
+                clause = " AND f.departure_airport_icao = %s"
+                sql += clause
+                count_sql += clause
+                params.append(dep.upper())
+                count_params.append(dep.upper())
+            if arr:
+                clause = " AND f.arrival_airport_icao = %s"
+                sql += clause
+                count_sql += clause
+                params.append(arr.upper())
+                count_params.append(arr.upper())
+            if date_from:
+                clause = " AND f.flight_date >= %s"
+                sql += clause
+                count_sql += clause
+                params.append(date_from)
+                count_params.append(date_from)
+            if date_to:
+                clause = " AND f.flight_date <= %s"
+                sql += clause
+                count_sql += clause
+                params.append(date_to)
+                count_params.append(date_to)
+            if needs_review == "true":
+                clause = " AND f.needs_review = TRUE"
+                sql += clause
+                count_sql += clause
+
+            sql += " ORDER BY f.first_seen DESC LIMIT %s OFFSET %s"
+            params += [per_page, (page - 1) * per_page]
+
+            with conn.cursor() as cur:
+                cur.execute(count_sql, count_params)
+                total = cur.fetchone()["cnt"]
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        return jsonify({
+            "flights": [_serialize_row(r) for r in rows],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page if per_page else 1,
+        })
+
+    @app.route(f"{_pfx}/api/flights/<int:flight_id>")
+    def admin_flight_get(flight_id):
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT f.*, a.registration, a.aircraft_type, a.aircraft_subtype
+                    FROM flights f
+                    JOIN aircraft a ON a.icao24 = f.icao24
+                    WHERE f.id = %s
+                    """,
+                    (flight_id,),
+                )
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(_serialize_row(row))
+
+    @app.route(f"{_pfx}/api/flights/<int:flight_id>", methods=["PUT"])
+    def admin_flight_update(flight_id):
+        data = request.get_json(force=True)
+        allowed = {"callsign", "departure_airport_icao", "arrival_airport_icao", "needs_review"}
+        fields = {k: v for k, v in data.items() if k in allowed}
+        if not fields:
+            return jsonify({"error": "no valid fields to update"}), 400
+
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        vals = list(fields.values())
+        vals.append(flight_id)
+
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE flights SET {sets} WHERE id = %s RETURNING *",
+                    vals,
+                )
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(_serialize_row(row))
+
+    @app.route(f"{_pfx}/api/flights", methods=["POST"])
+    def admin_flight_create():
+        data = request.get_json(force=True)
+        icao24 = (data.get("icao24") or "").strip().lower()
+        first_seen = data.get("first_seen")
+        last_seen = data.get("last_seen")
+        if not icao24 or not first_seen or not last_seen:
+            return jsonify({"error": "icao24, first_seen, and last_seen are required"}), 400
+
+        callsign = (data.get("callsign") or "").strip().upper() or None
+        dep = (data.get("departure_airport_icao") or "").strip().upper() or None
+        arr = (data.get("arrival_airport_icao") or "").strip().upper() or None
+
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                # Verify aircraft exists
+                cur.execute("SELECT 1 FROM aircraft WHERE icao24 = %s", (icao24,))
+                if not cur.fetchone():
+                    conn.close()
+                    return jsonify({"error": f"aircraft {icao24} not found"}), 404
+                cur.execute(
+                    """
+                    INSERT INTO flights (icao24, callsign, departure_airport_icao, arrival_airport_icao, first_seen, last_seen)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (icao24, callsign, dep, arr, first_seen, last_seen),
+                )
+                row = cur.fetchone()
+        except psycopg.errors.UniqueViolation:
+            conn.close()
+            return jsonify({"error": "flight with this icao24 + first_seen already exists"}), 409
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        return jsonify(_serialize_row(row)), 201
+
+    @app.route(f"{_pfx}/api/flights/<int:flight_id>", methods=["DELETE"])
+    def admin_flight_delete(flight_id):
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM flights WHERE id = %s RETURNING id", (flight_id,))
+                row = cur.fetchone()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"deleted": flight_id})
+
+    # ── Autocomplete helpers ──────────────────────────────────────
+
+    @app.route(f"{_pfx}/api/airports")
+    def admin_airports_search():
+        q = request.args.get("q", "").strip().upper()
+        if len(q) < 2:
+            return jsonify({"airports": []})
+        try:
+            conn = _db_dict()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT icao_code, name FROM airports WHERE icao_code LIKE %s OR name ILIKE %s LIMIT 20",
+                    (f"{q}%", f"%{q}%"),
+                )
+                rows = cur.fetchall()
+        except Exception as e:
+            conn.close()
+            return jsonify({"error": str(e)}), 500
+
+        conn.close()
+        return jsonify({"airports": [_serialize_row(r) for r in rows]})
+
+    # ── Admin HTML ────────────────────────────────────────────────
+
+    _ADMIN_HTML = (
+        """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LH Admin</title>
+<style>
+:root {
+  --bg: #101114;
+  --surface: #191b20;
+  --surface2: #1f2128;
+  --border: #2a2c35;
+  --text: #c9cdd6;
+  --text-bright: #e4e7ed;
+  --muted: #6b7280;
+  --accent: #5b8def;
+  --accent-dim: rgba(91,141,239,0.12);
+  --green: #4ade80;
+  --green-dim: rgba(74,222,128,0.12);
+  --red: #f87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251,191,36,0.12);
+  --radius: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 0 16px 32px; }
+.header {
+  padding: 16px 0 12px; display: flex; justify-content: space-between;
+  align-items: center; border-bottom: 1px solid var(--border); margin-bottom: 20px;
+}
+.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); }
+.header h1 span { color: var(--accent); }
+
+/* Tabs */
+.tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 10px 20px; cursor: pointer; color: var(--muted); font-size: 13px;
+  font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.2s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Controls */
+.controls {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center;
+}
+input, select {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; color: var(--text); font-size: 13px; outline: none;
+}
+input:focus, select:focus { border-color: var(--accent); }
+input::placeholder { color: var(--muted); }
+select { cursor: pointer; }
+
+/* Buttons */
+.btn {
+  padding: 7px 14px; border: none; border-radius: 6px; font-size: 12px;
+  font-weight: 600; cursor: pointer; transition: opacity 0.2s; white-space: nowrap;
+}
+.btn:hover { opacity: 0.85; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-success { background: var(--green); color: #111; }
+.btn-muted { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+
+/* Table */
+table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+th {
+  text-align: left; padding: 8px 6px; color: var(--muted); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600;
+  border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer;
+  user-select: none;
+}
+th:hover { color: var(--text); }
+td {
+  padding: 6px; border-bottom: 1px solid rgba(42,44,53,0.5);
+  vertical-align: middle;
+}
+tr:hover td { background: var(--surface); }
+tr.review td { background: var(--amber-dim); }
+.editable {
+  cursor: text; padding: 2px 4px; border-radius: 3px; min-width: 30px;
+  display: inline-block;
+}
+.editable:hover { background: var(--surface2); }
+.editable:focus {
+  outline: 1px solid var(--accent); background: var(--surface2);
+}
+.actions { white-space: nowrap; display: flex; gap: 4px; }
+
+/* Modal */
+.modal-bg {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;
+}
+.modal-bg.show { display: flex; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 24px; width: 90%; max-width: 440px;
+}
+.modal h3 { font-size: 15px; color: var(--text-bright); margin-bottom: 16px; }
+.modal label {
+  display: block; font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 4px; margin-top: 10px;
+}
+.modal input { width: 100%; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+/* Pagination */
+.pagination {
+  display: flex; gap: 8px; align-items: center; justify-content: center;
+  margin-top: 16px; font-size: 12px; color: var(--muted);
+}
+
+/* Status badges */
+.badge {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 600;
+}
+.badge-active { background: var(--green-dim); color: var(--green); }
+.badge-retired { background: var(--red-dim); color: var(--red); }
+.badge-review { background: var(--amber-dim); color: var(--amber); }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 24px; right: 24px; padding: 10px 18px;
+  border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 200;
+  transition: opacity 0.3s; pointer-events: none;
+}
+.toast-ok { background: var(--green); color: #111; }
+.toast-err { background: var(--red); color: #fff; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1><span>LH</span> Admin</h1>
+    <a href="/" style="color:var(--muted);font-size:12px;text-decoration:none">&larr; Dashboard</a>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('aircraft')">Aircraft</div>
+    <div class="tab" onclick="switchTab('flights')">Flights</div>
+  </div>
+
+  <!-- ── Aircraft Tab ── -->
+  <div id="tab-aircraft" class="tab-content active">
+    <div class="controls">
+      <input id="ac-search" type="text" placeholder="Search icao24 / reg / subtype..." style="width:220px" oninput="debounce(loadAircraft,300)()">
+      <select id="ac-type" onchange="loadAircraft()"><option value="">All types</option></select>
+      <select id="ac-status" onchange="loadAircraft()">
+        <option value="">All status</option>
+        <option value="active">Active</option>
+        <option value="retired">Retired</option>
+      </select>
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="checkbox" id="ac-review" onchange="loadAircraft()"> Needs review
+      </label>
+      <div style="flex:1"></div>
+      <button class="btn btn-primary" onclick="showAddAircraft()">+ Aircraft</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>ICAO24</th><th>Reg</th><th>Type</th><th>Subtype</th><th>Airline</th>
+          <th>Status</th><th>Review</th><th>Actions</th>
+        </tr></thead>
+        <tbody id="ac-body"></tbody>
+      </table>
+    </div>
+    <div id="ac-count" style="margin-top:8px;font-size:11px;color:var(--muted)"></div>
+  </div>
+
+  <!-- ── Flights Tab ── -->
+  <div id="tab-flights" class="tab-content">
+    <div class="controls">
+      <input id="fl-icao24" type="text" placeholder="ICAO24" style="width:90px" oninput="debounce(loadFlights,300)()">
+      <input id="fl-callsign" type="text" placeholder="Callsign" style="width:100px" oninput="debounce(loadFlights,300)()">
+      <input id="fl-dep" type="text" placeholder="Dep" style="width:70px" oninput="debounce(loadFlights,300)()">
+      <input id="fl-arr" type="text" placeholder="Arr" style="width:70px" oninput="debounce(loadFlights,300)()">
+      <input id="fl-from" type="date" onchange="loadFlights()" style="width:130px">
+      <input id="fl-to" type="date" onchange="loadFlights()" style="width:130px">
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="checkbox" id="fl-review" onchange="loadFlights()"> Review
+      </label>
+      <div style="flex:1"></div>
+      <button class="btn btn-primary" onclick="showAddFlight()">+ Flight</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Date</th><th>ICAO24</th><th>Reg</th><th>Callsign</th>
+          <th>Dep</th><th>Arr</th><th>Dep Time</th><th>Arr Time</th>
+          <th>Dur</th><th>Review</th><th>Actions</th>
+        </tr></thead>
+        <tbody id="fl-body"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="fl-pagination"></div>
+  </div>
+</div>
+
+<!-- Add Aircraft Modal -->
+<div class="modal-bg" id="modal-ac">
+  <div class="modal">
+    <h3 id="modal-ac-title">Add Aircraft</h3>
+    <label>ICAO24 (hex)</label>
+    <input id="m-ac-icao24" maxlength="6" placeholder="3c6752">
+    <label>Registration</label>
+    <input id="m-ac-reg" maxlength="10" placeholder="D-AIXX">
+    <label>Type (ICAO code)</label>
+    <input id="m-ac-type" maxlength="10" placeholder="A359">
+    <label>Subtype</label>
+    <input id="m-ac-subtype" maxlength="50" placeholder="Airbus A350-941">
+    <label>Airline IATA</label>
+    <input id="m-ac-airline" maxlength="3" placeholder="LH" value="LH">
+    <div class="modal-actions">
+      <button class="btn btn-muted" onclick="closeModal('modal-ac')">Cancel</button>
+      <button class="btn btn-primary" id="modal-ac-save" onclick="saveAircraft()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Flight Modal -->
+<div class="modal-bg" id="modal-fl">
+  <div class="modal">
+    <h3>Add Flight</h3>
+    <label>ICAO24</label>
+    <input id="m-fl-icao24" maxlength="6" placeholder="3c6752">
+    <label>Callsign</label>
+    <input id="m-fl-callsign" maxlength="10" placeholder="DLH400">
+    <label>Departure Airport (ICAO)</label>
+    <input id="m-fl-dep" maxlength="4" placeholder="EDDF">
+    <label>Arrival Airport (ICAO)</label>
+    <input id="m-fl-arr" maxlength="4" placeholder="KJFK">
+    <label>First Seen (UTC)</label>
+    <input id="m-fl-first" type="datetime-local">
+    <label>Last Seen (UTC)</label>
+    <input id="m-fl-last" type="datetime-local">
+    <div class="modal-actions">
+      <button class="btn btn-muted" onclick="closeModal('modal-fl')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveFlight()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" style="opacity:0"></div>
+
+<script>
+const PFX = '""" + ADMIN_PATH_PREFIX + """';
+const API = '/' + PFX + '/api';
+let flPage = 1;
+
+function $(id) { return document.getElementById(id); }
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelector('.tab[onclick*="' + tab + '"]').classList.add('active');
+  $('tab-' + tab).classList.add('active');
+  if (tab === 'flights') loadFlights();
+}
+
+function toast(msg, ok) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
+  t.style.opacity = '1';
+  setTimeout(() => t.style.opacity = '0', 2500);
+}
+
+function debounce(fn, ms) {
+  let t;
+  return function() { clearTimeout(t); t = setTimeout(fn, ms); };
+}
+
+async function api(path, opts) {
+  const r = await fetch(API + path, opts);
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'Error', false); return null; }
+  return d;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+// ── Aircraft ─────────────────────────────────────────────────
+
+async function loadAircraft() {
+  const p = new URLSearchParams();
+  const s = $('ac-search').value.trim();
+  if (s) p.set('search', s);
+  const t = $('ac-type').value;
+  if (t) p.set('type', t);
+  const st = $('ac-status').value;
+  if (st) p.set('status', st);
+  if ($('ac-review').checked) p.set('needs_review', 'true');
+
+  const d = await api('/aircraft?' + p);
+  if (!d) return;
+
+  // Populate type filter (only once)
+  const sel = $('ac-type');
+  if (sel.options.length <= 1) {
+    const types = [...new Set(d.aircraft.map(a => a.aircraft_type).filter(Boolean))].sort();
+    types.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; sel.appendChild(o); });
+  }
+
+  $('ac-count').textContent = d.aircraft.length + ' aircraft';
+  $('ac-body').innerHTML = d.aircraft.map(a => {
+    const cls = a.needs_review ? ' class="review"' : '';
+    const statusBadge = a.is_active
+      ? '<span class="badge badge-active">Active</span>'
+      : '<span class="badge badge-retired">Retired</span>';
+    const reviewBadge = a.needs_review
+      ? '<span class="badge badge-review">Review</span>' : '';
+    return '<tr' + cls + '>' +
+      '<td>' + esc(a.icao24) + '</td>' +
+      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="registration" onblur="inlineEditAc(this)">' + esc(a.registration) + '</span></td>' +
+      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="aircraft_type" onblur="inlineEditAc(this)">' + esc(a.aircraft_type) + '</span></td>' +
+      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="aircraft_subtype" onblur="inlineEditAc(this)">' + esc(a.aircraft_subtype) + '</span></td>' +
+      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="airline_iata" onblur="inlineEditAc(this)">' + esc(a.airline_iata) + '</span></td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td>' + reviewBadge + '</td>' +
+      '<td class="actions">' +
+        (a.is_active
+          ? '<button class="btn btn-muted btn-sm" onclick="retireAc(\\'' + esc(a.icao24) + '\\')">Retire</button>'
+          : '<button class="btn btn-success btn-sm" onclick="reactivateAc(\\'' + esc(a.icao24) + '\\')">Reactivate</button>') +
+        '<button class="btn btn-danger btn-sm" onclick="deleteAc(\\'' + esc(a.icao24) + '\\')">Del</button>' +
+        (a.needs_review
+          ? '<button class="btn btn-muted btn-sm" onclick="clearReviewAc(\\'' + esc(a.icao24) + '\\')">OK</button>'
+          : '') +
+      '</td></tr>';
+  }).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--muted)">No aircraft found</td></tr>';
+}
+
+async function inlineEditAc(el) {
+  const icao = el.dataset.icao;
+  const field = el.dataset.field;
+  const val = el.textContent.trim();
+  const d = await api('/aircraft/' + icao, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({[field]: val})
+  });
+  if (d) toast('Updated ' + icao, true);
+}
+
+async function retireAc(icao) {
+  if (!confirm('Retire ' + icao + '?')) return;
+  const d = await api('/aircraft/' + icao + '/retire', { method: 'POST' });
+  if (d) { toast('Retired ' + icao, true); loadAircraft(); }
+}
+
+async function reactivateAc(icao) {
+  const d = await api('/aircraft/' + icao + '/reactivate', { method: 'POST' });
+  if (d) { toast('Reactivated ' + icao, true); loadAircraft(); }
+}
+
+async function deleteAc(icao) {
+  if (!confirm('Delete ' + icao + '? This cannot be undone.')) return;
+  const d = await api('/aircraft/' + icao, { method: 'DELETE' });
+  if (d) { toast('Deleted ' + icao, true); loadAircraft(); }
+}
+
+async function clearReviewAc(icao) {
+  const d = await api('/aircraft/' + icao, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({needs_review: false})
+  });
+  if (d) { toast('Cleared review for ' + icao, true); loadAircraft(); }
+}
+
+function showAddAircraft() {
+  $('m-ac-icao24').value = '';
+  $('m-ac-reg').value = '';
+  $('m-ac-type').value = '';
+  $('m-ac-subtype').value = '';
+  $('m-ac-airline').value = 'LH';
+  $('modal-ac').classList.add('show');
+}
+
+async function saveAircraft() {
+  const body = {
+    icao24: $('m-ac-icao24').value,
+    registration: $('m-ac-reg').value,
+    aircraft_type: $('m-ac-type').value,
+    aircraft_subtype: $('m-ac-subtype').value,
+    airline_iata: $('m-ac-airline').value
+  };
+  const d = await api('/aircraft', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (d) { toast('Added aircraft', true); closeModal('modal-ac'); loadAircraft(); }
+}
+
+// ── Flights ──────────────────────────────────────────────────
+
+async function loadFlights() {
+  const p = new URLSearchParams();
+  const v = (id) => $(id).value.trim();
+  if (v('fl-icao24')) p.set('icao24', v('fl-icao24'));
+  if (v('fl-callsign')) p.set('callsign', v('fl-callsign'));
+  if (v('fl-dep')) p.set('dep', v('fl-dep'));
+  if (v('fl-arr')) p.set('arr', v('fl-arr'));
+  if (v('fl-from')) p.set('date_from', v('fl-from'));
+  if (v('fl-to')) p.set('date_to', v('fl-to'));
+  if ($('fl-review').checked) p.set('needs_review', 'true');
+  p.set('page', flPage);
+
+  const d = await api('/flights?' + p);
+  if (!d) return;
+
+  $('fl-body').innerHTML = d.flights.map(f => {
+    const cls = f.needs_review ? ' class="review"' : '';
+    const dur = f.duration_minutes != null ? Math.floor(f.duration_minutes/60) + 'h ' + (f.duration_minutes%60) + 'm' : '\\u2014';
+    const depTime = f.first_seen ? f.first_seen.slice(11,16) : '';
+    const arrTime = f.last_seen ? f.last_seen.slice(11,16) : '';
+    const reviewBadge = f.needs_review ? '<span class="badge badge-review">Review</span>' : '';
+    return '<tr' + cls + '>' +
+      '<td>' + esc(f.flight_date) + '</td>' +
+      '<td>' + esc(f.icao24) + '</td>' +
+      '<td>' + esc(f.registration || '') + '</td>' +
+      '<td><span class="editable" contenteditable data-id="' + f.id + '" data-field="callsign" onblur="inlineEditFl(this)">' + esc(f.callsign) + '</span></td>' +
+      '<td><span class="editable" contenteditable data-id="' + f.id + '" data-field="departure_airport_icao" onblur="inlineEditFl(this)">' + esc(f.departure_airport_icao) + '</span></td>' +
+      '<td><span class="editable" contenteditable data-id="' + f.id + '" data-field="arrival_airport_icao" onblur="inlineEditFl(this)">' + esc(f.arrival_airport_icao) + '</span></td>' +
+      '<td>' + depTime + '</td>' +
+      '<td>' + arrTime + '</td>' +
+      '<td>' + dur + '</td>' +
+      '<td>' + reviewBadge + '</td>' +
+      '<td class="actions">' +
+        (f.needs_review ? '<button class="btn btn-muted btn-sm" onclick="clearReviewFl(' + f.id + ')">OK</button>' : '') +
+        '<button class="btn btn-danger btn-sm" onclick="deleteFl(' + f.id + ')">Del</button>' +
+      '</td></tr>';
+  }).join('') || '<tr><td colspan="11" style="text-align:center;color:var(--muted)">No flights found</td></tr>';
+
+  // Pagination
+  const pg = $('fl-pagination');
+  if (d.pages > 1) {
+    let html = '<button class="btn btn-muted btn-sm" onclick="flGo(' + (d.page-1) + ')" ' + (d.page<=1?'disabled':'') + '>&laquo;</button>';
+    html += '<span>Page ' + d.page + ' / ' + d.pages + ' (' + d.total + ' flights)</span>';
+    html += '<button class="btn btn-muted btn-sm" onclick="flGo(' + (d.page+1) + ')" ' + (d.page>=d.pages?'disabled':'') + '>&raquo;</button>';
+    pg.innerHTML = html;
+  } else {
+    pg.innerHTML = d.total ? '<span>' + d.total + ' flights</span>' : '';
+  }
+}
+
+function flGo(p) { flPage = Math.max(1, p); loadFlights(); }
+
+async function inlineEditFl(el) {
+  const id = el.dataset.id;
+  const field = el.dataset.field;
+  const val = el.textContent.trim();
+  const d = await api('/flights/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({[field]: val || null})
+  });
+  if (d) toast('Updated flight #' + id, true);
+}
+
+async function clearReviewFl(id) {
+  const d = await api('/flights/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({needs_review: false})
+  });
+  if (d) { toast('Cleared review', true); loadFlights(); }
+}
+
+async function deleteFl(id) {
+  if (!confirm('Delete flight #' + id + '?')) return;
+  const d = await api('/flights/' + id, { method: 'DELETE' });
+  if (d) { toast('Deleted', true); loadFlights(); }
+}
+
+function showAddFlight() {
+  $('m-fl-icao24').value = '';
+  $('m-fl-callsign').value = '';
+  $('m-fl-dep').value = '';
+  $('m-fl-arr').value = '';
+  $('m-fl-first').value = '';
+  $('m-fl-last').value = '';
+  $('modal-fl').classList.add('show');
+}
+
+async function saveFlight() {
+  const first = $('m-fl-first').value;
+  const last = $('m-fl-last').value;
+  const body = {
+    icao24: $('m-fl-icao24').value,
+    callsign: $('m-fl-callsign').value,
+    departure_airport_icao: $('m-fl-dep').value,
+    arrival_airport_icao: $('m-fl-arr').value,
+    first_seen: first ? first + ':00Z' : '',
+    last_seen: last ? last + ':00Z' : ''
+  };
+  const d = await api('/flights', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (d) { toast('Added flight', true); closeModal('modal-fl'); loadFlights(); }
+}
+
+function closeModal(id) { $(id).classList.remove('show'); }
+
+// Close modals on backdrop click
+document.querySelectorAll('.modal-bg').forEach(bg => {
+  bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('show'); });
+});
+
+// Init
+loadAircraft();
+</script>
+</body>
+</html>"""
+    )
+
+    @app.route(f"{_pfx}/")
+    def admin_page():
+        return render_template_string(_ADMIN_HTML)
 
 
 if __name__ == "__main__":
