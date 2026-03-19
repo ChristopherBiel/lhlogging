@@ -265,6 +265,52 @@ def lookup_nearest_airport(
     return r[0].strip()
 
 
+def get_first_position_since(
+    conn: psycopg.Connection, icao24: str, since: datetime
+) -> dict | None:
+    """Return the earliest position for an aircraft after the given timestamp."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT icao24, callsign, captured_at, latitude, longitude,
+                   on_ground, velocity_ms, altitude_m
+            FROM positions
+            WHERE icao24 = %s AND captured_at > %s
+            ORDER BY captured_at ASC
+            LIMIT 1
+            """,
+            (icao24, since),
+        )
+        r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "icao24": r[0],
+        "callsign": r[1],
+        "captured_at": r[2],
+        "latitude": r[3],
+        "longitude": r[4],
+        "on_ground": r[5],
+        "velocity_ms": r[6],
+        "altitude_m": r[7],
+    }
+
+
+def update_flight_departure(
+    conn: psycopg.Connection, icao24: str, first_seen: datetime, dep: str
+) -> bool:
+    """Set departure airport on a flight that currently has dep=NULL."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE flights SET departure_airport_icao = %s
+            WHERE icao24 = %s AND first_seen = %s AND departure_airport_icao IS NULL
+            """,
+            (dep, icao24, first_seen),
+        )
+        return cur.rowcount > 0
+
+
 def delete_positions_before(conn: psycopg.Connection, before: datetime) -> int:
     """Delete position snapshots older than the given timestamp. Returns rows deleted."""
     with conn.cursor() as cur:

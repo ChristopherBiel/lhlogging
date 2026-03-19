@@ -139,29 +139,81 @@ def _close_stale_flights(conn, logger, max_age_hours: int = 24) -> int:
     """
     Close pending flights that have been open longer than max_age_hours.
     These are flights where we missed the arrival (e.g. due to a polling outage).
-    Closed with arrival 'UNKN' and flagged for review.
+
+    Before defaulting to 'UNKN', checks if the aircraft's last position is
+    low altitude near an airport — if so, uses that airport as the arrival.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            UPDATE flights
-            SET arrival_airport_icao = 'UNKN',
-                needs_review = TRUE
+            SELECT icao24, first_seen, callsign, departure_airport_icao
+            FROM flights
             WHERE arrival_airport_icao IS NULL
               AND first_seen < NOW() - make_interval(hours => %s)
-            RETURNING icao24, callsign, departure_airport_icao, first_seen
             """,
             (max_age_hours,),
         )
         rows = cur.fetchall()
 
-    for r in rows:
-        logger.warning(
-            f"Closed stale flight {r[0].strip()} {r[2] or '?'}→UNKN "
-            f"(callsign={r[1] or '?'}, departed {r[3].strftime('%Y-%m-%d %H:%M')})"
-        )
+    if not rows:
+        return 0
 
-    return len(rows)
+    stale_flights = [
+        {
+            "icao24": r[0],
+            "first_seen": r[1],
+            "callsign": r[2],
+            "departure_airport_icao": r[3],
+        }
+        for r in rows
+    ]
+
+    icao24s = [f["icao24"] for f in stale_flights]
+    latest_positions = db.get_latest_positions(conn, icao24s)
+
+    closed = 0
+    for flight in stale_flights:
+        icao24 = flight["icao24"]
+        pos = latest_positions.get(icao24.strip())
+
+        arr_icao = None
+        if pos:
+            alt = pos.get("altitude_m")
+            if alt is not None and alt < config.PROXIMITY_LANDING_ALTITUDE_M:
+                arr_icao = db.lookup_nearest_airport(
+                    conn,
+                    pos["latitude"],
+                    pos["longitude"],
+                    max_km=config.PROXIMITY_LANDING_RADIUS_KM,
+                )
+
+        if arr_icao:
+            logger.info(
+                f"Stale flight {icao24.strip()}: last position near {arr_icao} "
+                f"(alt={pos.get('altitude_m')}), using as arrival"
+            )
+        else:
+            arr_icao = "UNKN"
+            logger.warning(
+                f"Closed stale flight {icao24.strip()} "
+                f"{flight['departure_airport_icao'] or '?'}→UNKN "
+                f"(callsign={flight['callsign'] or '?'}, "
+                f"departed {flight['first_seen'].strftime('%Y-%m-%d %H:%M')})"
+            )
+
+        last_seen = pos["captured_at"] if pos else flight["first_seen"]
+        db.update_open_flight(
+            conn,
+            icao24,
+            flight["first_seen"],
+            last_seen,
+            arr=arr_icao,
+            callsign=pos["callsign"] if pos else flight["callsign"],
+            needs_review=True,
+        )
+        closed += 1
+
+    return closed
 
 
 def _close_pending_flights(conn, logger) -> int:
@@ -222,6 +274,47 @@ def _close_pending_flights(conn, logger) -> int:
                 f"(landed {pos['captured_at'].strftime('%H:%M')})"
             )
         else:
+            # Not detected as on-ground — check proximity-based landing fallback.
+            # If positions stopped arriving (stale) and last position is low altitude
+            # near an airport, the aircraft likely landed but we missed the on_ground state.
+            stale_cutoff = datetime.now(timezone.utc) - timedelta(
+                minutes=config.PROXIMITY_LANDING_MIN_STALE_MINUTES
+            )
+            alt = pos.get("altitude_m")
+            if (
+                pos["captured_at"] < stale_cutoff
+                and alt is not None
+                and alt < config.PROXIMITY_LANDING_ALTITUDE_M
+            ):
+                arr_icao = db.lookup_nearest_airport(
+                    conn,
+                    pos["latitude"],
+                    pos["longitude"],
+                    max_km=config.PROXIMITY_LANDING_RADIUS_KM,
+                )
+                if arr_icao:
+                    dep_icao = flight.get("departure_airport_icao")
+                    review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
+                    if review:
+                        logger.info(
+                            f"Flagging {icao24} for review: dep==arr ({dep_icao})"
+                        )
+                    db.update_open_flight(
+                        conn,
+                        icao24,
+                        flight["first_seen"],
+                        pos["captured_at"],
+                        arr=arr_icao,
+                        callsign=pos["callsign"],
+                        needs_review=review,
+                    )
+                    closed += 1
+                    logger.info(
+                        f"Landing inferred via proximity for {icao24} → {arr_icao} "
+                        f"(alt={alt}, stale since {pos['captured_at'].strftime('%H:%M')})"
+                    )
+                    continue
+
             # Still airborne — keep last_seen fresh
             db.update_open_flight(
                 conn,
@@ -324,11 +417,19 @@ def _infer_missed_departures(conn, logger) -> int:
             )
             continue
 
-        # Check confidence: altitude and distance from last arrival airport
-        alt = pos.get("altitude_m")
+        # Use the first position after the last landing for confidence checks.
+        # By the time this runs, the latest position (pos) is at cruise altitude
+        # far from the departure airport. The first position is near the airport
+        # at low altitude, giving much better confidence.
+        first_pos = db.get_first_position_since(conn, icao24, last_landed)
+        if not first_pos:
+            first_pos = pos  # fallback to latest
+
+        # Check confidence using first_pos (near departure)
+        alt = first_pos.get("altitude_m")
         low_altitude = alt is not None and alt < config.MISSED_DEPARTURE_ALTITUDE_M
 
-        # Get distance from last arrival airport
+        # Get distance from last arrival airport using first_pos
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -339,7 +440,7 @@ def _infer_missed_departures(conn, logger) -> int:
                 FROM airports a
                 WHERE a.icao_code = %s
                 """,
-                (pos["latitude"], pos["longitude"], last_arr_icao),
+                (first_pos["latitude"], first_pos["longitude"], last_arr_icao),
             )
             dist_row = cur.fetchone()
 
@@ -347,6 +448,8 @@ def _infer_missed_departures(conn, logger) -> int:
             dist_row is not None
             and dist_row[0] < config.MISSED_DEPARTURE_DISTANCE_KM
         )
+
+        callsign = pos["callsign"] or first_pos["callsign"]
 
         if low_altitude or near_airport:
             # High confidence — use last arrival as departure
@@ -356,10 +459,10 @@ def _infer_missed_departures(conn, logger) -> int:
             )
             db.upsert_flight(conn, {
                 "icao24": icao24,
-                "callsign": pos["callsign"],
+                "callsign": callsign,
                 "dep": last_arr_icao,
                 "arr": None,
-                "first_seen": pos["captured_at"],
+                "first_seen": first_pos["captured_at"],
                 "last_seen": pos["captured_at"],
                 "needs_review": False,
             })
@@ -372,10 +475,10 @@ def _infer_missed_departures(conn, logger) -> int:
             )
             db.upsert_flight(conn, {
                 "icao24": icao24,
-                "callsign": pos["callsign"],
+                "callsign": callsign,
                 "dep": None,
                 "arr": None,
-                "first_seen": pos["captured_at"],
+                "first_seen": first_pos["captured_at"],
                 "last_seen": pos["captured_at"],
                 "needs_review": True,
             })
