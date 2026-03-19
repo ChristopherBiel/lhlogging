@@ -142,6 +142,39 @@ def get_positions_since(
     ]
 
 
+def get_last_completed_flights(
+    conn: psycopg.Connection, icao24s: list[str]
+) -> dict[str, dict]:
+    """Return the most recent completed flight for each of the given icao24s."""
+    if not icao24s:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (icao24)
+                icao24, first_seen, last_seen, callsign,
+                departure_airport_icao, arrival_airport_icao
+            FROM flights
+            WHERE icao24 = ANY(%s)
+              AND arrival_airport_icao IS NOT NULL
+            ORDER BY icao24, last_seen DESC
+            """,
+            (icao24s,),
+        )
+        rows = cur.fetchall()
+    return {
+        r[0].strip(): {
+            "icao24": r[0],
+            "first_seen": r[1],
+            "last_seen": r[2],
+            "callsign": r[3],
+            "departure_airport_icao": r[4],
+            "arrival_airport_icao": r[5],
+        }
+        for r in rows
+    }
+
+
 def get_open_flights(conn: psycopg.Connection) -> list[dict]:
     """Return flights that have no arrival airport yet (still in progress)."""
     with conn.cursor() as cur:

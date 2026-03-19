@@ -262,6 +262,7 @@ def _process_aircraft(
     icao24: str,
     sessions: list[list[dict]],
     open_flight: dict | None,
+    last_completed: dict | None,
     logger,
 ) -> int:
     """
@@ -286,6 +287,14 @@ def _process_aircraft(
         # --- Evaluate session start ---
 
         if open_flight is None:
+            # Skip sessions already covered by a recently completed flight.
+            # This prevents reprocessing positions from overlapping lookback windows.
+            if (
+                last_completed
+                and last_completed["last_seen"] >= first_pos["captured_at"]
+            ):
+                continue
+
             if starts_on_ground is True:
                 # CASE 1: No open flight, on ground.
                 # Scan session for a ground→air departure transition.
@@ -652,13 +661,20 @@ def main() -> int:
     open_flights_list = db.get_open_flights(conn)
     open_flights_map = {f["icao24"].strip(): f for f in open_flights_list}
 
+    # Load last completed flight per active aircraft (to skip already-processed sessions)
+    active_icao24s = list(grouped.keys())
+    last_completed_map = db.get_last_completed_flights(conn, active_icao24s)
+
     # Process each active aircraft
     total = 0
     for icao24, acft_positions in grouped.items():
         sessions = _split_sessions(acft_positions)
         open_flight = open_flights_map.get(icao24)
+        last_completed = last_completed_map.get(icao24)
         try:
-            n = _process_aircraft(conn, icao24, sessions, open_flight, logger)
+            n = _process_aircraft(
+                conn, icao24, sessions, open_flight, last_completed, logger
+            )
             total += n
         except Exception as e:
             logger.error(f"Error processing {icao24}: {e}")
