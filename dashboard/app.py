@@ -877,6 +877,11 @@ async function refresh() {
 refresh();
 setInterval(refresh, 30000);
 </script>
+<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
+  <span style="margin:0 6px">&middot;</span>
+  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
+</footer>
 </body>
 </html>
 """
@@ -885,6 +890,83 @@ setInterval(refresh, 30000);
 @app.route("/")
 def index():
     return render_template_string(_HTML)
+
+
+# ── Legal Pages ─────────────────────────────────────────────────────
+
+_LEGAL_CSS = """
+<style>
+:root {
+  --bg: #101114; --surface: #191b20; --border: #2a2c35;
+  --text: #c9cdd6; --text-bright: #e4e7ed; --muted: #6b7280; --accent: #5b8def;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 480px; margin: 0 auto; padding: 24px 16px 32px; }
+h1 { color: var(--text-bright); font-size: 20px; margin-bottom: 16px; }
+h2 { color: var(--text-bright); font-size: 15px; margin: 20px 0 8px; }
+p, li { margin-bottom: 8px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.back { font-size: 12px; margin-bottom: 16px; display: inline-block; }
+</style>
+"""
+
+_IMPRESSUM_HTML = (
+    '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+    "<title>Impressum</title>"
+    + _LEGAL_CSS
+    + """</head><body><div class="container">
+<a class="back" href="/">&larr; Back</a>
+<h1>Impressum</h1>
+<h2>Angaben gem&auml;&szlig; &sect; 5 TMG</h2>
+<p>Christopher Biel<br>Leopoldstr. 48<br>80802 M&uuml;nchen</p>
+<h2>Kontakt</h2>
+<p>E-Mail: info@biels.net</p>
+</div></body></html>"""
+)
+
+_DATENSCHUTZ_HTML = (
+    '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+    "<title>Datenschutzerkl&auml;rung</title>"
+    + _LEGAL_CSS
+    + """</head><body><div class="container">
+<a class="back" href="/">&larr; Back</a>
+<h1>Datenschutzerkl&auml;rung</h1>
+<h2>1. Verantwortlicher</h2>
+<p>Christopher Biel, Leopoldstr. 48, 80802 M&uuml;nchen</p>
+<h2>2. Erhebung und Verarbeitung personenbezogener Daten</h2>
+<p>Diese Website erhebt, speichert und verarbeitet keine personenbezogenen Daten
+ihrer Besucher. Es werden keine Cookies gesetzt, keine Analyse- oder Tracking-Tools
+eingesetzt und keine Daten an Dritte weitergegeben.</p>
+<h2>3. Server-Logfiles</h2>
+<p>Beim Zugriff auf diese Website werden m&ouml;glicherweise durch den
+Hosting-Provider technische Daten (z.&nbsp;B. IP-Adresse, Zeitpunkt des Zugriffs)
+in Server-Logfiles gespeichert. Diese Daten werden nicht mit anderen Datenquellen
+zusammengef&uuml;hrt und nach kurzer Zeit gel&ouml;scht.</p>
+<h2>4. Ihre Rechte</h2>
+<p>Sie haben das Recht auf Auskunft, Berichtigung, L&ouml;schung und
+Einschr&auml;nkung der Verarbeitung Ihrer personenbezogenen Daten gem&auml;&szlig;
+der DSGVO. Da wir keine personenbezogenen Daten erheben, fallen in der Regel keine
+solchen Daten an.</p>
+</div></body></html>"""
+)
+
+
+@app.route("/impressum")
+def impressum():
+    return _IMPRESSUM_HTML
+
+
+@app.route("/datenschutz")
+def datenschutz():
+    return _DATENSCHUTZ_HTML
 
 
 # ── A380 Rotation Analysis ──────────────────────────────────────────
@@ -1840,6 +1922,11 @@ function renderPerRegCycles(cycleLengths) {
 
 init();
 </script>
+<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
+  <span style="margin:0 6px">&middot;</span>
+  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
+</footer>
 </body>
 </html>
 """
@@ -2347,6 +2434,11 @@ document.querySelectorAll('.toggle-btn').forEach(btn => {
 
 init();
 </script>
+<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
+  <span style="margin:0 6px">&middot;</span>
+  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
+</footer>
 </body>
 </html>
 """
@@ -2627,6 +2719,11 @@ function esc(s) {
 
 init();
 </script>
+<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
+  <span style="margin:0 6px">&middot;</span>
+  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
+</footer>
 </body>
 </html>
 """
@@ -3679,6 +3776,11 @@ document.querySelectorAll('.modal-bg').forEach(bg => {
 // Init
 loadAircraft();
 </script>
+<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
+  <span style="margin:0 6px">&middot;</span>
+  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
+</footer>
 </body>
 </html>"""
     )
