@@ -3,8 +3,9 @@ LHLogging monitoring dashboard.
 Serves a single-page HTML dashboard and a /api/stats JSON endpoint.
 """
 import os
-from collections import defaultdict
-from datetime import datetime, timezone
+import random
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta, timezone
 
 import psycopg
 import psycopg.rows
@@ -1235,7 +1236,204 @@ def _median(vals):
     return float(s[m]) if n % 2 else (s[m - 1] + s[m]) / 2.0
 
 
-_DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+# Canonical-route helpers for the rotation model.
+_NORM_ALIAS = {"EDFE": "EDDF"}  # Egelsbach GA strip → Frankfurt hub
+_TURN_MAP = {
+    "RJTT": "HND", "SAEZ": "EZE", "FAOR": "JNB",
+    "KLAX": "USW", "KSFO": "USW",
+    "KORD": "USE", "KBOS": "USE", "KIAD": "USE", "KEWR": "USE",
+    "KMIA": "USE", "KIAH": "USE",
+    "MMMX": "MEX", "SBGR": "GRU", "SBGL": "GRU",
+}
+_TARGET_TURNS = ["HND", "EZE", "JNB"]
+_TARGET_ROUTE = {"HND": "EDDF-RJTT", "EZE": "EDDF-SAEZ", "JNB": "EDDF-FAOR"}
+_TARGET_ARR = {"HND": "RJTT", "EZE": "SAEZ", "JNB": "FAOR"}
+
+
+def _norm_ap(code):
+    """Normalize an airport code; None for unresolved (UNKN/empty)."""
+    code = (code or "").strip().upper()
+    if not code or code == "UNKN":
+        return None
+    return _NORM_ALIAS.get(code, code)
+
+
+def _turn_type(arr):
+    return _TURN_MAP.get(arr, "OTHER")
+
+
+def _outbound_turns(flights):
+    """Chronological [(date, turn_type)] of FRA departures, deduped per (day, type).
+
+    `flights` must be ordered by first_seen and carry normalized dep/arr.
+    """
+    seq, seen = [], set()
+    for f in flights:
+        if f["dep"] == "EDDF" and f["arr"] and f["arr"] != "EDDF":
+            key = (f["date"], _turn_type(f["arr"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            seq.append(key)
+    return seq
+
+
+def _trans_counts(sequences):
+    """First-order transition counts over turn-types across many sequences."""
+    m = defaultdict(Counter)
+    for seq in sequences:
+        types = [t for _, t in seq]
+        for a, b in zip(types, types[1:]):
+            m[a][b] += 1
+    return m
+
+
+def _rotation_predict(tail_seq, fleet_counts, states, today,
+                      horizon=30, n_sims=4000, alpha=5.0, seed=1234):
+    """Monte-Carlo forward simulation of one tail's rotation.
+
+    At each step it samples the next turn-type (the tail's transition matrix
+    shrunk toward the fleet matrix) and an inter-departure gap, advancing a
+    date. Per target route it records P(occurs within horizon) and the
+    first-occurrence date distribution. Outcomes are mutually exclusive by
+    construction — one turn at a time — so two routes can never land the same
+    day the way the old independent-renewal model allowed.
+    """
+    if len(tail_seq) < 3:
+        return None
+    deps = [d for d, _ in tail_seq]
+    gaps = [(deps[i + 1] - deps[i]).days for i in range(len(deps) - 1)
+            if (deps[i + 1] - deps[i]).days >= 1]
+    if not gaps:
+        return None
+
+    tail_counts = _trans_counts([tail_seq])
+    state_list = list(states)
+
+    def fleet_p(cur):
+        c = fleet_counts.get(cur, {})
+        tot = sum(c.values())
+        if tot == 0:
+            return {s: 1.0 / len(state_list) for s in state_list}
+        return {s: c.get(s, 0) / tot for s in state_list}
+
+    def trans_p(cur):
+        fp = fleet_p(cur)
+        c = tail_counts.get(cur, {})
+        tot = sum(c.values())
+        return {s: (c.get(s, 0) + alpha * fp[s]) / (tot + alpha) for s in state_list}
+
+    # Pre-compute per-state weight vectors (few states; avoids recompute in loop).
+    weights = {s: [trans_p(s)[t] for t in state_list] for s in state_list}
+
+    rng = random.Random(seed)
+    start_state = tail_seq[-1][1]
+    start_date = tail_seq[-1][0]
+    occ = {t: [] for t in _TARGET_TURNS}
+    next_dep = Counter()
+
+    for _ in range(n_sims):
+        cur = start_state
+        d = start_date
+        first = {}
+        first_event = None
+        for _step in range(60):
+            d = d + timedelta(days=rng.choice(gaps))
+            cur = rng.choices(state_list, weights=weights[cur])[0]
+            if d >= today:
+                if first_event is None:
+                    first_event = cur
+                if cur in _TARGET_TURNS and cur not in first:
+                    first[cur] = d
+            if (d - today).days > horizon:
+                break
+        if first_event:
+            next_dep[first_event] += 1
+        for t in _TARGET_TURNS:
+            occ[t].append(first.get(t))
+
+    per_route = []
+    for t in _TARGET_TURNS:
+        hits = sorted(x for x in occ[t] if x is not None)
+        p = len(hits) / n_sims
+        if hits:
+            med = hits[len(hits) // 2]
+            q1 = hits[len(hits) // 4]
+            q3 = hits[min(len(hits) - 1, 3 * len(hits) // 4)]
+            per_route.append({
+                "turn": t, "route": _TARGET_ROUTE[t], "arr": _TARGET_ARR[t],
+                "p": round(p, 3), "median": med.isoformat(),
+                "q1": q1.isoformat(), "q3": q3.isoformat(),
+            })
+        else:
+            per_route.append({
+                "turn": t, "route": _TARGET_ROUTE[t], "arr": _TARGET_ARR[t],
+                "p": round(p, 3), "median": None, "q1": None, "q3": None,
+            })
+
+    total = sum(next_dep.values()) or 1
+    next_departure = [
+        {"turn": k, "route": _TARGET_ROUTE.get(k, k), "p": round(v / total, 3)}
+        for k, v in next_dep.most_common()
+    ]
+    return {
+        "per_route": per_route,
+        "next_departure": next_departure,
+        "gap_median": _median(gaps),
+        "n_turns": len(tail_seq),
+        "horizon": horizon,
+        "last_turn": start_state,
+        "last_departure": start_date.isoformat(),
+    }
+
+
+def _rotation_backtest(tail_types, fleet_counts, states, alpha=5.0, k=20):
+    """Walk-forward skill check: predict each of the last k turn-types from its
+    prefix and compare top-1/top-2 hit rate against the always-modal baseline.
+    """
+    if len(tail_types) < 5:
+        return None
+    state_list = list(states)
+    base_top = Counter(tail_types).most_common(1)[0][0]
+
+    def fleet_p(cur):
+        c = fleet_counts.get(cur, {})
+        tot = sum(c.values())
+        if tot == 0:
+            return {s: 1.0 / len(state_list) for s in state_list}
+        return {s: c.get(s, 0) / tot for s in state_list}
+
+    hits = top2 = base = n = 0
+    start = max(2, len(tail_types) - k)
+    for i in range(start, len(tail_types)):
+        prefix = tail_types[:i]
+        cur = prefix[-1]
+        tc = Counter(b for a, b in zip(prefix, prefix[1:]) if a == cur)
+        fp = fleet_p(cur)
+        tot = sum(tc.values())
+        p = {s: (tc.get(s, 0) + alpha * fp[s]) / (tot + alpha) for s in state_list}
+        ranked = sorted(p, key=lambda s: -p[s])
+        actual = tail_types[i]
+        n += 1
+        hits += ranked[0] == actual
+        top2 += actual in ranked[:2]
+        base += actual == base_top
+    if not n:
+        return None
+    return {"n": n, "top1": round(hits / n, 3), "top2": round(top2 / n, 3),
+            "base": round(base / n, 3)}
+
+
+_B748_FETCH_SQL = """
+    SELECT TRIM(a.registration), a.is_active, TRIM(f.callsign),
+           {dep_expr}, {arr_expr},
+           f.flight_date, f.first_seen, f.last_seen, f.duration_minutes
+    FROM flights f
+    JOIN aircraft a ON a.icao24 = f.icao24
+    {join}
+    WHERE a.aircraft_type = 'B748'
+    ORDER BY a.registration, f.first_seen
+"""
 
 
 @app.route("/api/b748-analysis")
@@ -1246,308 +1444,115 @@ def api_b748_analysis():
         return jsonify({"error": str(e)}), 503
 
     TARGET_REG = "D-ABYN"
-    DEP = "EDDF"
-    TARGET_ARRIVALS = ("RJTT", "FAOR", "SAEZ")  # HND, JNB, EZE
 
     try:
-        from datetime import timedelta
-
         data = {"target_reg": TARGET_REG}
         today = datetime.now(tz=timezone.utc).date()
 
-        # ── Fleet-wide cadence per target route (same-tail recurrence gaps),
-        #    used as a fallback hint when D-ABYN has too little history.
-        rows = _q(
-            conn,
-            """
-            WITH occ AS (
-                SELECT f.arrival_airport_icao AS arr, f.flight_date AS fd,
-                       LEAD(f.flight_date) OVER (
-                           PARTITION BY a.registration, f.arrival_airport_icao
-                           ORDER BY f.flight_date
-                       ) AS nxt
-                FROM flights f
-                JOIN aircraft a ON a.icao24 = f.icao24
-                WHERE a.aircraft_type = 'B748'
-                  AND f.departure_airport_icao = %s
-                  AND f.arrival_airport_icao = ANY(%s)
-                  AND NOT f.needs_review
-            )
-            SELECT arr, (nxt - fd) AS gap
-            FROM occ WHERE nxt IS NOT NULL
-            """,
-            (DEP, list(TARGET_ARRIVALS)),
+        # Pull all B748 flights with the canonical route resolved from the
+        # callsign reference (falls back to the detector's dep/arr). The
+        # callsign route is robust even when arrival detection failed (UNKN).
+        enriched = _B748_FETCH_SQL.format(
+            dep_expr="COALESCE(fr.departure_airport_icao, f.departure_airport_icao)",
+            arr_expr="COALESCE(fr.arrival_airport_icao, f.arrival_airport_icao)",
+            join="LEFT JOIN flight_routes fr ON fr.callsign = TRIM(f.callsign)",
         )
-        fleet_gaps = defaultdict(list)
+        try:
+            rows = _q(conn, enriched)
+        except Exception:
+            # flight_routes not present yet — degrade to raw dep/arr.
+            conn.rollback()
+            rows = _q(conn, _B748_FETCH_SQL.format(
+                dep_expr="f.departure_airport_icao",
+                arr_expr="f.arrival_airport_icao",
+                join="",
+            ))
+
+        by_reg = defaultdict(list)
         for r in rows:
-            fleet_gaps[r[0].strip()].append(int(r[1]))
+            by_reg[r[0]].append({
+                "reg": r[0], "active": r[1], "cs": (r[2] or "").strip(),
+                "dep": _norm_ap(r[3]), "arr": _norm_ap(r[4]),
+                "date": r[5], "first_seen": r[6], "last_seen": r[7], "dur": r[8],
+            })
 
-        # ── D-ABYN occurrences on each target route (all-time, review-clean).
-        rows = _q(
-            conn,
-            """
-            SELECT f.arrival_airport_icao, f.flight_date
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND TRIM(a.registration) = %s
-              AND f.departure_airport_icao = %s
-              AND f.arrival_airport_icao = ANY(%s)
-              AND NOT f.needs_review
-            ORDER BY f.arrival_airport_icao, f.flight_date
-            """,
-            (TARGET_REG, DEP, list(TARGET_ARRIVALS)),
+        def route_known(f):
+            return bool(f["arr"] and f["arr"] != "EDDF" and f["dep"])
+
+        # ── Rotation model ────────────────────────────────────────────
+        fleet_seqs = [_outbound_turns(fl) for fl in by_reg.values()]
+        fleet_counts = _trans_counts(fleet_seqs)
+        states = sorted(
+            {t for seq in fleet_seqs for _, t in seq} | set(_TARGET_TURNS) | {"OTHER"}
         )
-        reg_route_dates = defaultdict(list)
-        for r in rows:
-            reg_route_dates[r[0].strip()].append(r[1])
-
-        predictions = []
-        for arr in TARGET_ARRIVALS:
-            dates = reg_route_dates.get(arr, [])
-            n = len(dates)
-            gaps = [(dates[i + 1] - dates[i]).days for i in range(n - 1)]
-            med_gap = _median(gaps)
-            mean_gap = round(sum(gaps) / len(gaps), 1) if gaps else None
-
-            # Modal weekday (Python weekday: Mon=0..Sun=6).
-            modal_wd = None
-            modal_name = None
-            if dates:
-                wd_counts = defaultdict(int)
-                for d in dates:
-                    wd_counts[d.weekday()] += 1
-                modal_wd = max(wd_counts, key=lambda k: (wd_counts[k], -k))
-                modal_name = _DOW_NAMES[modal_wd]
-
-            predicted = None
-            if n >= 2 and med_gap and med_gap >= 1:
-                step = timedelta(days=round(med_gap))
-                cand = dates[-1] + step
-                # Roll forward to the next future occurrence.
-                while cand < today:
-                    cand += step
-                # Snap to the modal weekday within +/- 3 days, if known.
-                if modal_wd is not None:
-                    best = cand
-                    for delta in range(-3, 4):
-                        c = cand + timedelta(days=delta)
-                        if c.weekday() == modal_wd and c >= today and (
-                            best is cand or abs(delta) < abs((best - cand).days)
-                        ):
-                            best = c
-                    cand = best
-                predicted = cand.isoformat()
-
-            if n >= 6:
-                confidence = "high"
-            elif n >= 3:
-                confidence = "medium"
-            elif n >= 1:
-                confidence = "low"
-            else:
-                confidence = "none"
-
-            predictions.append(
-                {
-                    "route": DEP + "-" + arr,
-                    "arr": arr,
-                    "n": n,
-                    "last": dates[-1].isoformat() if dates else None,
-                    "recent_dates": [d.isoformat() for d in dates[-6:]],
-                    "median_gap": med_gap,
-                    "mean_gap": mean_gap,
-                    "modal_dow": modal_name,
-                    "predicted_next": predicted,
-                    "confidence": confidence,
-                    "fleet_median_gap": _median(fleet_gaps.get(arr, [])),
-                }
-            )
-        data["predictions"] = predictions
-
-        # ── D-ABYN last known position.
-        rows = _q(
-            conn,
-            """
-            SELECT f.arrival_airport_icao, f.last_seen,
-                   f.departure_airport_icao, f.callsign
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND TRIM(a.registration) = %s
-              AND f.arrival_airport_icao IS NOT NULL
-              AND NOT f.needs_review
-            ORDER BY f.last_seen DESC
-            LIMIT 1
-            """,
-            (TARGET_REG,),
-        )
-        data["dabyn_position"] = (
-            {
-                "airport": rows[0][0].strip(),
-                "last_seen": rows[0][1].isoformat(),
-                "from": rows[0][2].strip() if rows[0][2] else "",
-                "cs": (rows[0][3] or "").strip(),
-            }
-            if rows
-            else None
+        dab = by_reg.get(TARGET_REG, [])
+        dab_seq = _outbound_turns(dab)
+        data["prediction"] = _rotation_predict(dab_seq, fleet_counts, states, today)
+        data["backtest"] = _rotation_backtest(
+            [t for _, t in dab_seq], fleet_counts, states
         )
 
-        # ── D-ABYN recent flight log (any route).
-        rows = _q(
-            conn,
-            """
-            SELECT f.departure_airport_icao, f.arrival_airport_icao,
-                   f.flight_date, f.callsign, f.duration_minutes
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND TRIM(a.registration) = %s
-              AND f.arrival_airport_icao IS NOT NULL
-            ORDER BY f.last_seen DESC
-            LIMIT 20
-            """,
-            (TARGET_REG,),
+        # ── D-ABYN recent flights + last known position ───────────────
+        dab_done = sorted(
+            (f for f in dab if route_known(f)),
+            key=lambda f: f["last_seen"], reverse=True,
         )
         data["dabyn_recent"] = [
-            {
-                "dep": r[0].strip() if r[0] else "",
-                "arr": r[1].strip(),
-                "date": r[2].isoformat(),
-                "cs": (r[3] or "").strip(),
-                "dur": r[4],
-            }
-            for r in rows
+            {"dep": f["dep"], "arr": f["arr"], "date": f["date"].isoformat(),
+             "cs": f["cs"], "dur": f["dur"]}
+            for f in dab_done[:20]
         ]
-
-        # ── Target-route history across the whole B748 fleet.
-        rows = _q(
-            conn,
-            """
-            SELECT TRIM(a.registration) AS reg, f.arrival_airport_icao,
-                   f.flight_date, f.callsign, f.duration_minutes
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND f.departure_airport_icao = %s
-              AND f.arrival_airport_icao = ANY(%s)
-            ORDER BY f.flight_date DESC, f.first_seen DESC
-            """,
-            (DEP, list(TARGET_ARRIVALS)),
+        data["dabyn_position"] = (
+            {"airport": dab_done[0]["arr"],
+             "last_seen": dab_done[0]["last_seen"].isoformat(),
+             "from": dab_done[0]["dep"], "cs": dab_done[0]["cs"]}
+            if dab_done else None
         )
-        data["route_history"] = [
-            {
-                "reg": r[0],
-                "route": DEP + "-" + r[1].strip(),
-                "date": r[2].isoformat(),
-                "cs": (r[3] or "").strip(),
-                "dur": r[4],
-                "is_dabyn": r[0] == TARGET_REG,
-            }
-            for r in rows
-        ]
 
-        # ── Route x day-of-week heatmap (fleet-wide).
-        rows = _q(
-            conn,
-            """
-            SELECT f.arrival_airport_icao,
-                   EXTRACT(DOW FROM f.first_seen AT TIME ZONE 'UTC')::int AS dow,
-                   COUNT(*)
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND f.departure_airport_icao = %s
-              AND f.arrival_airport_icao = ANY(%s)
-              AND NOT f.needs_review
-            GROUP BY f.arrival_airport_icao, dow
-            ORDER BY f.arrival_airport_icao, dow
-            """,
-            (DEP, list(TARGET_ARRIVALS)),
-        )
-        data["dow_heatmap"] = [
-            {"route": DEP + "-" + r[0].strip(), "dow": r[1], "count": r[2]}
-            for r in rows
-        ]
-
-        # ── Registration x target-route affinity (which tails fly them).
-        rows = _q(
-            conn,
-            """
-            SELECT TRIM(a.registration) AS reg, f.arrival_airport_icao,
-                   COUNT(*) AS cnt
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND f.departure_airport_icao = %s
-              AND f.arrival_airport_icao = ANY(%s)
-              AND NOT f.needs_review
-            GROUP BY reg, f.arrival_airport_icao
-            ORDER BY reg
-            """,
-            (DEP, list(TARGET_ARRIVALS)),
-        )
+        # ── Target-route history (fleet) + registration affinity ──────
+        target_arrs = set(_TARGET_ARR.values())
+        history = []
+        affinity = defaultdict(Counter)
+        for fl in by_reg.values():
+            for f in fl:
+                if f["dep"] == "EDDF" and f["arr"] in target_arrs:
+                    history.append({
+                        "reg": f["reg"], "route": "EDDF-" + f["arr"],
+                        "date": f["date"].isoformat(), "cs": f["cs"], "dur": f["dur"],
+                        "is_dabyn": f["reg"] == TARGET_REG,
+                    })
+                    affinity[f["reg"]]["EDDF-" + f["arr"]] += 1
+        history.sort(key=lambda h: h["date"], reverse=True)
+        data["route_history"] = history
         data["affinity"] = [
-            {"reg": r[0], "route": DEP + "-" + r[1].strip(), "count": r[2]}
-            for r in rows
+            {"reg": reg, "route": route, "count": c}
+            for reg, rc in affinity.items() for route, c in rc.items()
         ]
 
-        # ── D-ABYN rotation timeline (180 days).
-        rows = _q(
-            conn,
-            """
-            SELECT f.departure_airport_icao, f.arrival_airport_icao,
-                   f.first_seen, f.last_seen, f.callsign
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND TRIM(a.registration) = %s
-              AND f.flight_date >= CURRENT_DATE - 180
-              AND f.departure_airport_icao IS NOT NULL
-              AND f.arrival_airport_icao IS NOT NULL
-              AND NOT f.needs_review
-            ORDER BY f.first_seen
-            """,
-            (TARGET_REG,),
-        )
+        # ── D-ABYN rotation timeline (180 days) ───────────────────────
+        cutoff = today - timedelta(days=180)
         data["timeline"] = [
-            {
-                "dep": r[0].strip(),
-                "arr": r[1].strip(),
-                "t0": r[2].isoformat(),
-                "t1": r[3].isoformat(),
-                "cs": (r[4] or "").strip(),
-            }
-            for r in rows
+            {"dep": f["dep"] or "?", "arr": f["arr"] or "?",
+             "t0": f["first_seen"].isoformat(), "t1": f["last_seen"].isoformat(),
+             "cs": f["cs"]}
+            for f in dab if f["date"] >= cutoff
         ]
 
-        # ── B748 fleet positions (last known location per active tail).
-        rows = _q(
-            conn,
-            """
-            SELECT DISTINCT ON (a.registration)
-                   TRIM(a.registration) AS reg, f.arrival_airport_icao,
-                   f.last_seen, f.departure_airport_icao, f.callsign
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = 'B748'
-              AND a.is_active
-              AND f.arrival_airport_icao IS NOT NULL
-              AND NOT f.needs_review
-            ORDER BY a.registration, f.last_seen DESC
-            """,
-        )
-        data["fleet_positions"] = [
-            {
-                "reg": r[0],
-                "airport": r[1].strip(),
-                "last_seen": r[2].isoformat(),
-                "from": r[3].strip() if r[3] else "",
-                "cs": (r[4] or "").strip(),
-                "is_dabyn": r[0] == TARGET_REG,
-            }
-            for r in rows
-        ]
+        # ── B748 fleet positions (last known per active tail) ─────────
+        fleet_positions = []
+        for reg, fl in by_reg.items():
+            done = [f for f in fl if route_known(f) and f["active"]]
+            if not done:
+                continue
+            last = max(done, key=lambda f: f["last_seen"])
+            fleet_positions.append({
+                "reg": reg, "airport": last["arr"],
+                "last_seen": last["last_seen"].isoformat(),
+                "from": last["dep"], "cs": last["cs"],
+                "is_dabyn": reg == TARGET_REG,
+            })
+        fleet_positions.sort(key=lambda p: p["reg"])
+        data["fleet_positions"] = fleet_positions
 
         data["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
 
@@ -2363,6 +2368,26 @@ body {
 .conf-medium { background: var(--accent-dim); color: var(--accent); }
 .conf-low { background: var(--amber-dim); color: var(--amber); }
 .conf-none { background: var(--red-dim); color: var(--red); }
+.pred-card .prob-bar { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; margin-top: 10px; }
+.pred-card .prob-fill { height: 100%; border-radius: 4px; }
+
+/* Next-departure distribution */
+.dist-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 12px; }
+.dist-label { width: 96px; text-align: right; color: var(--text); font-weight: 500; }
+.dist-bar { flex: 1; height: 16px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.dist-fill { height: 100%; border-radius: 3px; background: var(--muted); opacity: 0.85; }
+.dist-fill.t-hnd { background: var(--accent); }
+.dist-fill.t-jnb { background: var(--green); }
+.dist-fill.t-eze { background: var(--purple); }
+.dist-pct { width: 42px; text-align: right; color: var(--muted); }
+
+/* Backtest banner */
+.backtest-banner {
+  font-size: 11px; color: var(--muted); background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;
+}
+.backtest-banner b { color: var(--text-bright); }
+.backtest-banner .skill { color: var(--green); font-weight: 600; }
 
 /* Status banner */
 .status-banner {
@@ -2481,8 +2506,15 @@ body {
   <div class="section">
     <div class="card-title">When will D-ABYN next fly each route?</div>
     <div class="card-subtitle">
-      Estimated from D-ABYN's own past cadence on each route (median gap + usual weekday).
-      A statistical estimate, not a schedule &mdash; check the sample size &amp; confidence.
+      A rotation model learns D-ABYN's sequence of long-haul &ldquo;turns&rdquo; and
+      simulates its schedule forward. The routes <em>compete</em> &mdash; the aircraft
+      makes only one FRA departure per slot, so the percentages are mutually exclusive.
+    </div>
+    <div class="backtest-banner" id="backtest"></div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-title">Most likely next FRA departure</div>
+      <div class="card-subtitle">Where D-ABYN heads on its very next departure (all turn types)</div>
+      <div id="next-dep"></div>
     </div>
     <div class="pred-grid" id="pred-grid"></div>
   </div>
@@ -2495,17 +2527,12 @@ body {
     </div>
   </div>
 
-  <!-- 3. D-ABYN recent flights + 4. heatmap -->
-  <div class="section two-col">
+  <!-- 3. D-ABYN recent flights -->
+  <div class="section">
     <div class="card">
       <div class="card-title">D-ABYN Recent Flights</div>
-      <div class="card-subtitle">Last 20 completed flights (any route)</div>
+      <div class="card-subtitle">Last 20 completed flights &mdash; route resolved by callsign</div>
       <div id="dabyn-recent"></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Target Routes by Day of Week</div>
-      <div class="card-subtitle">When each route departs FRA (whole 747-8 fleet)</div>
-      <div id="dow-heatmap"></div>
     </div>
   </div>
 
@@ -2609,6 +2636,14 @@ function routeName(r) {
   const p = r.split('-');
   return icaoToCity(p[0]) + '\\u2192' + icaoToCity(p[1]);
 }
+const TURN_NAME = {
+  HND:'FRA\\u2192HND', EZE:'FRA\\u2192EZE', JNB:'FRA\\u2192JNB',
+  USW:'US West', USE:'US East', MEX:'Mexico City', GRU:'S\\u00e3o Paulo', OTHER:'Other',
+};
+const TURN_CLS = { HND:'t-hnd', JNB:'t-jnb', EZE:'t-eze' };
+function turnColor(t) {
+  return t==='HND'?'var(--accent)':t==='JNB'?'var(--green)':t==='EZE'?'var(--purple)':'var(--muted)';
+}
 
 async function init() {
   let data;
@@ -2630,46 +2665,67 @@ async function init() {
   $('loading').style.display = 'none';
   $('content').style.display = 'block';
 
-  renderPredictions(data.predictions);
+  renderBacktest(data.backtest, data.prediction);
+  renderNextDeparture(data.prediction);
+  renderPredictions(data.prediction);
   renderStatus(data.dabyn_position);
   renderRecent(data.dabyn_recent);
-  renderDowHeatmap(data.dow_heatmap);
   renderRouteHistory(data.route_history);
   renderAffinity(data.affinity);
   renderGantt(data.timeline);
   renderFleetPositions(data.fleet_positions);
 }
 
-/* ── 1. Predictions ───────────────────────────────────── */
-function renderPredictions(preds) {
-  $('pred-grid').innerHTML = (preds || []).map(p => {
-    let dateBlock, note = '';
-    if (p.predicted_next) {
-      const du = daysUntil(p.predicted_next);
-      const rel = du <= 0 ? 'due now' : 'in ~' + du + ' days';
-      dateBlock = '<div class="pred-date">' + fmtDate(p.predicted_next) + '</div>' +
-                  '<div class="pred-when">' + rel + '</div>';
+/* ── 1. Predictions (rotation model) ──────────────────── */
+function renderBacktest(bt, pred) {
+  const el = $('backtest');
+  if (!pred) { el.innerHTML = 'Not enough rotation history for D-ABYN to model yet.'; return; }
+  let s = 'Based on <b>' + pred.n_turns + '</b> past FRA departures' +
+    (pred.gap_median ? ' (typically one every <b>' + Math.round(pred.gap_median) + ' days</b>)' : '') +
+    '. Last departure: <b>' + (TURN_NAME[pred.last_turn] || pred.last_turn) +
+    '</b> on ' + fmtDate(pred.last_departure) + '.';
+  if (bt) {
+    s += ' Backtest skill: <span class="skill">' + Math.round(bt.top1*100) + '%</span> top-1 / ' +
+      Math.round(bt.top2*100) + '% top-2 next-turn accuracy (vs ' + Math.round(bt.base*100) +
+      '% for always-guess-most-common), over the last ' + bt.n + ' departures.';
+  }
+  el.innerHTML = s;
+}
+function renderNextDeparture(pred) {
+  if (!pred || !pred.next_departure.length) {
+    $('next-dep').innerHTML = '<div style="color:var(--muted)">\\u2014</div>'; return;
+  }
+  const max = pred.next_departure[0].p || 1;
+  $('next-dep').innerHTML = pred.next_departure.map(d =>
+    '<div class="dist-row">' +
+      '<div class="dist-label">' + (TURN_NAME[d.turn] || routeName(d.route)) + '</div>' +
+      '<div class="dist-bar"><div class="dist-fill ' + (TURN_CLS[d.turn] || '') +
+        '" style="width:' + (d.p/max*100) + '%"></div></div>' +
+      '<div class="dist-pct">' + Math.round(d.p*100) + '%</div>' +
+    '</div>'
+  ).join('');
+}
+function renderPredictions(pred) {
+  if (!pred) { $('pred-grid').innerHTML = '<div style="color:var(--muted)">Not enough rotation data to predict.</div>'; return; }
+  $('pred-grid').innerHTML = pred.per_route.map(p => {
+    const color = turnColor(p.turn);
+    let dateBlock;
+    if (p.median) {
+      const du = daysUntil(p.median);
+      dateBlock = '<div class="pred-date" style="color:' + color + '">' + fmtDate(p.median) + '</div>' +
+        '<div class="pred-when">most likely ' + (du <= 0 ? 'around now' : 'in ~' + du + ' days') + '</div>' +
+        '<div class="pred-meta">Likely window: <b>' + fmtDate(p.q1) + '</b> &ndash; <b>' + fmtDate(p.q3) + '</b></div>';
     } else {
       dateBlock = '<div class="pred-date" style="color:var(--muted)">\\u2014</div>' +
-                  '<div class="pred-when">not enough history to predict</div>';
-      if (p.fleet_median_gap) {
-        note = 'Fleet hint: 747-8 tails repeat this route about every ' +
-               Math.round(p.fleet_median_gap) + ' days (not D-ABYN-specific).';
-      }
+        '<div class="pred-when">not expected within ' + pred.horizon + ' days</div>';
     }
-    const meta =
-      '<b>' + p.n + '</b> past D-ABYN flight' + (p.n === 1 ? '' : 's') + '<br>' +
-      'Last flown: <b>' + (p.last ? fmtDate(p.last) : '\\u2014') + '</b><br>' +
-      (p.median_gap ? 'Median gap: <b>' + Math.round(p.median_gap) + 'd</b>' +
-        (p.mean_gap ? ' (avg ' + p.mean_gap + 'd)' : '') + '<br>' : '') +
-      (p.modal_dow ? 'Usually departs: <b>' + p.modal_dow + '</b>' : '');
     return '<div class="pred-card">' +
-      '<span class="conf-chip conf-' + p.confidence + '">' + p.confidence + '</span>' +
       '<div class="pred-route">' + routeName(p.route) + '</div>' +
-      '<div class="pred-label">Predicted next departure</div>' +
+      '<div class="pred-label">Probability within ' + pred.horizon + ' days</div>' +
+      '<div class="pred-date" style="color:' + color + '">' + Math.round(p.p*100) + '%</div>' +
+      '<div class="prob-bar"><div class="prob-fill" style="width:' + (p.p*100) + '%;background:' + color + '"></div></div>' +
+      '<div class="pred-label" style="margin-top:14px">Most likely date</div>' +
       dateBlock +
-      '<div class="pred-meta">' + meta + '</div>' +
-      (note ? '<div class="pred-note">' + note + '</div>' : '') +
     '</div>';
   }).join('');
 }
@@ -2698,30 +2754,6 @@ function renderRecent(recent) {
   });
   html += '</tbody></table>';
   $('dabyn-recent').innerHTML = html;
-}
-
-/* ── 4. Day-of-Week heatmap (routes x weekday) ────────── */
-function renderDowHeatmap(heatData) {
-  if (!heatData || !heatData.length) { $('dow-heatmap').innerHTML = '<div style="color:var(--muted)">No data yet</div>'; return; }
-  const routes = [...new Set(heatData.map(h => h.route))].sort();
-  const maxCount = Math.max(...heatData.map(h => h.count), 1);
-  const lookup = {};
-  heatData.forEach(h => { lookup[h.route + '_' + h.dow] = h.count; });
-
-  let html = '<div class="heatmap-grid"><div></div>';
-  DAYS.forEach(d => { html += '<div class="heatmap-cell heatmap-header">' + d + '</div>'; });
-  routes.forEach(route => {
-    html += '<div class="heatmap-cell heatmap-label">' + routeName(route) + '</div>';
-    for (let dow = 0; dow < 7; dow++) {
-      const cnt = lookup[route + '_' + dow] || 0;
-      const intensity = cnt / maxCount;
-      const bg = cnt > 0 ? 'rgba(91,141,239,' + (0.15 + intensity * 0.75) + ')' : 'var(--surface2)';
-      html += '<div class="heatmap-cell" style="background:' + bg + ';color:' +
-        (cnt > 0 ? 'var(--text-bright)' : 'var(--muted)') + '">' + (cnt || '&middot;') + '</div>';
-    }
-  });
-  html += '</div>';
-  $('dow-heatmap').innerHTML = html;
 }
 
 /* ── 5. Route history ─────────────────────────────────── */
