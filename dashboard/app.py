@@ -1288,25 +1288,62 @@ def _trans_counts(sequences):
     return m
 
 
-def _rotation_predict(tail_seq, fleet_counts, states, today,
-                      horizon=30, n_sims=4000, alpha=5.0, seed=1234):
-    """Monte-Carlo forward simulation of one tail's rotation.
+def _utc(dt):
+    return dt.astimezone(timezone.utc)
 
-    At each step it samples the next turn-type (the tail's transition matrix
-    shrunk toward the fleet matrix) and an inter-departure gap, advancing a
-    date. Per target route it records P(occurs within horizon) and the
-    first-occurrence date distribution. Outcomes are mutually exclusive by
-    construction — one turn at a time — so two routes can never land the same
-    day the way the old independent-renewal model allowed.
+
+def _tod_minutes(dt):
+    dt = _utc(dt)
+    return dt.hour * 60 + dt.minute
+
+
+def _schedule_params(fleet_lists):
+    """Per turn-type schedule, learned from the (reliable) FRA clock events:
+    dep_tod  — median FRA departure time-of-day (minutes UTC),
+    span_h   — median round-trip span, FRA departure → FRA return (hours),
+    block_h  — median return-leg block time (hours, from clean X→FRA legs).
+    `fleet_lists` is an iterable of per-reg flight lists ordered by first_seen.
     """
-    if len(tail_seq) < 3:
-        return None
-    deps = [d for d, _ in tail_seq]
-    gaps = [(deps[i + 1] - deps[i]).days for i in range(len(deps) - 1)
-            if (deps[i + 1] - deps[i]).days >= 1]
-    if not gaps:
-        return None
+    dep_tod, spans, blocks = defaultdict(list), defaultdict(list), defaultdict(list)
+    for flights in fleet_lists:
+        for i, f in enumerate(flights):
+            if f["dep"] == "EDDF" and f["arr"] and f["arr"] != "EDDF":
+                t = _turn_type(f["arr"])
+                dep_tod[t].append(_tod_minutes(f["first_seen"]))
+                for g in flights[i + 1:]:
+                    if g["arr"] == "EDDF":
+                        h = (g["last_seen"] - f["first_seen"]).total_seconds() / 3600.0
+                        if 0 < h < 120:
+                            spans[t].append(h)
+                        break
+            if f["arr"] == "EDDF" and f["dep"] and f["dep"] != "EDDF":
+                h = (f["last_seen"] - f["first_seen"]).total_seconds() / 3600.0
+                if 0 < h < 24:
+                    blocks[_turn_type(f["dep"])].append(h)
+    out = {}
+    for t in set(dep_tod) & set(spans):
+        out[t] = {
+            "dep_tod": int(_median(dep_tod[t])),
+            "span_h": _median(spans[t]),
+            "block_h": _median(blocks[t]) if blocks.get(t) else None,
+        }
+    return out
 
+
+def _next_departure_dt(clock, dep_tod, turnaround_h=2.0):
+    """The next datetime at minute-of-day `dep_tod` that is >= clock + turnaround.
+    Encodes "you can't catch a flight that already left": a morning slot rolls to
+    the next day when the aircraft only becomes available in the afternoon.
+    """
+    clock = _utc(clock)
+    earliest = clock + timedelta(hours=turnaround_h)
+    cand = earliest.replace(hour=dep_tod // 60, minute=dep_tod % 60, second=0, microsecond=0)
+    if cand < earliest:
+        cand += timedelta(days=1)
+    return cand
+
+
+def _trans_p_factory(tail_seq, fleet_counts, states, alpha=5.0):
     tail_counts = _trans_counts([tail_seq])
     state_list = list(states)
 
@@ -1323,68 +1360,152 @@ def _rotation_predict(tail_seq, fleet_counts, states, today,
         tot = sum(c.values())
         return {s: (c.get(s, 0) + alpha * fp[s]) / (tot + alpha) for s in state_list}
 
-    # Pre-compute per-state weight vectors (few states; avoids recompute in loop).
+    return trans_p, state_list
+
+
+def _rotation_forecast(tail_seq, fleet_counts, states, sched, start_clock,
+                       start_state, targets, horizon_days=7, n_sims=4000,
+                       max_legs=6, seed=1234):
+    """Schedule-aware Monte-Carlo: from `start_clock` (when the aircraft is next
+    available at FRA) sample turn types and place each at its scheduled departure
+    slot, advancing a real clock by the turn's round-trip span. Yields the next
+    departure distribution (with times), per-target P within the horizon (with
+    times), and a modal rotation timeline — all to the hour.
+    """
+    if len(tail_seq) < 3 or not sched:
+        return None
+    trans_p, state_list = _trans_p_factory(tail_seq, fleet_counts, states)
     weights = {s: [trans_p(s)[t] for t in state_list] for s in state_list}
 
+    def turn_sched(t):
+        s = sched.get(t)
+        if s:
+            return s["dep_tod"], s["span_h"]
+        return 12 * 60, 24.0  # default for turn types without learned times (e.g. OTHER)
+
     rng = random.Random(seed)
-    start_state = tail_seq[-1][1]
-    start_date = tail_seq[-1][0]
-    occ = {t: [] for t in _TARGET_TURNS}
-    next_dep = Counter()
+    next_first, next_first_dt = Counter(), defaultdict(list)
+    occ = {t: 0 for t in targets}
+    occ_dt = {t: [] for t in targets}
 
     for _ in range(n_sims):
-        cur = start_state
-        d = start_date
-        first = {}
-        first_event = None
-        for _step in range(60):
-            d = d + timedelta(days=rng.choice(gaps))
+        clock, cur, seen = start_clock, start_state, set()
+        for step in range(max_legs):
             cur = rng.choices(state_list, weights=weights[cur])[0]
-            if d >= today:
-                if first_event is None:
-                    first_event = cur
-                if cur in _TARGET_TURNS and cur not in first:
-                    first[cur] = d
-            if (d - today).days > horizon:
-                break
-        if first_event:
-            next_dep[first_event] += 1
-        for t in _TARGET_TURNS:
-            occ[t].append(first.get(t))
+            tod, span = turn_sched(cur)
+            dep = _next_departure_dt(clock, tod)
+            ret = dep + timedelta(hours=span)
+            if step == 0:
+                next_first[cur] += 1
+                next_first_dt[cur].append(dep)
+            days = (dep - start_clock).total_seconds() / 86400.0
+            if cur in targets and cur not in seen and days <= horizon_days:
+                seen.add(cur)
+                occ[cur] += 1
+                occ_dt[cur].append(dep)
+            clock = ret
+
+    def med_dt(lst):
+        s = sorted(lst)
+        return s[len(s) // 2] if s else None
+
+    tot = sum(next_first.values()) or 1
+    next_departure = [
+        {"turn": k, "route": _TARGET_ROUTE.get(k, k), "p": round(v / tot, 3),
+         "when": med_dt(next_first_dt[k]).isoformat()}
+        for k, v in next_first.most_common()
+    ]
 
     per_route = []
-    for t in _TARGET_TURNS:
-        hits = sorted(x for x in occ[t] if x is not None)
-        p = len(hits) / n_sims
-        if hits:
-            med = hits[len(hits) // 2]
-            q1 = hits[len(hits) // 4]
-            q3 = hits[min(len(hits) - 1, 3 * len(hits) // 4)]
+    for t in targets:
+        dts = sorted(occ_dt[t])
+        if dts:
             per_route.append({
-                "turn": t, "route": _TARGET_ROUTE[t], "arr": _TARGET_ARR[t],
-                "p": round(p, 3), "median": med.isoformat(),
-                "q1": q1.isoformat(), "q3": q3.isoformat(),
+                "turn": t, "route": _TARGET_ROUTE[t], "p": round(occ[t] / n_sims, 3),
+                "when": dts[len(dts) // 2].isoformat(),
+                "q1": dts[len(dts) // 4].isoformat(),
+                "q3": dts[min(len(dts) - 1, 3 * len(dts) // 4)].isoformat(),
             })
         else:
-            per_route.append({
-                "turn": t, "route": _TARGET_ROUTE[t], "arr": _TARGET_ARR[t],
-                "p": round(p, 3), "median": None, "q1": None, "q3": None,
-            })
+            per_route.append({"turn": t, "route": _TARGET_ROUTE[t], "p": 0.0,
+                              "when": None, "q1": None, "q3": None})
 
-    total = sum(next_dep.values()) or 1
-    next_departure = [
-        {"turn": k, "route": _TARGET_ROUTE.get(k, k), "p": round(v / total, 3)}
-        for k, v in next_dep.most_common()
-    ]
+    # Modal rotation timeline: a single coherent greedy-argmax trajectory with an
+    # exact, contiguous clock (the "most likely sequence"), rather than per-ordinal
+    # averages which collapse onto the dominant turn.
+    timeline = []
+    clock, cur = start_clock, start_state
+    for _ in range(max_legs):
+        p = trans_p(cur)
+        nxt = max(state_list, key=lambda s: p[s])
+        tod, span = turn_sched(nxt)
+        dep = _next_departure_dt(clock, tod)
+        ret = dep + timedelta(hours=span)
+        timeline.append({
+            "turn": nxt, "route": _TARGET_ROUTE.get(nxt, nxt), "is_target": nxt in targets,
+            "p": round(p[nxt], 3), "dep": dep.isoformat(), "ret": ret.isoformat(),
+        })
+        clock, cur = ret, nxt
+        if (dep - start_clock).total_seconds() / 86400.0 > horizon_days and len(timeline) >= 3:
+            break
+
     return {
-        "per_route": per_route,
+        "as_of": _utc(start_clock).isoformat(),
+        "start_turn": start_state,
         "next_departure": next_departure,
-        "gap_median": _median(gaps),
+        "per_route": per_route,
+        "timeline": timeline,
+        "horizon_days": horizon_days,
         "n_turns": len(tail_seq),
-        "horizon": horizon,
-        "last_turn": start_state,
-        "last_departure": start_date.isoformat(),
     }
+
+
+def _dabyn_status(dab_flights, sched, now):
+    """Infer the current rotation phase from D-ABYN's reliable FRA clock events
+    (FRA departures and FRA arrivals; foreign-airport detection is unreliable).
+    Returns (status_dict, start_clock, start_state) or None.
+    """
+    last_out = None   # (first_seen, turn, dest)
+    last_in = None    # FRA arrival last_seen
+    for f in dab_flights:
+        if f["dep"] == "EDDF" and f["arr"] and f["arr"] != "EDDF":
+            last_out = (f["first_seen"], _turn_type(f["arr"]), f["arr"])
+        if f["arr"] == "EDDF":
+            last_in = f["last_seen"]
+    if last_out is None and last_in is None:
+        return None
+
+    at_fra = last_in is not None and (last_out is None or last_in >= last_out[0])
+    if at_fra:
+        start_clock = max(_utc(last_in), now)
+        status = {
+            "phase": "at_fra", "airborne": False, "location": "EDDF",
+            "since": _utc(last_in).isoformat(),
+            "last_turn": last_out[1] if last_out else None,
+        }
+        return status, start_clock, (last_out[1] if last_out else "HND")
+
+    dep_dt, turn, dest = last_out
+    s = sched.get(turn, {})
+    span = s.get("span_h", 30.0)
+    block = s.get("block_h") or max(8.0, span / 2.0 - 1.0)
+    dwell = max(0.0, span - 2 * block)
+    elapsed = (now - _utc(dep_dt)).total_seconds() / 3600.0
+    expected_return = _utc(dep_dt) + timedelta(hours=span)
+    if elapsed < block:
+        phase, airborne, loc = "outbound", True, dest
+    elif elapsed < block + dwell:
+        phase, airborne, loc = "at_dest", False, dest
+    elif elapsed < span:
+        phase, airborne, loc = "returning", True, "EDDF"
+    else:
+        phase, airborne, loc = "overdue", False, "EDDF"
+    status = {
+        "phase": phase, "airborne": airborne, "location": loc, "dest": dest,
+        "turn": turn, "departed": _utc(dep_dt).isoformat(),
+        "due_back": expected_return.isoformat(), "last_turn": turn,
+    }
+    return status, max(expected_return, now), turn
 
 
 def _rotation_backtest(tail_types, fleet_counts, states, alpha=5.0, k=20):
@@ -1479,20 +1600,37 @@ def api_b748_analysis():
         def route_known(f):
             return bool(f["arr"] and f["arr"] != "EDDF" and f["dep"])
 
-        # ── Rotation model ────────────────────────────────────────────
-        fleet_seqs = [_outbound_turns(fl) for fl in by_reg.values()]
+        # ── Rotation model (schedule-aware) ───────────────────────────
+        now = datetime.now(tz=timezone.utc)
+        fleet_lists = list(by_reg.values())
+        fleet_seqs = [_outbound_turns(fl) for fl in fleet_lists]
         fleet_counts = _trans_counts(fleet_seqs)
         states = sorted(
             {t for seq in fleet_seqs for _, t in seq} | set(_TARGET_TURNS) | {"OTHER"}
         )
+        sched = _schedule_params(fleet_lists)
+        data["schedule"] = {
+            t: {"dep_tod": sched[t]["dep_tod"], "span_h": round(sched[t]["span_h"], 1)}
+            for t in _TARGET_TURNS if t in sched
+        }
         dab = by_reg.get(TARGET_REG, [])
         dab_seq = _outbound_turns(dab)
-        data["prediction"] = _rotation_predict(dab_seq, fleet_counts, states, today)
+
+        st = _dabyn_status(dab, sched, now)
+        if st:
+            data["status"], start_clock, start_state = st
+            data["prediction"] = _rotation_forecast(
+                dab_seq, fleet_counts, states, sched,
+                start_clock, start_state, _TARGET_TURNS,
+            )
+        else:
+            data["status"] = None
+            data["prediction"] = None
         data["backtest"] = _rotation_backtest(
             [t for _, t in dab_seq], fleet_counts, states
         )
 
-        # ── D-ABYN recent flights + last known position ───────────────
+        # ── D-ABYN recent flights ─────────────────────────────────────
         dab_done = sorted(
             (f for f in dab if route_known(f)),
             key=lambda f: f["last_seen"], reverse=True,
@@ -1502,32 +1640,28 @@ def api_b748_analysis():
              "cs": f["cs"], "dur": f["dur"]}
             for f in dab_done[:20]
         ]
-        data["dabyn_position"] = (
-            {"airport": dab_done[0]["arr"],
-             "last_seen": dab_done[0]["last_seen"].isoformat(),
-             "from": dab_done[0]["dep"], "cs": dab_done[0]["cs"]}
-            if dab_done else None
-        )
 
-        # ── Target-route history (fleet) + registration affinity ──────
+        # ── Registration affinity (which tails fly the target routes) ──
         target_arrs = set(_TARGET_ARR.values())
-        history = []
         affinity = defaultdict(Counter)
         for fl in by_reg.values():
             for f in fl:
                 if f["dep"] == "EDDF" and f["arr"] in target_arrs:
-                    history.append({
-                        "reg": f["reg"], "route": "EDDF-" + f["arr"],
-                        "date": f["date"].isoformat(), "cs": f["cs"], "dur": f["dur"],
-                        "is_dabyn": f["reg"] == TARGET_REG,
-                    })
                     affinity[f["reg"]]["EDDF-" + f["arr"]] += 1
-        history.sort(key=lambda h: h["date"], reverse=True)
-        data["route_history"] = history
         data["affinity"] = [
             {"reg": reg, "route": route, "count": c}
             for reg, rc in affinity.items() for route, c in rc.items()
         ]
+
+        # ── Fleet turn-type transition matrix (full B748 fleet) ───────
+        _order = ["HND", "EZE", "JNB", "USW", "USE", "MEX", "GRU", "OTHER"]
+        tstates = ([s for s in _order if s in states]
+                   + [s for s in states if s not in _order])
+        data["fleet_transitions"] = {
+            "states": tstates,
+            "matrix": [[fleet_counts.get(a, {}).get(b, 0) for b in tstates]
+                       for a in tstates],
+        }
 
         # ── D-ABYN rotation timeline (180 days) ───────────────────────
         cutoff = today - timedelta(days=180)
@@ -2380,6 +2514,31 @@ body {
 .dist-fill.t-jnb { background: var(--green); }
 .dist-fill.t-eze { background: var(--purple); }
 .dist-pct { width: 42px; text-align: right; color: var(--muted); }
+.dist-when { width: 130px; text-align: right; color: var(--text); font-size: 11px; }
+@media (max-width: 560px) { .dist-when { display: none; } }
+
+/* Status card */
+.status-card { display: block; }
+.status-card.air { border-left: 3px solid var(--cyan); }
+.status-card.ground { border-left: 3px solid var(--green); }
+.st-row { display: flex; align-items: center; gap: 14px; }
+.st-icon { font-size: 22px; line-height: 1; }
+.st-icon.air { color: var(--cyan); }
+.st-icon.ground { color: var(--green); }
+.st-head { font-size: 17px; color: var(--text); }
+.st-head b { color: var(--text-bright); font-weight: 700; }
+.st-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* Forecast rotation timeline */
+.leg {
+  background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--muted);
+  border-radius: 8px; padding: 9px 12px; margin-bottom: 7px;
+}
+.leg-route { font-size: 13px; font-weight: 700; }
+.leg-p { font-size: 11px; font-weight: 500; color: var(--muted); }
+.leg-times { font-size: 12px; color: var(--text); margin-top: 2px; }
+.leg-times b { color: var(--text-bright); }
+.leg-dur { color: var(--muted); }
 
 /* Backtest banner */
 .backtest-banner {
@@ -2502,28 +2661,35 @@ body {
   <div class="loading" id="loading">Loading 747-8 analysis data&hellip;</div>
   <div id="content" style="display:none">
 
-  <!-- 1. Predictions -->
+  <!-- 1. Current status -->
+  <div class="section">
+    <div id="dabyn-status" class="status-card"></div>
+  </div>
+
+  <!-- 2. Predictions -->
   <div class="section">
     <div class="card-title">When will D-ABYN next fly each route?</div>
     <div class="card-subtitle">
-      A rotation model learns D-ABYN's sequence of long-haul &ldquo;turns&rdquo; and
-      simulates its schedule forward. The routes <em>compete</em> &mdash; the aircraft
-      makes only one FRA departure per slot, so the percentages are mutually exclusive.
+      A schedule-aware rotation model: it learns D-ABYN's sequence of long-haul
+      &ldquo;turns&rdquo; and each flight's scheduled departure time, then simulates the
+      rotation forward on a real clock. Routes <em>compete</em> &mdash; one FRA departure
+      per slot, and a slot that has already left rolls to the next day.
     </div>
     <div class="backtest-banner" id="backtest"></div>
     <div class="card" style="margin-bottom:12px">
       <div class="card-title">Most likely next FRA departure</div>
-      <div class="card-subtitle">Where D-ABYN heads on its very next departure (all turn types)</div>
+      <div class="card-subtitle">Where &amp; when D-ABYN heads on its very next departure (times UTC)</div>
       <div id="next-dep"></div>
     </div>
     <div class="pred-grid" id="pred-grid"></div>
   </div>
 
-  <!-- 2. D-ABYN status -->
+  <!-- 3. Forecast rotation timeline -->
   <div class="section">
     <div class="card">
-      <div class="card-title">D-ABYN &mdash; Current Status</div>
-      <div id="dabyn-status"></div>
+      <div class="card-title">Most likely upcoming rotations</div>
+      <div class="card-subtitle">The single most-probable sequence of turns, to the hour (UTC) &mdash; each leg must wait for the previous one to get back</div>
+      <div id="forecast"></div>
     </div>
   </div>
 
@@ -2536,12 +2702,12 @@ body {
     </div>
   </div>
 
-  <!-- 5. Target route history -->
+  <!-- 5. Fleet transition matrix -->
   <div class="section">
     <div class="card">
-      <div class="card-title">Target-Route History (747-8 fleet)</div>
-      <div class="card-subtitle">All FRA&rarr;HND / JNB / EZE flights by 747-8 aircraft &mdash; D-ABYN highlighted</div>
-      <div id="route-history"></div>
+      <div class="card-title">Fleet Rotation Transitions (747-8)</div>
+      <div class="card-subtitle">After a turn (row), where the whole 747-8 fleet goes next (column). Row-normalised; darker = more likely.</div>
+      <div class="affinity-wrap" id="transitions"></div>
     </div>
   </div>
 
@@ -2665,25 +2831,71 @@ async function init() {
   $('loading').style.display = 'none';
   $('content').style.display = 'block';
 
+  renderStatus(data.status);
   renderBacktest(data.backtest, data.prediction);
   renderNextDeparture(data.prediction);
   renderPredictions(data.prediction);
-  renderStatus(data.dabyn_position);
+  renderForecast(data.prediction);
   renderRecent(data.dabyn_recent);
-  renderRouteHistory(data.route_history);
+  renderTransitions(data.fleet_transitions);
   renderAffinity(data.affinity);
   renderGantt(data.timeline);
   renderFleetPositions(data.fleet_positions);
 }
 
-/* ── 1. Predictions (rotation model) ──────────────────── */
+/* date-time helpers (all UTC) */
+function fmtDT(iso) {
+  if (!iso) return '\\u2014';
+  const d = new Date(iso);
+  const hh = String(d.getUTCHours()).padStart(2,'0'), mm = String(d.getUTCMinutes()).padStart(2,'0');
+  return DAYS[d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' + MON[d.getUTCMonth()] + ', ' + hh + ':' + mm;
+}
+function untilStr(iso) {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms < 0) return 'now';
+  const h = Math.round(ms / 3600000);
+  return h < 48 ? 'in ~' + h + 'h' : 'in ~' + Math.round(h/24) + 'd';
+}
+
+/* ── 1. Current status ────────────────────────────────── */
+function renderStatus(st) {
+  const el = $('dabyn-status');
+  if (!st) { el.innerHTML = '<div class="card"><div style="color:var(--muted)">No recent activity for D-ABYN</div></div>'; return; }
+  const dot = st.airborne
+    ? '<span class="st-icon air">&#9992;</span>'
+    : '<span class="st-icon ground">&#9679;</span>';
+  let head, sub;
+  if (st.phase === 'at_fra') {
+    head = 'On the ground at <b>FRA</b>';
+    sub = (st.last_turn ? 'Last turn ' + (TURN_NAME[st.last_turn] || st.last_turn) + ' &middot; ' : '') +
+          'idle since ' + fmtDT(st.since) + ' &middot; ready for next departure';
+  } else if (st.phase === 'outbound') {
+    head = 'Airborne &mdash; <b>FRA &rarr; ' + icaoToCity(st.dest) + '</b>';
+    sub = 'Departed ' + fmtDT(st.departed) + ' &middot; due back FRA ~' + fmtDT(st.due_back);
+  } else if (st.phase === 'at_dest') {
+    head = 'On the ground at <b>' + icaoToCity(st.dest) + '</b>';
+    sub = 'Mid-rotation (' + (TURN_NAME[st.turn] || st.turn) + ') &middot; due back FRA ~' + fmtDT(st.due_back);
+  } else if (st.phase === 'returning') {
+    head = 'Airborne &mdash; <b>' + icaoToCity(st.dest) + ' &rarr; FRA</b>';
+    sub = 'Returning &middot; due FRA ~' + fmtDT(st.due_back) + ' (' + untilStr(st.due_back) + ')';
+  } else { /* overdue */
+    head = 'Likely back at <b>FRA</b>';
+    sub = (TURN_NAME[st.turn] || st.turn) + ' turn was due ~' + fmtDT(st.due_back) + ' (detection gap)';
+  }
+  el.className = 'status-card card ' + (st.airborne ? 'air' : 'ground');
+  el.innerHTML =
+    '<div class="st-row">' + dot +
+      '<div><div class="st-head">' + head + '</div>' +
+      '<div class="st-sub">' + sub + '</div></div>' +
+    '</div>';
+}
+
+/* ── 2. Predictions (schedule-aware rotation model) ───── */
 function renderBacktest(bt, pred) {
   const el = $('backtest');
   if (!pred) { el.innerHTML = 'Not enough rotation history for D-ABYN to model yet.'; return; }
-  let s = 'Based on <b>' + pred.n_turns + '</b> past FRA departures' +
-    (pred.gap_median ? ' (typically one every <b>' + Math.round(pred.gap_median) + ' days</b>)' : '') +
-    '. Last departure: <b>' + (TURN_NAME[pred.last_turn] || pred.last_turn) +
-    '</b> on ' + fmtDate(pred.last_departure) + '.';
+  let s = 'Based on <b>' + pred.n_turns + '</b> past FRA departures. Forecast clock starts ' +
+    '<b>' + fmtDT(pred.as_of) + '</b> UTC (when D-ABYN is next free at FRA).';
   if (bt) {
     s += ' Backtest skill: <span class="skill">' + Math.round(bt.top1*100) + '%</span> top-1 / ' +
       Math.round(bt.top2*100) + '% top-2 next-turn accuracy (vs ' + Math.round(bt.base*100) +
@@ -2702,43 +2914,50 @@ function renderNextDeparture(pred) {
       '<div class="dist-bar"><div class="dist-fill ' + (TURN_CLS[d.turn] || '') +
         '" style="width:' + (d.p/max*100) + '%"></div></div>' +
       '<div class="dist-pct">' + Math.round(d.p*100) + '%</div>' +
+      '<div class="dist-when">' + fmtDT(d.when) + '</div>' +
     '</div>'
   ).join('');
 }
 function renderPredictions(pred) {
   if (!pred) { $('pred-grid').innerHTML = '<div style="color:var(--muted)">Not enough rotation data to predict.</div>'; return; }
+  const H = pred.horizon_days;
   $('pred-grid').innerHTML = pred.per_route.map(p => {
     const color = turnColor(p.turn);
     let dateBlock;
-    if (p.median) {
-      const du = daysUntil(p.median);
-      dateBlock = '<div class="pred-date" style="color:' + color + '">' + fmtDate(p.median) + '</div>' +
-        '<div class="pred-when">most likely ' + (du <= 0 ? 'around now' : 'in ~' + du + ' days') + '</div>' +
-        '<div class="pred-meta">Likely window: <b>' + fmtDate(p.q1) + '</b> &ndash; <b>' + fmtDate(p.q3) + '</b></div>';
+    if (p.when) {
+      dateBlock = '<div class="pred-date" style="color:' + color + '">' + fmtDT(p.when) + '</div>' +
+        '<div class="pred-when">most likely &middot; ' + untilStr(p.when) + '</div>' +
+        '<div class="pred-meta">Window: <b>' + fmtDT(p.q1) + '</b> &ndash; <b>' + fmtDT(p.q3) + '</b></div>';
     } else {
       dateBlock = '<div class="pred-date" style="color:var(--muted)">\\u2014</div>' +
-        '<div class="pred-when">not expected within ' + pred.horizon + ' days</div>';
+        '<div class="pred-when">not expected within ' + H + ' days</div>';
     }
     return '<div class="pred-card">' +
       '<div class="pred-route">' + routeName(p.route) + '</div>' +
-      '<div class="pred-label">Probability within ' + pred.horizon + ' days</div>' +
+      '<div class="pred-label">Chance within ' + H + ' days</div>' +
       '<div class="pred-date" style="color:' + color + '">' + Math.round(p.p*100) + '%</div>' +
       '<div class="prob-bar"><div class="prob-fill" style="width:' + (p.p*100) + '%;background:' + color + '"></div></div>' +
-      '<div class="pred-label" style="margin-top:14px">Most likely date</div>' +
+      '<div class="pred-label" style="margin-top:14px">Most likely departure</div>' +
       dateBlock +
     '</div>';
   }).join('');
 }
 
-/* ── 2. Status ────────────────────────────────────────── */
-function renderStatus(pos) {
-  if (!pos) { $('dabyn-status').innerHTML = '<div style="color:var(--muted)">No recent position for D-ABYN</div>'; return; }
-  $('dabyn-status').innerHTML =
-    '<div class="status-banner">' +
-      '<div><div class="big">' + icaoToCity(pos.airport) + '</div>' +
-        '<div class="sub">last known location &middot; ' + ago(pos.last_seen) + '</div></div>' +
-      '<div class="sub">Arrived from ' + icaoToCity(pos.from) + ' &middot; ' + (pos.cs || '\\u2014') + '</div>' +
+/* ── 3. Forecast rotation timeline ────────────────────── */
+function renderForecast(pred) {
+  const el = $('forecast');
+  if (!pred || !pred.timeline.length) { el.innerHTML = '<div style="color:var(--muted)">No forecast available</div>'; return; }
+  el.innerHTML = pred.timeline.map(L => {
+    const color = turnColor(L.turn);
+    const hrs = Math.round((new Date(L.ret) - new Date(L.dep)) / 3600000);
+    const label = L.is_target ? routeName(L.route) : (TURN_NAME[L.turn] || L.turn);
+    return '<div class="leg" style="border-left-color:' + color + '">' +
+      '<div class="leg-route" style="color:' + (L.is_target ? color : 'var(--text-bright)') + '">' +
+        label + '&#8202;&#8644; <span class="leg-p">' + Math.round(L.p*100) + '%</span></div>' +
+      '<div class="leg-times">depart <b>' + fmtDT(L.dep) + '</b> &rarr; back <b>' + fmtDT(L.ret) +
+        '</b> <span class="leg-dur">(' + hrs + 'h round trip)</span></div>' +
     '</div>';
+  }).join('');
 }
 
 /* ── 3. Recent flights ────────────────────────────────── */
@@ -2756,23 +2975,29 @@ function renderRecent(recent) {
   $('dabyn-recent').innerHTML = html;
 }
 
-/* ── 5. Route history ─────────────────────────────────── */
-function renderRouteHistory(history) {
-  if (!history || !history.length) { $('route-history').innerHTML = '<div style="color:var(--muted)">No target-route flights recorded yet</div>'; return; }
-  let html = '<table class="history-table"><thead><tr>' +
-    '<th>Date</th><th>Day</th><th>Route</th><th>Registration</th><th>Callsign</th><th>Duration</th>' +
-    '</tr></thead><tbody>';
-  history.forEach(h => {
-    const d = new Date(h.date + 'T00:00:00Z');
-    const dur = h.dur ? Math.floor(h.dur/60) + 'h ' + (h.dur%60) + 'm' : '\\u2014';
-    html += '<tr class="' + (h.is_dabyn ? 'dabyn' : '') + '">' +
-      '<td>' + h.date + '</td><td>' + DAYS[d.getUTCDay()] + '</td>' +
-      '<td>' + routeName(h.route) + '</td>' +
-      '<td class="reg-cell">' + h.reg + '</td>' +
-      '<td>' + (h.cs || '\\u2014') + '</td><td>' + dur + '</td></tr>';
+/* ── 5. Fleet transition matrix ───────────────────────── */
+function renderTransitions(tr) {
+  if (!tr || !tr.states.length) { $('transitions').innerHTML = '<div style="color:var(--muted)">Not enough data</div>'; return; }
+  const st = tr.states, M = tr.matrix;
+  let html = '<table class="affinity-table"><thead><tr><th></th>';
+  st.forEach(s => { html += '<th>' + (TURN_NAME[s] || s) + '</th>'; });
+  html += '</tr></thead><tbody>';
+  st.forEach((from, i) => {
+    const rowTotal = M[i].reduce((a, b) => a + b, 0);
+    html += '<tr><td class="reg-label">' + (TURN_NAME[from] || from) + '</td>';
+    st.forEach((to, j) => {
+      const cnt = M[i][j];
+      const frac = rowTotal ? cnt / rowTotal : 0;
+      const bg = cnt > 0 ? 'rgba(91,141,239,' + (0.1 + frac * 0.85) + ')' : 'transparent';
+      const title = cnt + ' (' + Math.round(frac * 100) + '%)';
+      html += '<td title="' + title + '" style="background:' + bg + ';color:' +
+        (frac > 0.08 ? 'var(--text-bright)' : 'var(--muted)') + '">' +
+        (cnt ? Math.round(frac * 100) + '%' : '') + '</td>';
+    });
+    html += '</tr>';
   });
   html += '</tbody></table>';
-  $('route-history').innerHTML = html;
+  $('transitions').innerHTML = html;
 }
 
 /* ── 6. Affinity ──────────────────────────────────────── */
