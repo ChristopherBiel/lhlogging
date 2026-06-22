@@ -11,3 +11,6 @@ venv/
 
 # Local DB exports / scratch
 tmp/
+
+# Local server/SSH config for tools/pull_data.sh
+.env.local

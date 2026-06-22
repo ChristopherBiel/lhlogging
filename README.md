@@ -256,6 +256,39 @@ The monitoring dashboard runs on port **8080** and auto-refreshes every 30 secon
 
 ---
 
+## Local Data Analysis
+
+Offline tooling for digging into the real data with plain Python (no DB or extra
+deps). `tools/pull_data.sh` pulls a fresh flights snapshot from the production DB
+into `tmp/flights_export.csv` (gitignored); the analysis scripts read that file.
+
+Configure the pull once via a gitignored `.env.local` in the repo root:
+
+```bash
+# .env.local
+LHLOGGING_SSH=user@your-server         # ssh host/alias
+LHLOGGING_REMOTE_DIR=/path/to/lhlogging # server project dir (has docker-compose.yml)
+# LHLOGGING_DB_USER / LHLOGGING_DB_NAME  # optional, default: lhlogging
+```
+
+Then:
+
+```bash
+./tools/pull_data.sh                              # refresh tmp/flights_export.csv
+
+python3 tools/analyze_rotation.py                 # rotation model + backtest (default D-ABYN)
+python3 tools/analyze_rotation.py --reg D-ABYO --targets RJTT,SAEZ,FAOR
+python3 tools/data_quality_report.py --type B748  # UNKN/EDFE/needs_review + callsign-resolution
+python3 tools/explore_fleet.py --reg D-ABYN       # one tail's flight log + route mix
+python3 tools/explore_fleet.py --route EDDF-FAOR  # who flies a route, and when
+```
+
+Routes are resolved through the same callsign reference the dashboard uses, so legs
+the detector left as `UNKN` still show their real destination. `tools/_lhdata.py`
+holds the shared loader/route logic.
+
+---
+
 ## Deployment
 
 Pushing to `main` triggers automatic deployment via GitHub Actions:
