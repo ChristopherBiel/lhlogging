@@ -267,35 +267,104 @@ def update_open_flight(
             )
 
 
+# Cache for whether airports.type exists (migration 005 applied). None = unchecked.
+# Lets the hub-preference lookup degrade gracefully if the new app code is
+# deployed before the migration runs, instead of breaking the flight detector.
+_airports_has_type: bool | None = None
+
+
+def airports_has_type(conn: psycopg.Connection) -> bool:
+    """Whether the airports.type column exists (cached for the process)."""
+    global _airports_has_type
+    if _airports_has_type is None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'airports' AND column_name = 'type'
+                )
+                """
+            )
+            _airports_has_type = bool(cur.fetchone()[0])
+    return _airports_has_type
+
+
 def lookup_nearest_airport(
     conn: psycopg.Connection, lat: float, lon: float, max_km: float | None = None
 ) -> str | None:
-    """Find the nearest airport to the given lat/lon using earthdistance."""
+    """Find the nearest airport to the given lat/lon using earthdistance.
+
+    If the nearest airport is not a large_airport but a large_airport lies
+    within HUB_PREFERENCE_RADIUS_KM, the hub is returned instead — an airliner
+    that close to a major hub is at the hub, not a nearby GA/medium field
+    (e.g. Frankfurt EDDF vs the Egelsbach GA strip EDFE ~7 km away).
+
+    Falls back to a plain nearest-airport lookup when the airports.type column
+    is absent (migration 005 not yet applied) or all types are NULL (loader not
+    re-run), so behaviour is unchanged until the type data is in place.
+    """
     if lat is None or lon is None:
         return None
     if max_km is None:
         max_km = config.AIRPORT_LOOKUP_RADIUS_KM
+
+    has_type = airports_has_type(conn)
     with conn.cursor() as cur:
+        if not has_type:
+            cur.execute(
+                """
+                SELECT icao_code,
+                       earth_distance(ll_to_earth(latitude, longitude),
+                                      ll_to_earth(%s, %s)) / 1000.0 AS dist_km
+                FROM airports
+                ORDER BY earth_distance(ll_to_earth(latitude, longitude),
+                                        ll_to_earth(%s, %s))
+                LIMIT 1
+                """,
+                (lat, lon, lat, lon),
+            )
+            r = cur.fetchone()
+            if not r or r[1] > max_km:
+                return None
+            return r[0].strip()
+
         cur.execute(
             """
-            SELECT icao_code,
-                   earth_distance(
-                       ll_to_earth(latitude, longitude),
-                       ll_to_earth(%s, %s)
-                   ) / 1000.0 AS dist_km
+            SELECT icao_code, type,
+                   earth_distance(ll_to_earth(latitude, longitude),
+                                  ll_to_earth(%s, %s)) / 1000.0 AS dist_km
             FROM airports
-            ORDER BY earth_distance(
-                ll_to_earth(latitude, longitude),
-                ll_to_earth(%s, %s)
-            )
+            ORDER BY earth_distance(ll_to_earth(latitude, longitude),
+                                    ll_to_earth(%s, %s))
             LIMIT 1
             """,
             (lat, lon, lat, lon),
         )
         r = cur.fetchone()
-    if not r or r[1] > max_km:
-        return None
-    return r[0].strip()
+        if not r or r[2] > max_km:
+            return None
+        nearest_code = r[0].strip()
+
+        if (r[1] or "").strip() != "large_airport":
+            cur.execute(
+                """
+                SELECT icao_code,
+                       earth_distance(ll_to_earth(latitude, longitude),
+                                      ll_to_earth(%s, %s)) / 1000.0 AS dist_km
+                FROM airports
+                WHERE type = 'large_airport'
+                ORDER BY earth_distance(ll_to_earth(latitude, longitude),
+                                        ll_to_earth(%s, %s))
+                LIMIT 1
+                """,
+                (lat, lon, lat, lon),
+            )
+            hub = cur.fetchone()
+            if hub and hub[1] <= config.HUB_PREFERENCE_RADIUS_KM:
+                return hub[0].strip()
+
+    return nearest_code
 
 
 def get_positions_for_aircraft_before(

@@ -7,6 +7,10 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Flight detector — every 30 minutes (offset to :15/:45), infers flights from position transitions
 15,45 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.flight_detector >> /var/log/lhlogging/cron.log 2>&1
 
+# Route enrichment — shortly after the detector, recovers dep/arr (and clears
+# needs_review) for recent flights using the flight_routes reference
+20,50 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_enrichment >> /var/log/lhlogging/cron.log 2>&1
+
 # Positions cleanup — daily at 04:00 UTC, deletes snapshots older than retention window
 0 4  * * *  root  . /etc/environment && cd /app && python -m lhlogging.positions_cleanup >> /var/log/lhlogging/cron.log 2>&1
 
@@ -15,3 +19,6 @@ PATH=/usr/local/bin:/usr/bin:/bin
 
 # Fleet refresh — every Monday at 02:00 UTC
 0 2  * * 1  root  . /etc/environment && cd /app && python -m lhlogging.fleet_refresh >> /var/log/lhlogging/cron.log 2>&1
+
+# Flight-routes reference — refresh callsign→route consensus weekly (Mondays 02:30 UTC)
+30 2  * * 1  root  . /etc/environment && cd /app && python -m tools.seed_flight_routes --apply >> /var/log/lhlogging/cron.log 2>&1

@@ -66,6 +66,9 @@ MISSED_DEPARTURE_DISTANCE_KM: float = float(_optional("MISSED_DEPARTURE_DISTANCE
 MISSED_DEPARTURE_MAX_GAP_H: int = int(_optional("MISSED_DEPARTURE_MAX_GAP_H", "12"))
 POSITIONS_RETENTION_DAYS: int = int(_optional("POSITIONS_RETENTION_DAYS", "30"))
 AIRPORT_LOOKUP_RADIUS_KM: float = float(_optional("AIRPORT_LOOKUP_RADIUS_KM", "50.0"))
+# Within this radius of a large_airport, prefer the hub over a nearer GA/medium
+# field (an airliner this close to a major hub is at the hub, not a GA strip).
+HUB_PREFERENCE_RADIUS_KM: float = float(_optional("HUB_PREFERENCE_RADIUS_KM", "15.0"))
 PROXIMITY_LANDING_ALTITUDE_M: float = float(_optional("PROXIMITY_LANDING_ALTITUDE_M", "500.0"))
 PROXIMITY_LANDING_RADIUS_KM: float = float(_optional("PROXIMITY_LANDING_RADIUS_KM", "8.0"))
 PROXIMITY_LANDING_MIN_STALE_MINUTES: int = int(_optional("PROXIMITY_LANDING_MIN_STALE_MINUTES", "10"))

@@ -91,9 +91,12 @@ lhlogging/
 │   │   ├── fleet_discovery.py      # Every 30 min — discovers new aircraft via DLH callsigns
 │   │   ├── positions_cleanup.py    # Daily — deletes old position snapshots
 │   │   ├── fleet_refresh.py        # Weekly — updates type data, retires decommissioned aircraft
+│   │   ├── route_enrichment.py     # Every 30 min — recovers dep/arr from callsign→route reference
 │   │   └── utils.py                # Logging, retry decorator, rate limiter
 │   ├── tools/
 │   │   ├── load_airports.py        # One-off: populates airports table from OurAirports
+│   │   ├── seed_flight_routes.py   # Builds callsign→route reference (consensus + curated)
+│   │   ├── backfill_routes.py      # One-off: enriches all history from flight_routes
 │   │   ├── eval_flightaware.py     # FlightAware AeroAPI evaluation + fleet rebuild tool
 │   │   └── review.py               # SSH-based review tool for flagged aircraft and flights
 │   ├── crontab                     # Cron schedule (runs inside Docker)
@@ -107,7 +110,9 @@ lhlogging/
 │   └── init/
 │       ├── 001_schema.sql          # PostgreSQL schema (auto-applied on first run)
 │       ├── 002_airports_and_positions.sql  # Airports table + indexes migration
-│       └── 003_flights_needs_review.sql    # needs_review flag for flights and aircraft
+│       ├── 003_flights_needs_review.sql    # needs_review flag for flights and aircraft
+│       ├── 004_flight_routes.sql           # callsign→route reference table
+│       └── 005_airports_type.sql           # airport size class (hub-preference lookup)
 ├── docker-compose.yml              # Three services: db, app, dashboard
 └── .github/
     └── workflows/
@@ -228,9 +233,11 @@ TRACK_AIRCRAFT_TYPES=
 |---|---|---|
 | **State Poller** | Every 2 min | Fetches `/states/all`, stores position snapshots for the LH fleet |
 | **Flight Detector** | Every 30 min (at :15 and :45) | Detects flights from ground/air transitions (with velocity+altitude fallback), closes pending arrivals, auto-closes stale flights (>24h), infers missed departures for airborne aircraft with no open flight |
+| **Route Enrichment** | Every 30 min (at :20 and :50) | Recovers missing/UNKN dep/arr (and clears `needs_review`) for recent flights from the `flight_routes` callsign→route reference; normalises EDFE→EDDF |
 | **Fleet Discovery** | Every 30 min (at :00 and :30) | Discovers new aircraft via live DLH callsign matching (OpenSky + Planespotters) |
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
+| **Flight-Routes Seed** | Mondays at 02:30 UTC | Rebuilds the `flight_routes` callsign→route reference from a consensus of clean flights (plus curated overrides) |
 
 ---
 
@@ -283,9 +290,31 @@ ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlo
 # needs_review flags for flights and aircraft
 ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
   < db/init/003_flights_needs_review.sql
+
+# callsign→route reference table + airport size class
+ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
+  < db/init/004_flight_routes.sql
+ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
+  < db/init/005_airports_type.sql
 ```
 
 Then deploy. The 003 migration also auto-flags existing aircraft that have missing type data or placeholder registrations.
+
+The app degrades gracefully if `004`/`005` haven't been applied yet — the nearest-airport
+lookup falls back to its plain form, route enrichment skips itself, and the dashboard's
+747-8 page falls back to raw dep/arr — so deploy order isn't critical. Apply the migrations
+to *enable* the features, then populate the new tables and backfill history (dry-run first
+to preview the row counts):
+
+```bash
+# reload airports so the `type` column is populated (enables hub-preference lookup)
+docker compose exec app python tools/load_airports.py
+
+# build the callsign→route reference, then backfill all history
+docker compose exec app python -m tools.seed_flight_routes --apply
+docker compose exec app python -m tools.backfill_routes            # dry-run preview
+docker compose exec app python -m tools.backfill_routes --apply    # apply
+```
 
 ---
 

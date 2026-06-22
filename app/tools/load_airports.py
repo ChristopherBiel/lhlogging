@@ -50,7 +50,7 @@ def main() -> int:
             continue
 
         name = (row.get("name") or "").strip()[:200]
-        airports.append((icao_code, name, lat, lon))
+        airports.append((icao_code, name, lat, lon, ap_type))
 
     logger.info(f"Parsed {len(airports)} large/medium airports")
 
@@ -61,17 +61,18 @@ def main() -> int:
         return 1
 
     with conn.cursor() as cur:
-        for icao_code, name, lat, lon in airports:
+        for icao_code, name, lat, lon, ap_type in airports:
             cur.execute(
                 """
-                INSERT INTO airports (icao_code, name, latitude, longitude)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO airports (icao_code, name, latitude, longitude, type)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (icao_code) DO UPDATE SET
                     name = EXCLUDED.name,
                     latitude = EXCLUDED.latitude,
-                    longitude = EXCLUDED.longitude
+                    longitude = EXCLUDED.longitude,
+                    type = EXCLUDED.type
                 """,
-                (icao_code, name, lat, lon),
+                (icao_code, name, lat, lon, ap_type),
             )
     conn.commit()
     conn.close()
