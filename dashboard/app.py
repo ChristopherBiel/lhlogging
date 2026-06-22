@@ -1548,7 +1548,8 @@ def _rotation_backtest(tail_types, fleet_counts, states, alpha=5.0, k=20):
 _B748_FETCH_SQL = """
     SELECT TRIM(a.registration), a.is_active, TRIM(f.callsign),
            {dep_expr}, {arr_expr},
-           f.flight_date, f.first_seen, f.last_seen, f.duration_minutes
+           f.flight_date, f.first_seen, f.last_seen, f.duration_minutes,
+           f.arrival_airport_icao
     FROM flights f
     JOIN aircraft a ON a.icao24 = f.icao24
     {join}
@@ -1595,6 +1596,7 @@ def api_b748_analysis():
                 "reg": r[0], "active": r[1], "cs": (r[2] or "").strip(),
                 "dep": _norm_ap(r[3]), "arr": _norm_ap(r[4]),
                 "date": r[5], "first_seen": r[6], "last_seen": r[7], "dur": r[8],
+                "open": r[9] is None,  # raw arrival NULL → flight still in progress
             })
 
         def route_known(f):
@@ -1672,19 +1674,33 @@ def api_b748_analysis():
             for f in dab if f["date"] >= cutoff
         ]
 
-        # ── B748 fleet positions (last known per active tail) ─────────
+        # ── B748 fleet positions (airborne vs last known per active tail) ──
         fleet_positions = []
         for reg, fl in by_reg.items():
-            done = [f for f in fl if route_known(f) and f["active"]]
-            if not done:
+            if not fl or not fl[0]["active"]:
                 continue
-            last = max(done, key=lambda f: f["last_seen"])
-            fleet_positions.append({
-                "reg": reg, "airport": last["arr"],
-                "last_seen": last["last_seen"].isoformat(),
-                "from": last["dep"], "cs": last["cs"],
-                "is_dabyn": reg == TARGET_REG,
-            })
+            latest = max(fl, key=lambda f: f["first_seen"])
+            # In progress: most recent leg is still open and seen recently.
+            airborne = (
+                latest["open"]
+                and (now - latest["last_seen"]).total_seconds() < 24 * 3600
+            )
+            grounded = [f for f in fl if route_known(f)]
+            last_known = max(grounded, key=lambda f: f["last_seen"]) if grounded else None
+            if airborne:
+                fleet_positions.append({
+                    "reg": reg, "airborne": True,
+                    "dest": latest["arr"], "from": latest["dep"],
+                    "cs": latest["cs"], "last_seen": latest["last_seen"].isoformat(),
+                    "is_dabyn": reg == TARGET_REG,
+                })
+            elif last_known:
+                fleet_positions.append({
+                    "reg": reg, "airborne": False, "airport": last_known["arr"],
+                    "from": last_known["dep"], "cs": last_known["cs"],
+                    "last_seen": last_known["last_seen"].isoformat(),
+                    "is_dabyn": reg == TARGET_REG,
+                })
         fleet_positions.sort(key=lambda p: p["reg"])
         data["fleet_positions"] = fleet_positions
 
@@ -2564,8 +2580,10 @@ body {
   border-radius: 8px; padding: 10px; text-align: center;
 }
 .fleet-card.dabyn { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.fleet-card.air { border-color: var(--cyan); }
 .fleet-card .reg { font-size: 13px; font-weight: 700; color: var(--text-bright); margin-bottom: 4px; }
 .fleet-card .airport { font-size: 18px; font-weight: 700; letter-spacing: 1px; color: var(--text); }
+.fleet-card .airport.air { color: var(--cyan); font-size: 16px; letter-spacing: 0.5px; }
 .fleet-card .meta { font-size: 10px; color: var(--muted); margin-top: 4px; }
 
 /* Gantt timeline */
@@ -2738,7 +2756,7 @@ body {
   <div class="section">
     <div class="card">
       <div class="card-title">747-8 Fleet Positions</div>
-      <div class="card-subtitle">Last known location of each active 747-8 &mdash; D-ABYN outlined</div>
+      <div class="card-subtitle">Where each active 747-8 is now &mdash; airborne tails show their destination; D-ABYN outlined</div>
       <div class="fleet-grid" id="fleet-grid"></div>
     </div>
   </div>
@@ -3059,14 +3077,28 @@ function renderGantt(timeline) {
 /* ── 8. Fleet positions ───────────────────────────────── */
 function renderFleetPositions(positions) {
   if (!positions || !positions.length) { $('fleet-grid').innerHTML = '<div style="color:var(--muted)">No fleet positions</div>'; return; }
-  $('fleet-grid').innerHTML = positions.map(p =>
-    '<div class="fleet-card ' + (p.is_dabyn ? 'dabyn' : '') + '">' +
+  $('fleet-grid').innerHTML = positions.map(p => {
+    const cls = 'fleet-card ' + (p.is_dabyn ? 'dabyn ' : '') + (p.airborne ? 'air' : '');
+    if (p.airborne) {
+      const dest = (p.dest && p.dest !== 'EDDF') ? icaoToCity(p.dest) : (p.dest ? icaoToCity(p.dest) : null);
+      const big = dest ? '&#9992; ' + dest : '&#9992; airborne';
+      const sub = dest
+        ? 'airborne &middot; ' + icaoToCity(p.from) + '&rarr;' + dest
+        : 'airborne &middot; from ' + icaoToCity(p.from);
+      return '<div class="' + cls + '">' +
+        '<div class="reg">' + p.reg + '</div>' +
+        '<div class="airport air">' + big + '</div>' +
+        '<div class="meta">' + (p.cs || '') + ' &middot; ' + ago(p.last_seen) + '</div>' +
+        '<div class="meta">' + sub + '</div>' +
+      '</div>';
+    }
+    return '<div class="' + cls + '">' +
       '<div class="reg">' + p.reg + '</div>' +
       '<div class="airport">' + icaoToCity(p.airport) + '</div>' +
       '<div class="meta">' + (p.cs || '') + ' &middot; ' + ago(p.last_seen) + '</div>' +
       '<div class="meta">' + icaoToCity(p.from) + '&rarr;' + icaoToCity(p.airport) + '</div>' +
-    '</div>'
-  ).join('');
+    '</div>';
+  }).join('');
 }
 
 init();
