@@ -597,6 +597,7 @@ body {
     <div style="display:flex;align-items:center;gap:12px">
       <a href="/fleet" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">Fleet DB</a>
       <a href="/analysis" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">A380 Analysis &rarr;</a>
+      <a href="/analysis-747" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">747-8 Analysis &rarr;</a>
       <span class="updated" id="last-updated"></span>
     </div>
   </div>
@@ -1222,6 +1223,342 @@ def api_a380_analysis():
     return jsonify(data)
 
 
+# ── 747-8 (B748) Analysis — D-ABYN route prediction ─────────────────
+
+
+def _median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return None
+    m = n // 2
+    return float(s[m]) if n % 2 else (s[m - 1] + s[m]) / 2.0
+
+
+_DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+@app.route("/api/b748-analysis")
+def api_b748_analysis():
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+    TARGET_REG = "D-ABYN"
+    DEP = "EDDF"
+    TARGET_ARRIVALS = ("RJTT", "FAOR", "SAEZ")  # HND, JNB, EZE
+
+    try:
+        from datetime import timedelta
+
+        data = {"target_reg": TARGET_REG}
+        today = datetime.now(tz=timezone.utc).date()
+
+        # ── Fleet-wide cadence per target route (same-tail recurrence gaps),
+        #    used as a fallback hint when D-ABYN has too little history.
+        rows = _q(
+            conn,
+            """
+            WITH occ AS (
+                SELECT f.arrival_airport_icao AS arr, f.flight_date AS fd,
+                       LEAD(f.flight_date) OVER (
+                           PARTITION BY a.registration, f.arrival_airport_icao
+                           ORDER BY f.flight_date
+                       ) AS nxt
+                FROM flights f
+                JOIN aircraft a ON a.icao24 = f.icao24
+                WHERE a.aircraft_type = 'B748'
+                  AND f.departure_airport_icao = %s
+                  AND f.arrival_airport_icao = ANY(%s)
+                  AND NOT f.needs_review
+            )
+            SELECT arr, (nxt - fd) AS gap
+            FROM occ WHERE nxt IS NOT NULL
+            """,
+            (DEP, list(TARGET_ARRIVALS)),
+        )
+        fleet_gaps = defaultdict(list)
+        for r in rows:
+            fleet_gaps[r[0].strip()].append(int(r[1]))
+
+        # ── D-ABYN occurrences on each target route (all-time, review-clean).
+        rows = _q(
+            conn,
+            """
+            SELECT f.arrival_airport_icao, f.flight_date
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND TRIM(a.registration) = %s
+              AND f.departure_airport_icao = %s
+              AND f.arrival_airport_icao = ANY(%s)
+              AND NOT f.needs_review
+            ORDER BY f.arrival_airport_icao, f.flight_date
+            """,
+            (TARGET_REG, DEP, list(TARGET_ARRIVALS)),
+        )
+        reg_route_dates = defaultdict(list)
+        for r in rows:
+            reg_route_dates[r[0].strip()].append(r[1])
+
+        predictions = []
+        for arr in TARGET_ARRIVALS:
+            dates = reg_route_dates.get(arr, [])
+            n = len(dates)
+            gaps = [(dates[i + 1] - dates[i]).days for i in range(n - 1)]
+            med_gap = _median(gaps)
+            mean_gap = round(sum(gaps) / len(gaps), 1) if gaps else None
+
+            # Modal weekday (Python weekday: Mon=0..Sun=6).
+            modal_wd = None
+            modal_name = None
+            if dates:
+                wd_counts = defaultdict(int)
+                for d in dates:
+                    wd_counts[d.weekday()] += 1
+                modal_wd = max(wd_counts, key=lambda k: (wd_counts[k], -k))
+                modal_name = _DOW_NAMES[modal_wd]
+
+            predicted = None
+            if n >= 2 and med_gap and med_gap >= 1:
+                step = timedelta(days=round(med_gap))
+                cand = dates[-1] + step
+                # Roll forward to the next future occurrence.
+                while cand < today:
+                    cand += step
+                # Snap to the modal weekday within +/- 3 days, if known.
+                if modal_wd is not None:
+                    best = cand
+                    for delta in range(-3, 4):
+                        c = cand + timedelta(days=delta)
+                        if c.weekday() == modal_wd and c >= today and (
+                            best is cand or abs(delta) < abs((best - cand).days)
+                        ):
+                            best = c
+                    cand = best
+                predicted = cand.isoformat()
+
+            if n >= 6:
+                confidence = "high"
+            elif n >= 3:
+                confidence = "medium"
+            elif n >= 1:
+                confidence = "low"
+            else:
+                confidence = "none"
+
+            predictions.append(
+                {
+                    "route": DEP + "-" + arr,
+                    "arr": arr,
+                    "n": n,
+                    "last": dates[-1].isoformat() if dates else None,
+                    "recent_dates": [d.isoformat() for d in dates[-6:]],
+                    "median_gap": med_gap,
+                    "mean_gap": mean_gap,
+                    "modal_dow": modal_name,
+                    "predicted_next": predicted,
+                    "confidence": confidence,
+                    "fleet_median_gap": _median(fleet_gaps.get(arr, [])),
+                }
+            )
+        data["predictions"] = predictions
+
+        # ── D-ABYN last known position.
+        rows = _q(
+            conn,
+            """
+            SELECT f.arrival_airport_icao, f.last_seen,
+                   f.departure_airport_icao, f.callsign
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND TRIM(a.registration) = %s
+              AND f.arrival_airport_icao IS NOT NULL
+              AND NOT f.needs_review
+            ORDER BY f.last_seen DESC
+            LIMIT 1
+            """,
+            (TARGET_REG,),
+        )
+        data["dabyn_position"] = (
+            {
+                "airport": rows[0][0].strip(),
+                "last_seen": rows[0][1].isoformat(),
+                "from": rows[0][2].strip() if rows[0][2] else "",
+                "cs": (rows[0][3] or "").strip(),
+            }
+            if rows
+            else None
+        )
+
+        # ── D-ABYN recent flight log (any route).
+        rows = _q(
+            conn,
+            """
+            SELECT f.departure_airport_icao, f.arrival_airport_icao,
+                   f.flight_date, f.callsign, f.duration_minutes
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND TRIM(a.registration) = %s
+              AND f.arrival_airport_icao IS NOT NULL
+            ORDER BY f.last_seen DESC
+            LIMIT 20
+            """,
+            (TARGET_REG,),
+        )
+        data["dabyn_recent"] = [
+            {
+                "dep": r[0].strip() if r[0] else "",
+                "arr": r[1].strip(),
+                "date": r[2].isoformat(),
+                "cs": (r[3] or "").strip(),
+                "dur": r[4],
+            }
+            for r in rows
+        ]
+
+        # ── Target-route history across the whole B748 fleet.
+        rows = _q(
+            conn,
+            """
+            SELECT TRIM(a.registration) AS reg, f.arrival_airport_icao,
+                   f.flight_date, f.callsign, f.duration_minutes
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND f.departure_airport_icao = %s
+              AND f.arrival_airport_icao = ANY(%s)
+            ORDER BY f.flight_date DESC, f.first_seen DESC
+            """,
+            (DEP, list(TARGET_ARRIVALS)),
+        )
+        data["route_history"] = [
+            {
+                "reg": r[0],
+                "route": DEP + "-" + r[1].strip(),
+                "date": r[2].isoformat(),
+                "cs": (r[3] or "").strip(),
+                "dur": r[4],
+                "is_dabyn": r[0] == TARGET_REG,
+            }
+            for r in rows
+        ]
+
+        # ── Route x day-of-week heatmap (fleet-wide).
+        rows = _q(
+            conn,
+            """
+            SELECT f.arrival_airport_icao,
+                   EXTRACT(DOW FROM f.first_seen AT TIME ZONE 'UTC')::int AS dow,
+                   COUNT(*)
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND f.departure_airport_icao = %s
+              AND f.arrival_airport_icao = ANY(%s)
+              AND NOT f.needs_review
+            GROUP BY f.arrival_airport_icao, dow
+            ORDER BY f.arrival_airport_icao, dow
+            """,
+            (DEP, list(TARGET_ARRIVALS)),
+        )
+        data["dow_heatmap"] = [
+            {"route": DEP + "-" + r[0].strip(), "dow": r[1], "count": r[2]}
+            for r in rows
+        ]
+
+        # ── Registration x target-route affinity (which tails fly them).
+        rows = _q(
+            conn,
+            """
+            SELECT TRIM(a.registration) AS reg, f.arrival_airport_icao,
+                   COUNT(*) AS cnt
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND f.departure_airport_icao = %s
+              AND f.arrival_airport_icao = ANY(%s)
+              AND NOT f.needs_review
+            GROUP BY reg, f.arrival_airport_icao
+            ORDER BY reg
+            """,
+            (DEP, list(TARGET_ARRIVALS)),
+        )
+        data["affinity"] = [
+            {"reg": r[0], "route": DEP + "-" + r[1].strip(), "count": r[2]}
+            for r in rows
+        ]
+
+        # ── D-ABYN rotation timeline (180 days).
+        rows = _q(
+            conn,
+            """
+            SELECT f.departure_airport_icao, f.arrival_airport_icao,
+                   f.first_seen, f.last_seen, f.callsign
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND TRIM(a.registration) = %s
+              AND f.flight_date >= CURRENT_DATE - 180
+              AND f.departure_airport_icao IS NOT NULL
+              AND f.arrival_airport_icao IS NOT NULL
+              AND NOT f.needs_review
+            ORDER BY f.first_seen
+            """,
+            (TARGET_REG,),
+        )
+        data["timeline"] = [
+            {
+                "dep": r[0].strip(),
+                "arr": r[1].strip(),
+                "t0": r[2].isoformat(),
+                "t1": r[3].isoformat(),
+                "cs": (r[4] or "").strip(),
+            }
+            for r in rows
+        ]
+
+        # ── B748 fleet positions (last known location per active tail).
+        rows = _q(
+            conn,
+            """
+            SELECT DISTINCT ON (a.registration)
+                   TRIM(a.registration) AS reg, f.arrival_airport_icao,
+                   f.last_seen, f.departure_airport_icao, f.callsign
+            FROM flights f
+            JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = 'B748'
+              AND a.is_active
+              AND f.arrival_airport_icao IS NOT NULL
+              AND NOT f.needs_review
+            ORDER BY a.registration, f.last_seen DESC
+            """,
+        )
+        data["fleet_positions"] = [
+            {
+                "reg": r[0],
+                "airport": r[1].strip(),
+                "last_seen": r[2].isoformat(),
+                "from": r[3].strip() if r[3] else "",
+                "cs": (r[4] or "").strip(),
+                "is_dabyn": r[0] == TARGET_REG,
+            }
+            for r in rows
+        ]
+
+        data["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
+
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+    conn.close()
+    return jsonify(data)
+
+
 _ANALYSIS_HTML = """\
 <!DOCTYPE html>
 <html lang="en">
@@ -1462,6 +1799,7 @@ body {
 
   <div class="header">
     <h1>A380 Rotation <span>Analysis</span></h1>
+    <a class="nav-link" href="/analysis-747">747-8 Analysis</a>
     <a class="nav-link" href="/fleet">Fleet DB</a>
     <a class="nav-link" href="/">&larr; Monitor</a>
   </div>
@@ -1935,6 +2273,560 @@ init();
 @app.route("/analysis")
 def analysis():
     return render_template_string(_ANALYSIS_HTML)
+
+
+_ANALYSIS_747_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>747-8 Analysis &middot; D-ABYN</title>
+<style>
+:root {
+  --bg: #101114;
+  --surface: #191b20;
+  --surface2: #1f2128;
+  --border: #2a2c35;
+  --text: #c9cdd6;
+  --text-bright: #e4e7ed;
+  --muted: #6b7280;
+  --accent: #5b8def;
+  --accent-dim: rgba(91,141,239,0.12);
+  --green: #4ade80;
+  --green-dim: rgba(74,222,128,0.12);
+  --red: #f87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251,191,36,0.12);
+  --cyan: #22d3ee;
+  --purple: #a78bfa;
+  --pink: #f472b6;
+  --radius: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; }
+
+.header {
+  padding: 16px 0 12px;
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid var(--border); margin-bottom: 20px;
+}
+.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); letter-spacing: -0.3px; }
+.header h1 span { color: var(--accent); font-weight: 700; }
+.nav-link {
+  font-size: 12px; color: var(--accent); text-decoration: none;
+  padding: 4px 10px; border: 1px solid var(--accent); border-radius: 6px;
+}
+.nav-link:hover { background: var(--accent-dim); }
+
+.section { margin-bottom: 24px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; margin-bottom: 12px;
+}
+.card-title { font-size: 13px; font-weight: 600; color: var(--text-bright); margin-bottom: 10px; }
+.card-subtitle { font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+
+/* Prediction cards */
+.pred-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;
+}
+.pred-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; position: relative;
+}
+.pred-card .pred-route {
+  font-size: 15px; font-weight: 700; color: var(--text-bright); margin-bottom: 2px;
+}
+.pred-card .pred-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--muted); margin: 10px 0 2px;
+}
+.pred-card .pred-date { font-size: 22px; font-weight: 700; color: var(--accent); letter-spacing: -0.5px; }
+.pred-card .pred-when { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.pred-card .pred-meta { font-size: 11px; color: var(--text); margin-top: 12px; line-height: 1.7; }
+.pred-card .pred-meta b { color: var(--text-bright); font-weight: 600; }
+.pred-card .pred-note { font-size: 10px; color: var(--amber); margin-top: 8px; }
+.conf-chip {
+  position: absolute; top: 14px; right: 14px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 2px 7px; border-radius: 10px;
+}
+.conf-high { background: var(--green-dim); color: var(--green); }
+.conf-medium { background: var(--accent-dim); color: var(--accent); }
+.conf-low { background: var(--amber-dim); color: var(--amber); }
+.conf-none { background: var(--red-dim); color: var(--red); }
+
+/* Status banner */
+.status-banner {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+}
+.status-banner .big {
+  font-size: 26px; font-weight: 700; letter-spacing: 1px; color: var(--text-bright);
+}
+.status-banner .sub { font-size: 12px; color: var(--muted); }
+
+/* Fleet position cards */
+.fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.fleet-card {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px; text-align: center;
+}
+.fleet-card.dabyn { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.fleet-card .reg { font-size: 13px; font-weight: 700; color: var(--text-bright); margin-bottom: 4px; }
+.fleet-card .airport { font-size: 18px; font-weight: 700; letter-spacing: 1px; color: var(--text); }
+.fleet-card .meta { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+/* Gantt timeline */
+.gantt { overflow-x: auto; }
+.gantt-row { display: flex; align-items: center; margin-bottom: 2px; height: 22px; }
+.gantt-label {
+  width: 70px; flex-shrink: 0; font-size: 11px; font-weight: 600;
+  color: var(--text-bright); text-align: right; padding-right: 8px;
+}
+.gantt-track {
+  flex: 1; position: relative; height: 18px; background: var(--surface2);
+  border-radius: 3px; overflow: hidden; min-width: 800px;
+}
+.gantt-flight {
+  position: absolute; height: 100%; border-radius: 2px;
+  min-width: 2px; cursor: pointer; opacity: 0.85; transition: opacity 0.15s;
+}
+.gantt-flight:hover { opacity: 1; z-index: 2; }
+.gantt-flight.t-hnd { background: var(--accent); }
+.gantt-flight.t-jnb { background: var(--green); }
+.gantt-flight.t-eze { background: var(--purple); }
+.gantt-flight.other { background: var(--muted); opacity: 0.4; }
+.gantt-axis {
+  display: flex; justify-content: space-between;
+  margin-left: 70px; min-width: 800px;
+  font-size: 10px; color: var(--muted); padding-top: 4px;
+}
+
+/* Heatmap */
+.heatmap-grid { display: grid; gap: 2px; grid-template-columns: 110px repeat(7, 1fr); }
+.heatmap-cell {
+  height: 28px; border-radius: 4px; display: flex;
+  align-items: center; justify-content: center; font-size: 11px; font-weight: 600;
+}
+.heatmap-header { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.heatmap-label { font-size: 11px; font-weight: 600; color: var(--text-bright); text-align: right; padding-right: 8px; }
+
+/* Affinity matrix */
+.affinity-wrap { overflow-x: auto; }
+.affinity-table { border-collapse: collapse; font-size: 11px; }
+.affinity-table th {
+  padding: 4px 10px; font-weight: 600; color: var(--muted);
+  text-align: center; background: var(--surface);
+}
+.affinity-table td { padding: 4px 10px; text-align: center; border-radius: 3px; }
+.affinity-table td.reg-label {
+  font-weight: 600; color: var(--text-bright); text-align: right;
+  position: sticky; left: 0; background: var(--surface);
+}
+.affinity-table tr.dabyn td.reg-label { color: var(--accent); }
+
+/* History table */
+.history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.history-table th {
+  text-align: left; padding: 6px 8px; font-size: 10px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.history-table td { padding: 5px 8px; border-bottom: 1px solid rgba(42,44,53,0.3); color: var(--text); }
+.history-table .reg-cell { font-weight: 700; color: var(--text-bright); }
+.history-table tr.dabyn { background: var(--accent-dim); }
+.history-table tr.dabyn .reg-cell { color: var(--accent); }
+
+/* Tooltip */
+.tooltip {
+  position: fixed; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--text);
+  pointer-events: none; z-index: 100; white-space: nowrap; display: none; max-width: 300px;
+}
+.loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
+.error-banner {
+  display: none; background: var(--red-dim); border: 1px solid rgba(248,113,113,0.25);
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
+  color: var(--red); font-size: 12px;
+}
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>747-8 Analysis &middot; <span>D-ABYN</span></h1>
+    <div style="display:flex;gap:8px">
+      <a class="nav-link" href="/analysis">A380 Analysis</a>
+      <a class="nav-link" href="/fleet">Fleet DB</a>
+      <a class="nav-link" href="/">&larr; Monitor</a>
+    </div>
+  </div>
+
+  <div class="error-banner" id="error-banner"></div>
+  <div class="loading" id="loading">Loading 747-8 analysis data&hellip;</div>
+  <div id="content" style="display:none">
+
+  <!-- 1. Predictions -->
+  <div class="section">
+    <div class="card-title">When will D-ABYN next fly each route?</div>
+    <div class="card-subtitle">
+      Estimated from D-ABYN's own past cadence on each route (median gap + usual weekday).
+      A statistical estimate, not a schedule &mdash; check the sample size &amp; confidence.
+    </div>
+    <div class="pred-grid" id="pred-grid"></div>
+  </div>
+
+  <!-- 2. D-ABYN status -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">D-ABYN &mdash; Current Status</div>
+      <div id="dabyn-status"></div>
+    </div>
+  </div>
+
+  <!-- 3. D-ABYN recent flights + 4. heatmap -->
+  <div class="section two-col">
+    <div class="card">
+      <div class="card-title">D-ABYN Recent Flights</div>
+      <div class="card-subtitle">Last 20 completed flights (any route)</div>
+      <div id="dabyn-recent"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Target Routes by Day of Week</div>
+      <div class="card-subtitle">When each route departs FRA (whole 747-8 fleet)</div>
+      <div id="dow-heatmap"></div>
+    </div>
+  </div>
+
+  <!-- 5. Target route history -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">Target-Route History (747-8 fleet)</div>
+      <div class="card-subtitle">All FRA&rarr;HND / JNB / EZE flights by 747-8 aircraft &mdash; D-ABYN highlighted</div>
+      <div id="route-history"></div>
+    </div>
+  </div>
+
+  <!-- 6. Affinity -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">Which 747-8 Tails Fly These Routes</div>
+      <div class="card-subtitle">Flights per registration on each target route (darker = more)</div>
+      <div class="affinity-wrap" id="affinity"></div>
+    </div>
+  </div>
+
+  <!-- 7. Gantt -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">D-ABYN Rotation Timeline (180 days)</div>
+      <div class="card-subtitle">
+        <span style="color:var(--accent)">&block;</span> FRA&rarr;HND&ensp;
+        <span style="color:var(--green)">&block;</span> FRA&rarr;JNB&ensp;
+        <span style="color:var(--purple)">&block;</span> FRA&rarr;EZE&ensp;
+        <span style="color:var(--muted)">&block;</span> Other
+      </div>
+      <div class="gantt" id="gantt"></div>
+    </div>
+  </div>
+
+  <!-- 8. Fleet positions -->
+  <div class="section">
+    <div class="card">
+      <div class="card-title">747-8 Fleet Positions</div>
+      <div class="card-subtitle">Last known location of each active 747-8 &mdash; D-ABYN outlined</div>
+      <div class="fleet-grid" id="fleet-grid"></div>
+    </div>
+  </div>
+
+  </div><!-- /content -->
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const tip = $('tooltip');
+document.addEventListener('mousemove', e => {
+  if (tip.style.display === 'block') {
+    tip.style.left = (e.clientX + 12) + 'px';
+    tip.style.top = (e.clientY - 32) + 'px';
+  }
+});
+function showTip(html, e) {
+  tip.innerHTML = html; tip.style.display = 'block';
+  tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 32) + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+
+const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function ago(iso) {
+  if (!iso) return '\\u2014';
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+function fmtDate(iso) {
+  if (!iso) return '\\u2014';
+  const d = new Date(iso + 'T00:00:00Z');
+  return DAYS[d.getUTCDay()] + ', ' + d.getUTCDate() + ' ' + MON[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
+}
+function daysUntil(iso) {
+  const d = new Date(iso + 'T00:00:00Z').getTime();
+  const n = new Date();
+  const t = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate());
+  return Math.round((d - t) / 86400000);
+}
+
+const ICAO_NAMES = {
+  EDDF:'FRA', RJTT:'HND', FAOR:'JNB', SAEZ:'EZE',
+  EDDM:'MUC', VTBS:'BKK', KJFK:'JFK', KLAX:'LAX', KORD:'ORD', OMDB:'DXB',
+  VHHH:'HKG', RKSI:'ICN', WSSS:'SIN', SBGR:'GRU', LEMD:'MAD', EGLL:'LHR',
+  LFPG:'CDG', EDDB:'BER', EDDL:'DUS', EDDS:'STR', EDDH:'HAM', RPLL:'MNL',
+  ZSPD:'PVG', ZBAA:'PEK', WMKK:'KUL', VIDP:'DEL', VABB:'BOM', LEBL:'BCN',
+  LIRF:'FCO', YSSY:'SYD', OEJN:'JED', OERK:'RUH', OTHH:'DOH', OMAA:'AUH',
+  CYYZ:'YYZ', KIAH:'IAH', KMIA:'MIA', KSFO:'SFO', CYVR:'YVR', RJAA:'NRT',
+  LOWW:'VIE', EHAM:'AMS', LSZH:'ZRH', KEWR:'EWR', SCEL:'SCL', SKBO:'BOG',
+  MMMX:'MEX', FACT:'CPT', HECA:'CAI', VTBD:'BKK', ZGGG:'CAN', RCTP:'TPE',
+};
+function icaoToCity(code) { return ICAO_NAMES[code] || code; }
+function routeName(r) {
+  const p = r.split('-');
+  return icaoToCity(p[0]) + '\\u2192' + icaoToCity(p[1]);
+}
+
+async function init() {
+  let data;
+  try {
+    const r = await fetch('/api/b748-analysis');
+    data = await r.json();
+  } catch(e) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = 'Connection error: ' + e;
+    $('loading').style.display = 'none';
+    return;
+  }
+  if (data.error) {
+    $('error-banner').style.display = 'block';
+    $('error-banner').textContent = data.error;
+    $('loading').style.display = 'none';
+    return;
+  }
+  $('loading').style.display = 'none';
+  $('content').style.display = 'block';
+
+  renderPredictions(data.predictions);
+  renderStatus(data.dabyn_position);
+  renderRecent(data.dabyn_recent);
+  renderDowHeatmap(data.dow_heatmap);
+  renderRouteHistory(data.route_history);
+  renderAffinity(data.affinity);
+  renderGantt(data.timeline);
+  renderFleetPositions(data.fleet_positions);
+}
+
+/* ── 1. Predictions ───────────────────────────────────── */
+function renderPredictions(preds) {
+  $('pred-grid').innerHTML = (preds || []).map(p => {
+    let dateBlock, note = '';
+    if (p.predicted_next) {
+      const du = daysUntil(p.predicted_next);
+      const rel = du <= 0 ? 'due now' : 'in ~' + du + ' days';
+      dateBlock = '<div class="pred-date">' + fmtDate(p.predicted_next) + '</div>' +
+                  '<div class="pred-when">' + rel + '</div>';
+    } else {
+      dateBlock = '<div class="pred-date" style="color:var(--muted)">\\u2014</div>' +
+                  '<div class="pred-when">not enough history to predict</div>';
+      if (p.fleet_median_gap) {
+        note = 'Fleet hint: 747-8 tails repeat this route about every ' +
+               Math.round(p.fleet_median_gap) + ' days (not D-ABYN-specific).';
+      }
+    }
+    const meta =
+      '<b>' + p.n + '</b> past D-ABYN flight' + (p.n === 1 ? '' : 's') + '<br>' +
+      'Last flown: <b>' + (p.last ? fmtDate(p.last) : '\\u2014') + '</b><br>' +
+      (p.median_gap ? 'Median gap: <b>' + Math.round(p.median_gap) + 'd</b>' +
+        (p.mean_gap ? ' (avg ' + p.mean_gap + 'd)' : '') + '<br>' : '') +
+      (p.modal_dow ? 'Usually departs: <b>' + p.modal_dow + '</b>' : '');
+    return '<div class="pred-card">' +
+      '<span class="conf-chip conf-' + p.confidence + '">' + p.confidence + '</span>' +
+      '<div class="pred-route">' + routeName(p.route) + '</div>' +
+      '<div class="pred-label">Predicted next departure</div>' +
+      dateBlock +
+      '<div class="pred-meta">' + meta + '</div>' +
+      (note ? '<div class="pred-note">' + note + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+/* ── 2. Status ────────────────────────────────────────── */
+function renderStatus(pos) {
+  if (!pos) { $('dabyn-status').innerHTML = '<div style="color:var(--muted)">No recent position for D-ABYN</div>'; return; }
+  $('dabyn-status').innerHTML =
+    '<div class="status-banner">' +
+      '<div><div class="big">' + icaoToCity(pos.airport) + '</div>' +
+        '<div class="sub">last known location &middot; ' + ago(pos.last_seen) + '</div></div>' +
+      '<div class="sub">Arrived from ' + icaoToCity(pos.from) + ' &middot; ' + (pos.cs || '\\u2014') + '</div>' +
+    '</div>';
+}
+
+/* ── 3. Recent flights ────────────────────────────────── */
+function renderRecent(recent) {
+  if (!recent || !recent.length) { $('dabyn-recent').innerHTML = '<div style="color:var(--muted)">No flights recorded</div>'; return; }
+  let html = '<table class="history-table"><thead><tr>' +
+    '<th>Date</th><th>Route</th><th>Callsign</th><th>Duration</th></tr></thead><tbody>';
+  recent.forEach(h => {
+    const dur = h.dur ? Math.floor(h.dur/60) + 'h ' + (h.dur%60) + 'm' : '\\u2014';
+    html += '<tr><td>' + h.date + '</td>' +
+      '<td>' + icaoToCity(h.dep) + '\\u2192' + icaoToCity(h.arr) + '</td>' +
+      '<td>' + (h.cs || '\\u2014') + '</td><td>' + dur + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  $('dabyn-recent').innerHTML = html;
+}
+
+/* ── 4. Day-of-Week heatmap (routes x weekday) ────────── */
+function renderDowHeatmap(heatData) {
+  if (!heatData || !heatData.length) { $('dow-heatmap').innerHTML = '<div style="color:var(--muted)">No data yet</div>'; return; }
+  const routes = [...new Set(heatData.map(h => h.route))].sort();
+  const maxCount = Math.max(...heatData.map(h => h.count), 1);
+  const lookup = {};
+  heatData.forEach(h => { lookup[h.route + '_' + h.dow] = h.count; });
+
+  let html = '<div class="heatmap-grid"><div></div>';
+  DAYS.forEach(d => { html += '<div class="heatmap-cell heatmap-header">' + d + '</div>'; });
+  routes.forEach(route => {
+    html += '<div class="heatmap-cell heatmap-label">' + routeName(route) + '</div>';
+    for (let dow = 0; dow < 7; dow++) {
+      const cnt = lookup[route + '_' + dow] || 0;
+      const intensity = cnt / maxCount;
+      const bg = cnt > 0 ? 'rgba(91,141,239,' + (0.15 + intensity * 0.75) + ')' : 'var(--surface2)';
+      html += '<div class="heatmap-cell" style="background:' + bg + ';color:' +
+        (cnt > 0 ? 'var(--text-bright)' : 'var(--muted)') + '">' + (cnt || '&middot;') + '</div>';
+    }
+  });
+  html += '</div>';
+  $('dow-heatmap').innerHTML = html;
+}
+
+/* ── 5. Route history ─────────────────────────────────── */
+function renderRouteHistory(history) {
+  if (!history || !history.length) { $('route-history').innerHTML = '<div style="color:var(--muted)">No target-route flights recorded yet</div>'; return; }
+  let html = '<table class="history-table"><thead><tr>' +
+    '<th>Date</th><th>Day</th><th>Route</th><th>Registration</th><th>Callsign</th><th>Duration</th>' +
+    '</tr></thead><tbody>';
+  history.forEach(h => {
+    const d = new Date(h.date + 'T00:00:00Z');
+    const dur = h.dur ? Math.floor(h.dur/60) + 'h ' + (h.dur%60) + 'm' : '\\u2014';
+    html += '<tr class="' + (h.is_dabyn ? 'dabyn' : '') + '">' +
+      '<td>' + h.date + '</td><td>' + DAYS[d.getUTCDay()] + '</td>' +
+      '<td>' + routeName(h.route) + '</td>' +
+      '<td class="reg-cell">' + h.reg + '</td>' +
+      '<td>' + (h.cs || '\\u2014') + '</td><td>' + dur + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  $('route-history').innerHTML = html;
+}
+
+/* ── 6. Affinity ──────────────────────────────────────── */
+function renderAffinity(affinity) {
+  if (!affinity || !affinity.length) { $('affinity').innerHTML = '<div style="color:var(--muted)">Not enough data</div>'; return; }
+  const routes = [...new Set(affinity.map(a => a.route))].sort();
+  const regs = [...new Set(affinity.map(a => a.reg))].sort();
+  const lookup = {};
+  let maxVal = 0;
+  affinity.forEach(a => { lookup[a.reg + '|' + a.route] = a.count; if (a.count > maxVal) maxVal = a.count; });
+
+  let html = '<table class="affinity-table"><thead><tr><th></th>';
+  routes.forEach(r => { html += '<th>' + routeName(r) + '</th>'; });
+  html += '</tr></thead><tbody>';
+  regs.forEach(reg => {
+    html += '<tr class="' + (reg === 'D-ABYN' ? 'dabyn' : '') + '"><td class="reg-label">' + reg + '</td>';
+    routes.forEach(route => {
+      const cnt = lookup[reg + '|' + route] || 0;
+      const intensity = cnt / maxVal;
+      const bg = cnt > 0 ? 'rgba(91,141,239,' + (0.1 + intensity * 0.8) + ')' : 'transparent';
+      html += '<td style="background:' + bg + ';color:' + (cnt > 0 ? 'var(--text-bright)' : '') + '">' + (cnt || '') + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  $('affinity').innerHTML = html;
+}
+
+/* ── 7. Gantt ─────────────────────────────────────────── */
+const TARGET_CLS = { 'EDDF-RJTT':'t-hnd', 'EDDF-FAOR':'t-jnb', 'EDDF-SAEZ':'t-eze' };
+function renderGantt(timeline) {
+  if (!timeline || !timeline.length) { $('gantt').innerHTML = '<div style="color:var(--muted)">No flight data in the last 180 days</div>'; return; }
+  const now = Date.now();
+  const t0 = now - 180*86400000;
+  const range = now - t0;
+
+  let html = '<div class="gantt-row"><div class="gantt-label">D-ABYN</div><div class="gantt-track">';
+  timeline.forEach(f => {
+    const fs = new Date(f.t0).getTime();
+    const fe = new Date(f.t1).getTime();
+    const left = Math.max(0, (fs - t0) / range * 100);
+    const width = Math.max(0.15, (fe - fs) / range * 100);
+    const cls = TARGET_CLS[f.dep + '-' + f.arr] || 'other';
+    const tipText = icaoToCity(f.dep) + '&rarr;' + icaoToCity(f.arr) +
+      '<br>' + (f.cs || '') + ' &middot; ' + f.t0.slice(0,10);
+    html += '<div class="gantt-flight ' + cls + '" style="left:' + left + '%;width:' + width + '%"' +
+      ' onmouseenter="showTip(\\'' + tipText.replace(/'/g, "\\\\'") + '\\', event)" onmouseleave="hideTip()"></div>';
+  });
+  html += '</div></div>';
+  html += '<div class="gantt-axis">';
+  for (let i = 0; i <= 6; i++) {
+    const d = new Date(t0 + (range * i / 6));
+    html += '<span>' + d.toISOString().slice(5,10) + '</span>';
+  }
+  html += '</div>';
+  $('gantt').innerHTML = html;
+}
+
+/* ── 8. Fleet positions ───────────────────────────────── */
+function renderFleetPositions(positions) {
+  if (!positions || !positions.length) { $('fleet-grid').innerHTML = '<div style="color:var(--muted)">No fleet positions</div>'; return; }
+  $('fleet-grid').innerHTML = positions.map(p =>
+    '<div class="fleet-card ' + (p.is_dabyn ? 'dabyn' : '') + '">' +
+      '<div class="reg">' + p.reg + '</div>' +
+      '<div class="airport">' + icaoToCity(p.airport) + '</div>' +
+      '<div class="meta">' + (p.cs || '') + ' &middot; ' + ago(p.last_seen) + '</div>' +
+      '<div class="meta">' + icaoToCity(p.from) + '&rarr;' + icaoToCity(p.airport) + '</div>' +
+    '</div>'
+  ).join('');
+}
+
+init();
+</script>
+<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
+  <span style="margin:0 6px">&middot;</span>
+  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
+</footer>
+</body>
+</html>
+"""
+
+
+@app.route("/analysis-747")
+def analysis_747():
+    return render_template_string(_ANALYSIS_747_HTML)
 
 
 # ── Fleet Database ─────────────────────────────────────────────────
