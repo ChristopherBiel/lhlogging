@@ -238,6 +238,33 @@ TRACK_AIRCRAFT_TYPES=
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 | **Flight-Routes Seed** | Mondays at 02:30 UTC | Rebuilds the `flight_routes` callsign→route reference from a consensus of clean flights (plus curated overrides) |
+| **Flight-Status Fetch** | Nightly ~22:00–23:00 Europe/Berlin | Pulls the public Lufthansa FIS feed for the B748/A388 flight numbers seen in the last 2 days, +1..+4 days ahead; records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
+
+---
+
+## Flight-Status Collector
+
+A separate `flightstatus` service (its own image — it needs a real browser)
+captures the **planned airframe→route assignments** ahead of time, which the
+ADS-B pipeline can only observe after the fact.
+
+- **Source:** `https://www.lufthansa.com/service/api/fis/byflightnumber?flightNumber=LH716&date=YYYY-MM-DD`.
+  Unlike the official Lufthansa Open API (which returns only the 3-letter
+  aircraft *type*), this feed includes the **registration (tail)** and the
+  aircraft's **previous flight** — enough to chain an airframe's rotation.
+- **Bot protection:** the endpoint sits behind Imperva/Distil. `curl` and
+  headless browsers are blocked; only a *real headed* Chromium gets through, so
+  the service runs Playwright headed under Xvfb. Requests are paced gently
+  (5–10 s) with a rate-limit backoff — a full ~120-lookup run takes ~20 min.
+- **Storage:** each night appends a snapshot per `(observed_date, flight_date,
+  flight_number)` — the run date is part of the key, so **reassignments are
+  preserved as a time series** (compare a target flight across `observed_date`
+  to see the plan firm up or swap). Full per-flight payload kept in `raw` JSONB.
+- **Config:** `FIS_SEED_TYPES` (default `B748,A388`), `FIS_LOOKAHEAD_DAYS`
+  (4), `FIS_SEED_LOOKBACK_DAYS` (2), `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`,
+  `FIS_BLOCK_BACKOFF_S`. Ad-hoc single lookup:
+  `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`
+  (set `NIGHTLY_JITTER=0` to skip the start jitter).
 
 ---
 
