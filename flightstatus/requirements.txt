@@ -1,0 +1,6 @@
+# The playwright/python base image ships the browser binaries (in /ms-playwright,
+# build 1148 = the one Playwright 1.49.0 expects) but NOT the pip package, so we
+# pin playwright to the matching version. PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# is already set in the base image, so no browser download happens at build time.
+playwright==1.49.0
+psycopg[binary]>=3.1

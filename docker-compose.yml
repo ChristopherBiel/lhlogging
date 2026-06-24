@@ -37,6 +37,25 @@ services:
     expose:
       - "8080"
 
+  # Nightly Lufthansa flight-status fetcher (headed Chromium under Xvfb to clear
+  # Distil). Separate image from `app` because it needs a browser; talks to `db`
+  # on the shared network. Browser only spins up once a night, so it's idle most
+  # of the time — capped to keep it a good neighbour on the shared box.
+  flightstatus:
+    build: ./flightstatus
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Europe/Berlin
+      DB_HOST: db
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - applogs:/var/log/lhlogging
+    mem_limit: 1g
+    shm_size: 1g
+
 volumes:
   pgdata:
   applogs:
