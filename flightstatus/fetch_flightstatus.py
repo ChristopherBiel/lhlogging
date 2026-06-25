@@ -175,8 +175,18 @@ def norm_registration(reg: str | None) -> str | None:
 
 
 def _ts(s: str | None):
+    """Parse a FIS timestamp like '2026-06-25T14:05:00.000+0000'.
+
+    The offset has no colon, so datetime.fromisoformat rejects it on Python
+    <3.11 (the collector image runs 3.10) — strptime with %z handles it.
+    """
     if not s:
         return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
