@@ -5456,7 +5456,9 @@ async function init(){
     html+='<div class="gantt-track">';
     a.legs.forEach(l=>{
       const s=new Date(l.start).getTime(), e=new Date(l.end).getTime();
-      const left=Math.max(0,(s-t0)/range*100), width=Math.max(0.5,(e-s)/range*100);
+      // clip to the visible window: keep the true end position, cut the start at the edge
+      const left=Math.max(0,(s-t0)/range*100), right=Math.min(100,(e-t0)/range*100);
+      const width=Math.max(0.5,right-left);
       const dur=l.dur?(Math.floor(l.dur/60)+'h'+String(l.dur%60).padStart(2,'0')):'';
       const st=l.status||'planned';
       const obCls = st==='tracked'?' ob-tracked' : st==='deviation'?' ob-deviation'
@@ -5484,7 +5486,8 @@ async function init(){
       // deviation: also draw the actual route the tail really flew
       if(st==='deviation' && l.act){
         const as=new Date(l.act.start).getTime(), ae=new Date(l.act.end).getTime();
-        const al=Math.max(0,(as-t0)/range*100), aw=Math.max(0.5,(ae-as)/range*100);
+        const al=Math.max(0,(as-t0)/range*100), ar=Math.min(100,(ae-t0)/range*100);
+        const aw=Math.max(0.5,ar-al);
         const at=a.reg+' actually flew\\n'+l.act.dep+' \\u2192 '+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')
           +'\\n'+fmt(l.act.start)+' \\u2192 '+fmt(l.act.end)+'\\n(planned '+l.fl+' '+l.dep+'\\u2192'+l.arr+')';
         html+='<div class="gantt-flight '+tc+' ob-extra" style="left:'+al+'%;width:'+aw+'%"'
