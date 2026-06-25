@@ -51,6 +51,12 @@ REQUEST_DELAY_MIN_S = float(os.environ.get("FIS_REQUEST_DELAY_MIN_S", "5.0"))
 REQUEST_DELAY_MAX_S = float(os.environ.get("FIS_REQUEST_DELAY_MAX_S", "10.0"))
 MAX_FETCH_RETRIES = int(os.environ.get("FIS_MAX_FETCH_RETRIES", "3"))
 BLOCK_BACKOFF_S = float(os.environ.get("FIS_BLOCK_BACKOFF_S", "45.0"))
+# Rotation-chain expansion: many legs (esp. westbound MUC departures) fly under
+# tactical callsigns (DLH3Y, DLH8P, …) so they never enter the ADS-B-derived
+# seed. The FIS `previousFlight` field names them, so after the seed fetch we
+# follow that chain a couple of hops to fill the gaps. Capped to stay gentle.
+CHAIN_HOPS = int(os.environ.get("FIS_CHAIN_HOPS", "2"))
+MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "300"))
 
 BASE = "https://www.lufthansa.com"
 PAGE_URL = f"{BASE}/de/en/timetable-and-flight-status"
@@ -305,10 +311,13 @@ def run_batch(dry_run: bool = False) -> int:
         conn.close()
         return 0
 
-    targets = [date.today() + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
-    jobs = [(s["flight_number"], t, s["seed_type"]) for s in seed for t in targets]
-    log(f"seed: {len(seed)} flight numbers x {len(targets)} days = {len(jobs)} lookups "
-        f"(types={SEED_TYPES}, lookahead={LOOKAHEAD_DAYS})")
+    today = date.today()
+    targets = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
+    # Chained legs may reference the day before a target (e.g. the +1 flight's
+    # previous leg is today), so allow chaining to reach today too.
+    window_dates = set(targets) | {today}
+    log(f"seed: {len(seed)} flight numbers x {len(targets)} days = {len(seed) * len(targets)} base lookups "
+        f"(types={SEED_TYPES}, lookahead={LOOKAHEAD_DAYS}, chain_hops={CHAIN_HOPS})")
     log("flight numbers: " + ", ".join(f"LH{s['flight_number']}({s['seed_type']})" for s in seed))
 
     if dry_run:
@@ -316,9 +325,19 @@ def run_batch(dry_run: bool = False) -> int:
         conn.close()
         return 0
 
+    # Work queue of (flight_number, date, seed_type, hop), deduped by (num, date).
+    # Seed entries are hop 0; previousFlight discoveries are enqueued at hop+1.
+    queued = set()
+    work = []
+    for s in seed:
+        for t in targets:
+            key = (s["flight_number"], t)
+            if key not in queued:
+                queued.add(key)
+                work.append((s["flight_number"], t, s["seed_type"], 0))
+
     run_id = log_batch_start(conn)
-    total = len(jobs)
-    ok = err = upserted = 0
+    total = ok = err = upserted = chained = 0
     status, detail = "ok", None
     try:
         with sync_playwright() as pw:
@@ -333,11 +352,12 @@ def run_batch(dry_run: bool = False) -> int:
             page = ctx.new_page()
             seed_session(page)
 
-            for flight_number, target, seed_type in jobs:
+            while work and total < MAX_LOOKUPS:
+                flight_number, target, seed_type, hop = work.pop(0)
+                total += 1
                 payload = fetch_one(page, flight_number, target)
                 if payload is None:
                     err += 1
-                    # still record the miss so we know we tried
                     obs = parse_flight({}, flight_number, target, seed_type)
                     upsert_observation(conn, obs)
                     conn.commit()
@@ -350,8 +370,17 @@ def run_batch(dry_run: bool = False) -> int:
                         ok += 1
                         prev = (f"{obs['prev_airline']}{obs['prev_flight_number']}@{obs['prev_flight_date']}"
                                 if obs["prev_flight_number"] else "n/a")
-                        log(f"  LH{flight_number} {target}: {obs['registration']} "
+                        log(f"  {'> ' * hop}LH{flight_number} {target}: {obs['registration']} "
                             f"{obs['dep_airport_iata']}->{obs['arr_airport_iata']} prev={prev}")
+                        # rotation-chain expansion: follow previousFlight to fill
+                        # legs (often tactically-flown) that the seed never caught
+                        pn, pd = obs["prev_flight_number"], obs["prev_flight_date"]
+                        if (hop < CHAIN_HOPS and obs["prev_airline"] == "LH"
+                                and pn and pn.isdigit() and pd in window_dates
+                                and (pn, pd) not in queued and len(queued) < MAX_LOOKUPS):
+                            queued.add((pn, pd))
+                            work.append((pn, pd, seed_type, hop + 1))
+                            chained += 1
                 time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
 
             browser.close()
@@ -361,7 +390,8 @@ def run_batch(dry_run: bool = False) -> int:
     finally:
         log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
         conn.close()
-    log(f"done: {ok} found, {err} blocked/missing, {upserted} rows upserted")
+    log(f"done: {total} lookups ({chained} via chain), {ok} found, "
+        f"{err} blocked/missing, {upserted} rows upserted")
     return 0 if status == "ok" else 1
 
 
