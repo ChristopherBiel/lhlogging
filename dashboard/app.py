@@ -6,6 +6,7 @@ import os
 import random
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg
 import psycopg.rows
@@ -5003,6 +5004,40 @@ def _iso_dur_min(s):
     return h * 60 + m
 
 
+_BERLIN = ZoneInfo("Europe/Berlin")
+
+# ICAO (ADS-B) → IATA (FIS), for the LH widebody network, so actual legs match
+# the planned ones. Unmapped codes fall back to the ICAO string.
+_ICAO_IATA = {
+    "EDDF": "FRA", "EDDM": "MUC", "KEWR": "EWR", "KJFK": "JFK", "KLAX": "LAX",
+    "KSFO": "SFO", "KIAD": "IAD", "KBOS": "BOS", "KORD": "ORD", "KMIA": "MIA",
+    "KIAH": "IAH", "KDEN": "DEN", "KSEA": "SEA", "KDFW": "DFW", "KATL": "ATL",
+    "KCLT": "CLT", "CYYZ": "YYZ", "CYVR": "YVR", "RJTT": "HND", "RJAA": "NRT",
+    "VIDP": "DEL", "VABB": "BOM", "ZBAA": "PEK", "ZBAD": "PKX", "ZSPD": "PVG",
+    "VHHH": "HKG", "WSSS": "SIN", "RKSI": "ICN", "RPLL": "MNL", "VTBS": "BKK",
+    "SAEZ": "EZE", "SBGR": "GRU", "SBGL": "GIG", "FAOR": "JNB", "OMDB": "DXB",
+    "OTHH": "DOH", "MMMX": "MEX", "SKBO": "BOG", "SEQM": "UIO", "SPJC": "LIM",
+    "SCEL": "SCL", "HECA": "CAI", "LTFM": "IST", "OERK": "RUH",
+}
+
+
+def _icao_to_iata(code):
+    code = (code or "").strip().upper()
+    return _ICAO_IATA.get(code, code)
+
+
+def _digits(s):
+    return "".join(c for c in (s or "") if c.isdigit())
+
+
+def _berlin_fake_utc(dt):
+    """Convert a true-UTC datetime to Frankfurt wall-clock, then re-stamp it as
+    UTC — so ADS-B actuals plot on the same fake-UTC axis as the FIS bars."""
+    if dt is None:
+        return None
+    return dt.astimezone(_BERLIN).replace(tzinfo=timezone.utc)
+
+
 @app.route("/api/schedule")
 def api_schedule():
     """Per-airframe upcoming schedule from the latest FIS snapshot of each
@@ -5017,6 +5052,9 @@ def api_schedule():
         conn = _db()
     except Exception as e:
         return jsonify({"error": str(e)}), 503
+
+    today = date.today()
+    now_fake = datetime.now(_BERLIN).replace(tzinfo=timezone.utc)  # Berlin wall as fake-UTC
     try:
         rows = _q(conn, """
             SELECT DISTINCT ON (o.flight_date, o.flight_number)
@@ -5028,30 +5066,48 @@ def api_schedule():
             FROM flight_status_observations o
             JOIN aircraft a ON a.registration = o.registration
             WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
-              AND o.flight_date >= CURRENT_DATE
+              AND o.flight_date >= CURRENT_DATE - 1
               AND a.aircraft_type = ANY(%s)
             ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
         """, (list(_SCHEDULE_TYPES),))
         swap_rows = _q(conn, """
             SELECT flight_date, flight_number
             FROM flight_status_observations
-            WHERE found AND registration IS NOT NULL AND flight_date >= CURRENT_DATE
+            WHERE found AND registration IS NOT NULL AND flight_date >= CURRENT_DATE - 1
             GROUP BY flight_date, flight_number
             HAVING COUNT(DISTINCT registration) > 1
         """)
+        # Actual flights (ADS-B) for the shown fleet over the recent past.
+        act_rows = _q(conn, """
+            SELECT a.registration, f.callsign, f.departure_airport_icao,
+                   f.arrival_airport_icao, f.first_seen, f.last_seen
+            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = ANY(%s)
+              AND f.first_seen >= NOW() - INTERVAL '40 hours'
+              AND f.departure_airport_icao IS NOT NULL
+            ORDER BY a.registration, f.first_seen
+        """, (list(_SCHEDULE_TYPES),))
     finally:
         conn.close()
 
     swapped = {(r[0], r[1]) for r in swap_rows}
-    today = date.today()
+
+    # Actual legs per registration, on the same fake-UTC (Berlin) axis.
+    actuals = defaultdict(list)
+    for reg, cs, dep_icao, arr_icao, fs, ls in act_rows:
+        actuals[reg].append({
+            "cs": (cs or "").strip(),
+            "dep": _icao_to_iata(dep_icao), "arr": _icao_to_iata(arr_icao),
+            "start": _berlin_fake_utc(fs), "end": _berlin_fake_utc(ls), "used": False,
+        })
+
     by_reg = defaultdict(list)
     types = {}
-    starts, ends, fdates = [], [], []
+    starts, ends = [], []
     for (fdate, airline, fnum, reg, atype, seed, dep, arr,
-         dep_t, arr_t, status, pa, pn, dur_iso) in rows:
+         dep_t, arr_t, fis_status, pa, pn, dur_iso) in rows:
         dur = _iso_dur_min(dur_iso)
-        # Put the bar on a Frankfurt-local clock: anchor to the German endpoint
-        # and extend by the real flight duration.
+        # Frankfurt-local clock: anchor to the German endpoint, size by duration.
         if dur and dep in _DE_HUBS:
             start, end = dep_t, dep_t + timedelta(minutes=dur)
         elif dur and arr in _DE_HUBS and arr_t:
@@ -5060,27 +5116,69 @@ def api_schedule():
             start, end = dep_t, (arr_t or dep_t)
         starts.append(start)
         ends.append(end)
-        fdates.append(fdate)
         types[reg] = _CANON_SHORT.get(atype, atype)
-        by_reg[reg].append({
+
+        leg = {
             "fl": f"{airline}{fnum}", "num": fnum, "fdate": fdate.isoformat(),
             "dep": dep, "arr": arr,
             "start": start.isoformat(), "end": end.isoformat(),
             "dep_t": dep_t.isoformat(), "arr_t": arr_t.isoformat() if arr_t else None,
-            "dur": dur, "seed": seed, "status": status,
-            "swap": (fdate, fnum) in swapped,
-            "lead": (fdate - today).days,
-            "prev": f"{pa}{pn}" if pn else None,
-        })
+            "dur": dur, "seed": seed, "swap": (fdate, fnum) in swapped,
+            "lead": (fdate - today).days, "prev": f"{pa}{pn}" if pn else None,
+            "status": "planned", "act": None,
+        }
+        # Plan-vs-actual overlay for legs whose planned departure is in the past.
+        if start < now_fake:
+            window = timedelta(hours=8)
+            cands = [act for act in actuals.get(reg, [])
+                     if not act["used"] and abs(act["start"] - start) <= window]
+            # prefer an actual whose callsign matches the planned flight number
+            # (robust to tactical callsigns falling through to nearest-in-time)
+            exact = [act for act in cands if _digits(act["cs"]) == fnum]
+            best = (exact[0] if exact
+                    else min(cands, key=lambda act: abs(act["start"] - start)) if cands else None)
+            if best is None:
+                leg["status"] = "missing"
+            else:
+                best["used"] = True
+                delta = round((best["start"] - start).total_seconds() / 60)
+                leg["act"] = {
+                    "start": best["start"].isoformat(), "end": best["end"].isoformat(),
+                    "dep": best["dep"], "arr": best["arr"], "cs": best["cs"], "delta": delta,
+                }
+                same_num = _digits(best["cs"]) == fnum
+                if not best["arr"]:
+                    # still airborne (no arrival yet): trust the flight number
+                    leg["status"] = "tracked" if same_num else "deviation"
+                else:
+                    leg["status"] = ("tracked" if (best["dep"] == dep and best["arr"] == arr)
+                                     else "deviation")
+        by_reg[reg].append(leg)
+
+    # Actual legs with no matching plan (positioning, tactical, or unseeded).
+    for reg, acts in actuals.items():
+        if reg not in types:
+            continue
+        for act in acts:
+            if act["used"] or act["start"] >= now_fake:
+                continue
+            starts.append(act["start"])
+            ends.append(act["end"])
+            by_reg[reg].append({
+                "fl": act["cs"] or "—", "num": None, "fdate": None,
+                "dep": act["dep"], "arr": act["arr"],
+                "start": act["start"].isoformat(), "end": act["end"].isoformat(),
+                "dep_t": act["start"].isoformat(), "arr_t": act["end"].isoformat(),
+                "dur": None, "seed": None, "swap": False, "lead": None, "prev": None,
+                "status": "extra", "act": None,
+            })
 
     if not starts:
-        return jsonify({"airframes": [], "window": None,
+        return jsonify({"airframes": [], "window": None, "now": now_fake.isoformat(),
                         "generated": datetime.now(timezone.utc).isoformat()})
 
-    # Start the window at today's midnight (the earliest flight_date), not at
-    # min(start): eastbound red-eyes arriving today get a German-local start the
-    # evening before, which would otherwise add a near-empty leading column.
-    win_start = datetime.combine(min(fdates), datetime.min.time(), tzinfo=timezone.utc)
+    # Window: one past day (for the actual/now overlay) through the last planned arrival.
+    win_start = datetime.combine(today - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
     win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     type_order = {"748": 0, "388": 1}
     airframes = [
@@ -5088,11 +5186,11 @@ def api_schedule():
          "legs": sorted(by_reg[reg], key=lambda x: x["start"])}
         for reg in by_reg
     ]
-    # watched tails first, then by type group, then registration
     airframes.sort(key=lambda a: (not a["watch"], type_order.get(a["type"], 9), a["reg"]))
     return jsonify({
         "airframes": airframes,
         "window": {"start": win_start.isoformat(), "end": win_end.isoformat()},
+        "now": now_fake.isoformat(),
         "generated": datetime.now(timezone.utc).isoformat(),
         "swaps": len(swapped),
     })
@@ -5238,6 +5336,17 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .gantt-flight.tother { background:var(--muted); }
 .gantt-flight.tother .lbl { color:var(--text-bright); text-shadow:none; }
 .gantt-flight.swap { outline:2px solid var(--amber); outline-offset:-2px; }
+/* plan-vs-actual status borders (left of "now") */
+.gantt-flight.ob-tracked   { outline:2px solid var(--green); outline-offset:-2px; }
+.gantt-flight.ob-deviation { outline:2px dashed var(--red); outline-offset:-2px; }
+.gantt-flight.ob-missing   { outline:2px dashed var(--muted); outline-offset:-2px; }
+.gantt-flight.ob-extra     { outline:2px solid var(--cyan); outline-offset:-2px; }
+.gantt-flight.ghost { opacity:0.32; }
+.gantt-flight.ghost .lbl { opacity:0.7; }
+.now-line { position:absolute; top:0; bottom:0; width:2px; background:var(--amber);
+  opacity:0.85; z-index:5; pointer-events:none; }
+.now-line::after { content:''; position:absolute; top:-3px; left:-3px; width:8px; height:8px;
+  border-radius:50%; background:var(--amber); }
 .empty { color:var(--muted); padding:28px; text-align:center; }
 footer { text-align:center; padding:24px 0 8px; font-size:11px; color:var(--muted); }
 footer a { color:var(--muted); text-decoration:none; }
@@ -5285,12 +5394,17 @@ footer a { color:var(--muted); text-decoration:none; }
     <div class="legend">
       <span><span class="sw" style="background:var(--accent)"></span>747-8</span>
       <span><span class="sw" style="background:var(--green)"></span>A380</span>
-      <span><span class="star" style="color:var(--amber)">&#9733;</span> watched</span>
+      <span><span class="star" style="color:var(--amber)">&#9733;</span>watched</span>
+      <span style="opacity:0.4">|</span>
+      <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--green);outline-offset:-2px"></span>tracked</span>
+      <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--cyan);outline-offset:-2px"></span>actual (unplanned)</span>
+      <span><span class="sw" style="background:var(--surface2);outline:2px dashed var(--red);outline-offset:-2px"></span>deviation</span>
+      <span><span class="sw" style="background:var(--surface2);outline:2px dashed var(--muted);outline-offset:-2px"></span>not tracked</span>
       <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--amber);outline-offset:-2px"></span>reassigned</span>
     </div>
   </div>
   <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
-  <div class="meta" style="margin-top:10px">Times shown in Frankfurt local time; bar length = real flight duration. <b>Click a leg</b> for details &amp; assignment history; hover for a quick summary. &#9733; = watched airframes (pinned on top). &#9888; = assigned tail changed across snapshots.</div>
+  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The amber <b>now</b> line splits the chart: <b>left</b> = what each tail is actually doing (ADS-B) overlaid on the plan &mdash; <span style="color:var(--green)">green</span> flew the planned route, <span style="color:var(--red)">red</span> deviation, grey not-tracked-yet, <span style="color:var(--cyan)">cyan</span> flew something unplanned; <b>right</b> = the plan. Click a leg for details &amp; history.</div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
@@ -5318,23 +5432,51 @@ async function init(){
     html+='<span class="gantt-day">'+day.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'})+'</span>'; }
   html+='</div></div>';
 
+  const nowPct = (d.now!=null) ? Math.max(0,Math.min(100,(new Date(d.now).getTime()-t0)/range*100)) : null;
+  const nowLine = nowPct!=null ? '<div class="now-line" style="left:'+nowPct+'%"></div>' : '';
+
   d.airframes.forEach(a=>{
     const tc=tcls(a.type);
     html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
     html+='<div class="gantt-label">'+(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span></div>';
-    html+='<div class="gantt-track">';
+    html+='<div class="gantt-track">'+nowLine;
     a.legs.forEach(l=>{
       const s=new Date(l.start).getTime(), e=new Date(l.end).getTime();
       const left=Math.max(0,(s-t0)/range*100), width=Math.max(0.5,(e-s)/range*100);
       const dur=l.dur?(Math.floor(l.dur/60)+'h'+String(l.dur%60).padStart(2,'0')):'';
-      const title=l.fl+'  '+l.dep+' \\u2192 '+l.arr
-        +'\\nDep '+fmt(l.dep_t)+' ('+l.dep+')'+(l.arr_t?'\\nArr '+fmt(l.arr_t)+' ('+l.arr+')':'')
-        +(dur?'\\nFlight '+dur:'')+'  \\u00b7  '+a.type+(l.status?'  \\u00b7  '+l.status:'')
-        +(l.prev?'\\nprev: '+l.prev:'')+'\\nlead: +'+l.lead+'d'+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
-      html+='<div class="gantt-flight '+tc+(l.swap?' swap':'')+'" style="left:'+left+'%;width:'+width+'%"'
-        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+l.fl+'" data-num="'+l.num+'" data-fdate="'+l.fdate+'"'
+      const st=l.status||'planned';
+      const obCls = st==='tracked'?' ob-tracked' : st==='deviation'?' ob-deviation'
+        : st==='missing'?' ob-missing' : st==='extra'?' ob-extra' : (l.swap?' swap':'');
+      const ghost = (st==='deviation'||st==='missing')?' ghost':'';
+      let title;
+      if(st==='extra'){
+        title=(l.fl||'actual')+'  '+l.dep+' \\u2192 '+l.arr+'\\n\\u2713 tracked (actual) \\u00b7 no matching plan'
+          +'\\n'+fmt(l.start)+' \\u2192 '+fmt(l.end);
+      } else {
+        title=l.fl+'  '+l.dep+' \\u2192 '+l.arr
+          +'\\nDep '+fmt(l.dep_t)+' ('+l.dep+')'+(l.arr_t?'\\nArr '+fmt(l.arr_t)+' ('+l.arr+')':'')
+          +(dur?'\\nFlight '+dur:'')+'  \\u00b7  '+a.type
+          +(l.prev?'\\nprev: '+l.prev:'')+'\\nlead: +'+l.lead+'d'+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
+        if((st==='tracked'||st==='deviation') && l.act){
+          const dm=l.act.delta, ds=(dm>0?'+':'')+dm+'m';
+          title+='\\n\\u2713 tracked: '+l.act.dep+'\\u2192'+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')+'  ['+ds+' vs plan]';
+        } else if(st==='missing'){ title+='\\n\\u2014 no ADS-B track found yet'; }
+      }
+      const lbl = st==='extra' ? (l.dep+'\\u2192'+l.arr) : (l.fl.replace('LH','')+' '+l.dep+'\\u2192'+l.arr);
+      html+='<div class="gantt-flight '+tc+obCls+ghost+'" style="left:'+left+'%;width:'+width+'%"'
+        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+(l.fl||'')+'" data-num="'+(l.num||'')+'" data-fdate="'+(l.fdate||'')+'"'
         +' title="'+title.replace(/"/g,'&quot;')+'">'
-        +'<span class="lbl">'+l.fl.replace('LH','')+' '+l.dep+'\\u2192'+l.arr+'</span></div>';
+        +'<span class="lbl">'+lbl+'</span></div>';
+      // deviation: also draw the actual route the tail really flew
+      if(st==='deviation' && l.act){
+        const as=new Date(l.act.start).getTime(), ae=new Date(l.act.end).getTime();
+        const al=Math.max(0,(as-t0)/range*100), aw=Math.max(0.5,(ae-as)/range*100);
+        const at=a.reg+' actually flew\\n'+l.act.dep+' \\u2192 '+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')
+          +'\\n'+fmt(l.act.start)+' \\u2192 '+fmt(l.act.end)+'\\n(planned '+l.fl+' '+l.dep+'\\u2192'+l.arr+')';
+        html+='<div class="gantt-flight '+tc+' ob-extra" style="left:'+al+'%;width:'+aw+'%"'
+          +' data-dest="'+l.act.dep+' '+l.act.arr+'" title="'+at.replace(/"/g,'&quot;')+'">'
+          +'<span class="lbl">'+l.act.dep+'\\u2192'+l.act.arr+'</span></div>';
+      }
     });
     html+='</div></div>';
   });
