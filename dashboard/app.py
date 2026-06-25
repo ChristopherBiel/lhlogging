@@ -5062,7 +5062,8 @@ def api_schedule():
         ends.append(end)
         types[reg] = _CANON_SHORT.get(atype, atype)
         by_reg[reg].append({
-            "fl": f"{airline}{fnum}", "dep": dep, "arr": arr,
+            "fl": f"{airline}{fnum}", "num": fnum, "fdate": fdate.isoformat(),
+            "dep": dep, "arr": arr,
             "start": start.isoformat(), "end": end.isoformat(),
             "dep_t": dep_t.isoformat(), "arr_t": arr_t.isoformat() if arr_t else None,
             "dur": dur, "seed": seed, "status": status,
@@ -5091,6 +5092,78 @@ def api_schedule():
         "generated": datetime.now(timezone.utc).isoformat(),
         "swaps": len(swapped),
     })
+
+
+@app.route("/api/schedule/flight/<airline>/<number>/<fdate>")
+def api_schedule_flight(airline, number, fdate):
+    """Detail for one planned flight: the latest snapshot's full info plus the
+    assignment history (which tail was planned at each nightly snapshot), so a
+    reassignment shows what was *originally* planned vs. what's planned now."""
+    try:
+        fdate_d = date.fromisoformat(fdate)
+    except ValueError:
+        return jsonify({"error": "bad date"}), 400
+    airline = airline.upper()
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        latest = _q(conn, """
+            SELECT o.registration, a.aircraft_type, o.dep_airport_iata, o.arr_airport_iata,
+                   o.dep_scheduled, o.arr_scheduled, o.overall_status,
+                   o.prev_airline, o.prev_flight_number, o.prev_flight_date, o.raw, o.observed_date
+            FROM flight_status_observations o
+            LEFT JOIN aircraft a ON a.registration = o.registration
+            WHERE o.flight_date=%s AND o.airline=%s AND o.flight_number=%s AND o.found
+            ORDER BY o.observed_date DESC LIMIT 1
+        """, (fdate_d, airline, number))
+        hist = _q(conn, """
+            SELECT o.observed_date, o.registration, a.aircraft_type, o.overall_status, o.found
+            FROM flight_status_observations o
+            LEFT JOIN aircraft a ON a.registration = o.registration
+            WHERE o.flight_date=%s AND o.airline=%s AND o.flight_number=%s
+            ORDER BY o.observed_date
+        """, (fdate_d, airline, number))
+    finally:
+        conn.close()
+
+    history = [
+        {"observed": d.isoformat(), "reg": reg,
+         "type": _CANON_SHORT.get(at, at) if at else None,
+         "status": st, "found": found}
+        for (d, reg, at, st, found) in hist
+    ]
+    regs_seq = [h["reg"] for h in history if h["reg"]]
+    out = {
+        "flight": f"{airline}{number}", "flight_date": fdate,
+        "found": bool(latest), "history": history,
+        "original_reg": regs_seq[0] if regs_seq else None,
+        "reassigned": len(set(regs_seq)) > 1,
+    }
+    if latest:
+        (reg, at, dep, arr, dep_t, arr_t, st, pa, pn, pd, raw, obs_d) = latest[0]
+        raw = raw or {}
+        leg = (raw.get("legs") or [{}])[0]
+        depj, arrj = leg.get("departure") or {}, leg.get("arrival") or {}
+        ac = raw.get("aircraftInfo") or {}
+        cs = [(m.get("marketingFlightAirlineIndicator") or "") + (m.get("marketingFlightNumber") or "")
+              for m in (leg.get("marketingFlightNumbers") or [])]
+        out.update({
+            "current_reg": reg, "current_type": _CANON_SHORT.get(at, at) if at else None,
+            "dep_iata": dep, "arr_iata": arr,
+            "dep_name": depj.get("departureAirportName"), "arr_name": arrj.get("arrivalAirportName"),
+            "dep_sched": dep_t.isoformat() if dep_t else None,
+            "arr_sched": arr_t.isoformat() if arr_t else None,
+            "dep_term": depj.get("departureTerminal"), "dep_gate": depj.get("departureGate"),
+            "arr_term": arrj.get("arrivalTerminal"), "arr_gate": arrj.get("arrivalGate"),
+            "duration": leg.get("flightDuration"), "status": st,
+            "codeshares": [c for c in cs if c],
+            "prev": f"{pa}{pn}" if pn else None,
+            "prev_date": pd.isoformat() if pd else None,
+            "observed": obs_d.isoformat(),
+        })
+    return jsonify(out)
 
 
 _SCHEDULE_HTML = """\
@@ -5150,7 +5223,7 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
   background-image:repeating-linear-gradient(to right, var(--border) 0, var(--border) 1px,
     transparent 1px, transparent calc(100% / var(--nd, 4))); }
 .gantt-flight { position:absolute; top:1px; height:20px; border-radius:3px; overflow:hidden;
-  display:flex; align-items:center; cursor:default; opacity:0.92; transition:opacity .15s, outline .15s; }
+  display:flex; align-items:center; cursor:pointer; opacity:0.92; transition:opacity .15s, outline .15s; }
 .gantt-flight:hover { opacity:1; z-index:3; }
 .gantt-flight.dim { opacity:0.12; }
 .gantt-flight .lbl { font-size:10px; font-weight:600; white-space:nowrap; padding:0 5px;
@@ -5164,6 +5237,31 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .empty { color:var(--muted); padding:28px; text-align:center; }
 footer { text-align:center; padding:24px 0 8px; font-size:11px; color:var(--muted); }
 footer a { color:var(--muted); text-decoration:none; }
+
+/* Flight detail modal */
+.modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:100;
+  justify-content:center; align-items:center; padding:16px; }
+.modal-bg.show { display:flex; }
+.modal { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:20px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
+.modal h3 { font-size:15px; color:var(--text-bright); margin-bottom:3px; padding-right:24px; }
+.modal .sub { font-size:12px; color:var(--muted); margin-bottom:14px; }
+.modal .close { position:absolute; top:12px; right:16px; cursor:pointer; color:var(--muted);
+  font-size:20px; line-height:1; border:none; background:none; }
+.modal .close:hover { color:var(--text-bright); }
+.reassign-banner { background:rgba(251,191,36,0.12); border:1px solid var(--amber); color:var(--amber);
+  border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:14px; }
+.det-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; font-size:12px; margin-bottom:16px; }
+.det-grid .k { color:var(--muted); white-space:nowrap; }
+.det-grid .v { color:var(--text-bright); }
+.hist-title { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 8px; }
+.hist-row { display:flex; align-items:center; gap:10px; font-size:12px; padding:5px 0;
+  border-bottom:1px solid rgba(42,44,53,0.4); }
+.hist-row:last-child { border-bottom:none; }
+.hist-row .obs { width:96px; color:var(--muted); flex-shrink:0; }
+.hist-row .reg { font-weight:600; color:var(--text-bright); min-width:64px; }
+.hist-row.changed .reg { color:var(--amber); }
+.hist-row .tag { font-size:10px; color:var(--muted); }
 </style>
 </head>
 <body>
@@ -5188,8 +5286,9 @@ footer a { color:var(--muted); text-decoration:none; }
     </div>
   </div>
   <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
-  <div class="meta" style="margin-top:10px">Times shown in Frankfurt local time; bar length = real flight duration. Hover a leg for the actual local departure/arrival times. &#9733; = watched airframes (pinned on top). &#9888; = assigned tail changed across snapshots.</div>
+  <div class="meta" style="margin-top:10px">Times shown in Frankfurt local time; bar length = real flight duration. <b>Click a leg</b> for details &amp; assignment history; hover for a quick summary. &#9733; = watched airframes (pinned on top). &#9888; = assigned tail changed across snapshots.</div>
 </div>
+<div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
   <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
 </footer>
@@ -5229,7 +5328,8 @@ async function init(){
         +(dur?'\\nFlight '+dur:'')+'  \\u00b7  '+a.type+(l.status?'  \\u00b7  '+l.status:'')
         +(l.prev?'\\nprev: '+l.prev:'')+'\\nlead: +'+l.lead+'d'+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
       html+='<div class="gantt-flight '+tc+(l.swap?' swap':'')+'" style="left:'+left+'%;width:'+width+'%"'
-        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+l.fl+'" title="'+title.replace(/"/g,'&quot;')+'">'
+        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+l.fl+'" data-num="'+l.num+'" data-fdate="'+l.fdate+'"'
+        +' title="'+title.replace(/"/g,'&quot;')+'">'
         +'<span class="lbl">'+l.fl.replace('LH','')+' '+l.dep+'\\u2192'+l.arr+'</span></div>';
     });
     html+='</div></div>';
@@ -5253,6 +5353,53 @@ $('filter').addEventListener('input', e=>{
     row.classList.toggle('dim', !any);
   });
 });
+
+/* ── Flight detail modal ──────────────────────────────── */
+function row(k,v){ return '<span class="k">'+k+'</span><span class="v">'+v+'</span>'; }
+function fmtD(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'}); }
+function isoDur(s){ if(!s) return ''; const m=s.match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/); if(!m) return ''; return (m[1]?m[1]+'h':'')+(m[2]?String(m[2]).padStart(2,'0')+'m':''); }
+function closeFl(){ $('fl-modal').classList.remove('show'); }
+function openFlight(num,fdate){
+  const b=$('fl-modal-body'); b.innerHTML='<div class="empty">Loading\\u2026</div>'; $('fl-modal').classList.add('show');
+  fetch('/api/schedule/flight/LH/'+num+'/'+fdate).then(r=>r.json()).then(renderFlight)
+    .catch(()=>{ b.innerHTML='<button class="close" onclick="closeFl()">\\u00d7</button><div class="empty">Failed to load.</div>'; });
+}
+function renderFlight(d){
+  const b=$('fl-modal-body');
+  let h='<button class="close" onclick="closeFl()">\\u00d7</button>';
+  if(d.error){ b.innerHTML=h+'<div class="empty">'+d.error+'</div>'; return; }
+  h+='<h3>'+d.flight+(d.dep_iata?'  \\u00b7  '+d.dep_iata+'\\u2192'+d.arr_iata:'')+'</h3>';
+  h+='<div class="sub">'+[d.dep_name,d.arr_name].filter(Boolean).join(' \\u2192 ')+'  \\u00b7  '+fmtD(d.flight_date)+'</div>';
+  if(d.reassigned){ h+='<div class="reassign-banner">\\u26a0 Reassigned \\u2014 originally <b>'+(d.original_reg||'?')+'</b>, now <b>'+(d.current_reg||'?')+'</b></div>'; }
+  if(d.found){
+    const dur=isoDur(d.duration);
+    h+='<div class="det-grid">';
+    h+=row('Aircraft',(d.current_reg||'?')+(d.current_type?' \\u00b7 '+d.current_type:''));
+    h+=row('Departure',fmt(d.dep_sched)+(d.dep_term?' \\u00b7 T'+d.dep_term:'')+(d.dep_gate?' \\u00b7 Gate '+d.dep_gate:''));
+    h+=row('Arrival',fmt(d.arr_sched)+(d.arr_term?' \\u00b7 T'+d.arr_term:'')+(d.arr_gate?' \\u00b7 Gate '+d.arr_gate:''));
+    if(dur) h+=row('Flight time',dur);
+    if(d.status) h+=row('Status',d.status);
+    if(d.codeshares&&d.codeshares.length) h+=row('Codeshare',d.codeshares.join(', '));
+    if(d.prev) h+=row('Previous leg',d.prev+(d.prev_date?' ('+fmtD(d.prev_date)+')':''));
+    h+='</div>';
+  } else { h+='<div class="sub">No current assignment for this date.</div>'; }
+  if(d.history&&d.history.length){
+    h+='<div class="hist-title">Assignment history</div>';
+    let pr=null;
+    d.history.forEach((x,i)=>{
+      const ch = pr!==null && x.reg!==pr;
+      const tags=[]; if(i===0) tags.push('originally planned'); if(i===d.history.length-1) tags.push('current');
+      h+='<div class="hist-row'+(ch?' changed':'')+'"><span class="obs">'+fmtD(x.observed)+'</span>'
+        +'<span class="reg">'+(x.reg||'\\u2014')+'</span><span class="tag">'
+        +[x.type,tags.join(' \\u00b7 ')].filter(Boolean).join('  \\u00b7  ')+'</span></div>';
+      pr=x.reg;
+    });
+  }
+  b.innerHTML=h;
+}
+$('gantt').addEventListener('click', e=>{ const f=e.target.closest('.gantt-flight'); if(f&&f.dataset.num) openFlight(f.dataset.num, f.dataset.fdate); });
+$('fl-modal').addEventListener('click', e=>{ if(e.target.id==='fl-modal') closeFl(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeFl(); });
 
 init();
 </script>
