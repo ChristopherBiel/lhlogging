@@ -5055,6 +5055,7 @@ def api_schedule():
 
     today = date.today()
     now_fake = datetime.now(_BERLIN).replace(tzinfo=timezone.utc)  # Berlin wall as fake-UTC
+    win_start = now_fake - timedelta(hours=24)  # rolling last 24h of history
     try:
         rows = _q(conn, """
             SELECT DISTINCT ON (o.flight_date, o.flight_number)
@@ -5114,6 +5115,8 @@ def api_schedule():
             start, end = arr_t - timedelta(minutes=dur), arr_t
         else:
             start, end = dep_t, (arr_t or dep_t)
+        if end < win_start:
+            continue  # ended before the rolling 24h window
         starts.append(start)
         ends.append(end)
         types[reg] = _CANON_SHORT.get(atype, atype)
@@ -5160,7 +5163,7 @@ def api_schedule():
         if reg not in types:
             continue
         for act in acts:
-            if act["used"] or act["start"] >= now_fake:
+            if act["used"] or act["start"] >= now_fake or act["end"] < win_start:
                 continue
             starts.append(act["start"])
             ends.append(act["end"])
@@ -5177,8 +5180,7 @@ def api_schedule():
         return jsonify({"airframes": [], "window": None, "now": now_fake.isoformat(),
                         "generated": datetime.now(timezone.utc).isoformat()})
 
-    # Window: one past day (for the actual/now overlay) through the last planned arrival.
-    win_start = datetime.combine(today - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    # win_start is now-24h (set above); window runs through the last planned arrival.
     win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     type_order = {"748": 0, "388": 1}
     airframes = [
@@ -5305,9 +5307,12 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
   background:var(--surface); padding:12px 12px 4px; }
 .gantt-inner { min-width:820px; }
 .gantt-axis-row { display:flex; align-items:center; margin-bottom:8px; }
-.gantt-axis { flex:1; display:flex; }
-.gantt-axis .gantt-day { flex:1; font-size:10px; color:var(--muted); text-transform:uppercase;
-  letter-spacing:0.5px; padding-left:6px; border-left:1px solid var(--border); }
+.gantt-axis { flex:1; position:relative; height:13px; }
+.gantt-axis .gantt-day { position:absolute; font-size:10px; color:var(--muted); text-transform:uppercase;
+  letter-spacing:0.5px; padding-left:6px; border-left:1px solid var(--border); white-space:nowrap; }
+.gantt-rows { position:relative; }
+.gantt-grid { position:absolute; inset:0; pointer-events:none; z-index:4; }
+.grid-line { position:absolute; top:0; bottom:0; width:1px; background:var(--border); opacity:0.55; }
 .gantt-row { display:flex; align-items:center; margin-bottom:3px; height:24px; }
 .gantt-row.dim { opacity:0.25; }
 .gantt-row.watch { background:rgba(251,191,36,0.07); border-radius:5px; }
@@ -5321,9 +5326,7 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .t359 .tbadge, .tbadge.t359 { background:var(--purple); }
 .tbadge.tother { background:var(--muted); color:var(--text-bright); }
 .gantt-track { flex:1; position:relative; height:22px; background:var(--surface2);
-  border-radius:3px; overflow:hidden;
-  background-image:repeating-linear-gradient(to right, var(--border) 0, var(--border) 1px,
-    transparent 1px, transparent calc(100% / var(--nd, 4))); }
+  border-radius:3px; overflow:hidden; }
 .gantt-flight { position:absolute; top:1px; height:20px; border-radius:3px; overflow:hidden;
   display:flex; align-items:center; cursor:pointer; opacity:0.92; transition:opacity .15s, outline .15s; }
 .gantt-flight:hover { opacity:1; z-index:3; }
@@ -5337,14 +5340,14 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .gantt-flight.tother .lbl { color:var(--text-bright); text-shadow:none; }
 .gantt-flight.swap { outline:2px solid var(--amber); outline-offset:-2px; }
 /* plan-vs-actual status borders (left of "now") */
-.gantt-flight.ob-tracked   { outline:2px solid var(--green); outline-offset:-2px; }
+.gantt-flight.ob-tracked   { outline:2px solid #ffffff; outline-offset:-2px; }
 .gantt-flight.ob-deviation { outline:2px dashed var(--red); outline-offset:-2px; }
 .gantt-flight.ob-missing   { outline:2px dashed var(--muted); outline-offset:-2px; }
 .gantt-flight.ob-extra     { outline:2px solid var(--cyan); outline-offset:-2px; }
 .gantt-flight.ghost { opacity:0.32; }
 .gantt-flight.ghost .lbl { opacity:0.7; }
 .now-line { position:absolute; top:0; bottom:0; width:2px; background:var(--amber);
-  opacity:0.85; z-index:5; pointer-events:none; }
+  opacity:0.9; z-index:6; pointer-events:none; }
 .now-line::after { content:''; position:absolute; top:-3px; left:-3px; width:8px; height:8px;
   border-radius:50%; background:var(--amber); }
 .empty { color:var(--muted); padding:28px; text-align:center; }
@@ -5424,22 +5427,33 @@ async function init(){
   if(!d.airframes || !d.airframes.length){ $('gantt').innerHTML='<div class="empty">No upcoming schedule data yet — the nightly collector has not populated future flights.</div>'; $('meta').textContent=''; return; }
 
   const t0=new Date(d.window.start).getTime(), t1=new Date(d.window.end).getTime();
-  const range=t1-t0, nd=Math.max(1,Math.round(range/86400000));
-  document.documentElement.style.setProperty('--nd', nd);
+  const range=t1-t0, dayMs=86400000;
+  const frac = ms => (ms - t0)/range;                        // 0..1 across the time area
+  const oLeft = f => 'calc(104px + (100% - 104px) * '+f+')'; // overlay coord (rows incl. label)
+  const dayName = ms => new Date(ms).toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'});
 
+  // midnight ticks (fake-UTC midnights are epoch multiples of a day)
+  const ticks=[]; for(let m=Math.ceil(t0/dayMs)*dayMs; m<t1; m+=dayMs) ticks.push(m);
+
+  // axis: day labels at the left edge + each midnight
   let html='<div class="gantt-axis-row"><div class="gantt-label"></div><div class="gantt-axis">';
-  for(let i=0;i<nd;i++){ const day=new Date(t0+i*86400000);
-    html+='<span class="gantt-day">'+day.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'})+'</span>'; }
+  html+='<span class="gantt-day" style="left:0;border-left:none">'+dayName(t0)+'</span>';
+  ticks.forEach(m=>{ html+='<span class="gantt-day" style="left:'+(frac(m)*100)+'%">'+dayName(m)+'</span>'; });
   html+='</div></div>';
 
-  const nowPct = (d.now!=null) ? Math.max(0,Math.min(100,(new Date(d.now).getTime()-t0)/range*100)) : null;
-  const nowLine = nowPct!=null ? '<div class="now-line" style="left:'+nowPct+'%"></div>' : '';
+  // one overlay across all rows: midnight gridlines + the single now line
+  let overlay='<div class="gantt-grid">';
+  ticks.forEach(m=>{ overlay+='<div class="grid-line" style="left:'+oLeft(frac(m))+'"></div>'; });
+  if(d.now!=null){ const nf=frac(new Date(d.now).getTime());
+    if(nf>=0&&nf<=1) overlay+='<div class="now-line" style="left:'+oLeft(nf)+'"></div>'; }
+  overlay+='</div>';
+  html+='<div class="gantt-rows">'+overlay;
 
   d.airframes.forEach(a=>{
     const tc=tcls(a.type);
     html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
     html+='<div class="gantt-label">'+(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span></div>';
-    html+='<div class="gantt-track">'+nowLine;
+    html+='<div class="gantt-track">';
     a.legs.forEach(l=>{
       const s=new Date(l.start).getTime(), e=new Date(l.end).getTime();
       const left=Math.max(0,(s-t0)/range*100), width=Math.max(0.5,(e-s)/range*100);
@@ -5480,9 +5494,10 @@ async function init(){
     });
     html+='</div></div>';
   });
+  html+='</div>';
   $('gantt').innerHTML=html;
   const sw=d.swaps?(' \\u00b7 '+d.swaps+' reassignment'+(d.swaps>1?'s':'')):'';
-  $('meta').textContent=d.airframes.length+' airframes \\u00b7 '+nd+'-day window \\u00b7 updated '
+  $('meta').textContent=d.airframes.length+' airframes \\u00b7 last 24h + plan \\u00b7 updated '
     +new Date(d.generated).toLocaleString('en-GB',{timeZone:'UTC',hour12:false})+' UTC'+sw;
 }
 
