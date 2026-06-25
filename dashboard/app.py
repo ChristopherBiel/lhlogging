@@ -5046,7 +5046,7 @@ def api_schedule():
     today = date.today()
     by_reg = defaultdict(list)
     types = {}
-    starts, ends = [], []
+    starts, ends, fdates = [], [], []
     for (fdate, airline, fnum, reg, atype, seed, dep, arr,
          dep_t, arr_t, status, pa, pn, dur_iso) in rows:
         dur = _iso_dur_min(dur_iso)
@@ -5060,6 +5060,7 @@ def api_schedule():
             start, end = dep_t, (arr_t or dep_t)
         starts.append(start)
         ends.append(end)
+        fdates.append(fdate)
         types[reg] = _CANON_SHORT.get(atype, atype)
         by_reg[reg].append({
             "fl": f"{airline}{fnum}", "num": fnum, "fdate": fdate.isoformat(),
@@ -5076,7 +5077,10 @@ def api_schedule():
         return jsonify({"airframes": [], "window": None,
                         "generated": datetime.now(timezone.utc).isoformat()})
 
-    win_start = min(starts).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Start the window at today's midnight (the earliest flight_date), not at
+    # min(start): eastbound red-eyes arriving today get a German-local start the
+    # evening before, which would otherwise add a near-empty leading column.
+    win_start = datetime.combine(min(fdates), datetime.min.time(), tzinfo=timezone.utc)
     win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     type_order = {"748": 0, "388": 1}
     airframes = [
@@ -5183,7 +5187,7 @@ _SCHEDULE_HTML = """\
 * { box-sizing:border-box; margin:0; padding:0; }
 body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
   font-family:'Inter',-apple-system,'Segoe UI',system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
-.container { max-width:1100px; margin:0 auto; padding:0 16px 40px; }
+.container { width:96vw; max-width:2000px; margin:0 auto; padding:0 16px 40px; }
 .header { padding:16px 0 12px; display:flex; justify-content:space-between; align-items:center;
   border-bottom:1px solid var(--border); margin-bottom:16px; gap:8px; flex-wrap:wrap; }
 .header h1 { font-size:17px; font-weight:600; color:var(--text-bright); letter-spacing:-0.3px; }
