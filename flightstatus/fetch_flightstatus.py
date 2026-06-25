@@ -57,6 +57,10 @@ BLOCK_BACKOFF_S = float(os.environ.get("FIS_BLOCK_BACKOFF_S", "45.0"))
 # follow that chain a couple of hops to fill the gaps. Capped to stay gentle.
 CHAIN_HOPS = int(os.environ.get("FIS_CHAIN_HOPS", "2"))
 MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "300"))
+# Distil caps successful lookups per browser session (~100-115). Recycle the
+# browser context (fresh cf_clearance) every N lookups to stay under it — needed
+# once chain expansion pushes a run past ~120 lookups.
+SESSION_LOOKUPS = int(os.environ.get("FIS_SESSION_LOOKUPS", "80"))
 
 BASE = "https://www.lufthansa.com"
 PAGE_URL = f"{BASE}/de/en/timetable-and-flight-status"
@@ -275,12 +279,27 @@ def seed_session(page) -> None:
     page.wait_for_timeout(4000)
 
 
-def fetch_one(page, flight_number: str, target: date):
-    """Fetch one flight/date with retries; returns parsed JSON dict or None if blocked."""
+def _open_session(browser):
+    """Open a fresh browser context (new cf_clearance) and prime it. Returns
+    (context, page). Recreating the context resets Distil's per-session budget."""
+    ctx = browser.new_context(locale="en-US", user_agent=USER_AGENT)
+    ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+    page = ctx.new_page()
+    seed_session(page)
+    return ctx, page
+
+
+def fetch_one(sess, flight_number: str, target: date, reset_cb):
+    """Fetch one flight/date; returns parsed JSON dict or None if blocked.
+
+    `sess` is a mutable {"page": ...} holder; on a block we wait then call
+    `reset_cb()` to swap in a *fresh* session (the effective cure for Distil's
+    per-session cap) before retrying.
+    """
     fn = f"LH{flight_number}"
     url = f"/service/api/fis/byflightnumber?flightNumber={fn}&date={target.isoformat()}"
     for attempt in range(1, MAX_FETCH_RETRIES + 1):
-        res = page.evaluate(_FETCH_JS, url)
+        res = sess["page"].evaluate(_FETCH_JS, url)
         status, ct = res.get("status"), res.get("ct", "")
         if status == 200 and "json" in ct:
             try:
@@ -288,12 +307,10 @@ def fetch_one(page, flight_number: str, target: date):
             except json.JSONDecodeError:
                 log(f"  {fn} {target}: 200 but bad JSON")
                 return None
-        # blocked (distil 403) or unexpected — re-seed and retry
         log(f"  {fn} {target}: HTTP {status} ({ct[:40]}) attempt {attempt}/{MAX_FETCH_RETRIES}")
         if attempt < MAX_FETCH_RETRIES:
-            # likely a rate-limit block — wait out the window, then re-seed
             time.sleep(BLOCK_BACKOFF_S)
-            seed_session(page)
+            reset_cb()  # fresh session — the real fix for a per-session block
     return None
 
 
@@ -337,7 +354,7 @@ def run_batch(dry_run: bool = False) -> int:
                 work.append((s["flight_number"], t, s["seed_type"], 0))
 
     run_id = log_batch_start(conn)
-    total = ok = err = upserted = chained = 0
+    total = ok = err = upserted = chained = resets = 0
     status, detail = "ok", None
     try:
         with sync_playwright() as pw:
@@ -345,17 +362,30 @@ def run_batch(dry_run: bool = False) -> int:
                 headless=False,
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
             )
-            ctx = browser.new_context(locale="en-US", user_agent=USER_AGENT)
-            ctx.add_init_script(
-                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-            )
-            page = ctx.new_page()
-            seed_session(page)
+            sess = {}
+
+            def open_session():
+                old = sess.get("ctx")
+                if old:
+                    try:
+                        old.close()
+                    except Exception:
+                        pass
+                sess["ctx"], sess["page"] = _open_session(browser)
+                sess["n"] = 0
+
+            open_session()
 
             while work and total < MAX_LOOKUPS:
                 flight_number, target, seed_type, hop = work.pop(0)
+                # recycle the session before it hits Distil's per-session cap
+                if sess["n"] >= SESSION_LOOKUPS:
+                    log(f"  recycling session after {sess['n']} lookups")
+                    resets += 1
+                    open_session()
                 total += 1
-                payload = fetch_one(page, flight_number, target)
+                payload = fetch_one(sess, flight_number, target, open_session)
+                sess["n"] += 1
                 if payload is None:
                     err += 1
                     obs = parse_flight({}, flight_number, target, seed_type)
@@ -383,6 +413,11 @@ def run_batch(dry_run: bool = False) -> int:
                             chained += 1
                 time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
 
+            if sess.get("ctx"):
+                try:
+                    sess["ctx"].close()
+                except Exception:
+                    pass
             browser.close()
     except Exception as e:
         status, detail = "error", str(e)
@@ -390,8 +425,8 @@ def run_batch(dry_run: bool = False) -> int:
     finally:
         log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
         conn.close()
-    log(f"done: {total} lookups ({chained} via chain), {ok} found, "
-        f"{err} blocked/missing, {upserted} rows upserted")
+    log(f"done: {total} lookups ({chained} via chain, {resets} session recycles), "
+        f"{ok} found, {err} blocked/missing, {upserted} rows upserted")
     return 0 if status == "ok" else 1
 
 
@@ -404,11 +439,18 @@ def run_single(flight: str, target: str) -> int:
             headless=False,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
-        ctx = browser.new_context(locale="en-US", user_agent=USER_AGENT)
-        ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-        page = ctx.new_page()
-        seed_session(page)
-        payload = fetch_one(page, fn, tgt)
+        ctx, page = _open_session(browser)
+        sess = {"ctx": ctx, "page": page, "n": 0}
+
+        def reset():
+            try:
+                sess["ctx"].close()
+            except Exception:
+                pass
+            sess["ctx"], sess["page"] = _open_session(browser)
+            sess["n"] = 0
+
+        payload = fetch_one(sess, fn, tgt, reset)
         browser.close()
     if payload is None:
         log(f"LH{fn} {tgt}: blocked or no response")
