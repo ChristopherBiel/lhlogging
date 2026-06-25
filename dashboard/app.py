@@ -596,6 +596,7 @@ body {
   <div class="header">
     <h1>LH Fleet <span>Monitor</span></h1>
     <div style="display:flex;align-items:center;gap:12px">
+      <a href="/schedule" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">Schedule &rarr;</a>
       <a href="/fleet" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">Fleet DB</a>
       <a href="/analysis" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">A380 Analysis &rarr;</a>
       <a href="/analysis-747" style="font-size:12px;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px">747-8 Analysis &rarr;</a>
@@ -1954,6 +1955,7 @@ body {
 
   <div class="header">
     <h1>A380 Rotation <span>Analysis</span></h1>
+    <a class="nav-link" href="/schedule">Schedule</a>
     <a class="nav-link" href="/analysis-747">747-8 Analysis</a>
     <a class="nav-link" href="/fleet">Fleet DB</a>
     <a class="nav-link" href="/">&larr; Monitor</a>
@@ -2669,6 +2671,7 @@ body {
   <div class="header">
     <h1>747-8 Analysis &middot; <span>D-ABYN</span></h1>
     <div style="display:flex;gap:8px">
+      <a class="nav-link" href="/schedule">Schedule</a>
       <a class="nav-link" href="/analysis">A380 Analysis</a>
       <a class="nav-link" href="/fleet">Fleet DB</a>
       <a class="nav-link" href="/">&larr; Monitor</a>
@@ -4969,6 +4972,264 @@ loadAircraft();
     @app.route(f"{_pfx}/")
     def admin_page():
         return render_template_string(_ADMIN_HTML)
+
+
+# ── Upcoming schedule (Lufthansa FIS observations) ─────────────────
+
+_TYPE_SHORT = {
+    "Boeing 747-8": "748",
+    "Airbus A380-800": "388",
+    "Airbus A350-900": "359",
+    "Airbus A340-600": "346",
+    "Airbus A340-300": "343",
+    "Airbus A330-300": "333",
+    "Boeing 787-9": "789",
+    "Boeing 777-9": "779",
+}
+
+
+def _type_short(t):
+    if not t:
+        return "?"
+    return _TYPE_SHORT.get(t, t.split()[-1][:4])
+
+
+@app.route("/api/schedule")
+def api_schedule():
+    """Per-airframe upcoming schedule from the latest FIS snapshot of each
+    (flight_date, flight_number), grouped by tail for a Gantt timeline."""
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        rows = _q(conn, """
+            SELECT DISTINCT ON (flight_date, flight_number)
+                flight_date, airline, flight_number, registration, aircraft_type,
+                seed_type, dep_airport_iata, arr_airport_iata,
+                dep_scheduled, arr_scheduled, overall_status,
+                prev_airline, prev_flight_number
+            FROM flight_status_observations
+            WHERE found AND registration IS NOT NULL AND dep_scheduled IS NOT NULL
+              AND flight_date >= CURRENT_DATE
+            ORDER BY flight_date, flight_number, observed_date DESC
+        """)
+        swap_rows = _q(conn, """
+            SELECT flight_date, flight_number
+            FROM flight_status_observations
+            WHERE found AND registration IS NOT NULL AND flight_date >= CURRENT_DATE
+            GROUP BY flight_date, flight_number
+            HAVING COUNT(DISTINCT registration) > 1
+        """)
+    finally:
+        conn.close()
+
+    swapped = {(r[0], r[1]) for r in swap_rows}
+    today = date.today()
+    by_reg = defaultdict(list)
+    types = {}
+    starts, ends = [], []
+    for (fdate, airline, fnum, reg, atype, seed, dep, arr,
+         dep_t, arr_t, status, pa, pn) in rows:
+        starts.append(dep_t)
+        ends.append(arr_t or dep_t)
+        types[reg] = _type_short(atype)
+        by_reg[reg].append({
+            "fl": f"{airline}{fnum}", "dep": dep, "arr": arr,
+            "dep_t": dep_t.isoformat(),
+            "arr_t": arr_t.isoformat() if arr_t else dep_t.isoformat(),
+            "seed": seed, "status": status,
+            "swap": (fdate, fnum) in swapped,
+            "lead": (fdate - today).days,
+            "prev": f"{pa}{pn}" if pn else None,
+        })
+
+    if not starts:
+        return jsonify({"airframes": [], "window": None,
+                        "generated": datetime.now(timezone.utc).isoformat()})
+
+    win_start = min(starts).replace(hour=0, minute=0, second=0, microsecond=0)
+    win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    type_order = {"748": 0, "388": 1, "359": 2}
+    airframes = [
+        {"reg": reg, "type": types[reg],
+         "legs": sorted(by_reg[reg], key=lambda x: x["dep_t"])}
+        for reg in by_reg
+    ]
+    airframes.sort(key=lambda a: (type_order.get(a["type"], 9), a["reg"]))
+    return jsonify({
+        "airframes": airframes,
+        "window": {"start": win_start.isoformat(), "end": win_end.isoformat()},
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "swaps": len(swapped),
+    })
+
+
+_SCHEDULE_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upcoming Schedule | LH Fleet</title>
+<style>
+:root {
+  --bg:#101114; --surface:#191b20; --surface2:#1f2128; --border:#2a2c35;
+  --text:#c9cdd6; --text-bright:#e4e7ed; --muted:#6b7280;
+  --accent:#5b8def; --green:#4ade80; --amber:#fbbf24; --purple:#a78bfa;
+  --radius:10px;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
+  font-family:'Inter',-apple-system,'Segoe UI',system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+.container { max-width:1100px; margin:0 auto; padding:0 16px 40px; }
+.header { padding:16px 0 12px; display:flex; justify-content:space-between; align-items:center;
+  border-bottom:1px solid var(--border); margin-bottom:16px; gap:8px; flex-wrap:wrap; }
+.header h1 { font-size:17px; font-weight:600; color:var(--text-bright); letter-spacing:-0.3px; }
+.header h1 span { color:var(--accent); font-weight:700; }
+.nav-link { font-size:12px; color:var(--accent); text-decoration:none; padding:4px 10px;
+  border:1px solid var(--accent); border-radius:6px; }
+.nav-link:hover { background:rgba(91,141,239,0.12); }
+.meta { font-size:11px; color:var(--muted); margin-bottom:14px; }
+.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+.controls input { background:var(--surface2); border:1px solid var(--border); border-radius:8px;
+  color:var(--text-bright); padding:7px 11px; font-size:13px; width:230px; }
+.controls input::placeholder { color:var(--muted); }
+.legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--muted); align-items:center; }
+.legend .sw { display:inline-block; width:11px; height:11px; border-radius:3px; vertical-align:middle; margin-right:4px; }
+
+.gantt { overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius);
+  background:var(--surface); padding:12px 12px 4px; }
+.gantt-inner { min-width:820px; }
+.gantt-axis-row { display:flex; align-items:center; margin-bottom:8px; }
+.gantt-axis { flex:1; display:flex; }
+.gantt-axis .gantt-day { flex:1; font-size:10px; color:var(--muted); text-transform:uppercase;
+  letter-spacing:0.5px; padding-left:6px; border-left:1px solid var(--border); }
+.gantt-row { display:flex; align-items:center; margin-bottom:3px; height:24px; }
+.gantt-row.dim { opacity:0.25; }
+.gantt-label { width:104px; flex-shrink:0; font-size:11px; font-weight:600;
+  color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:6px; }
+.tbadge { font-size:9px; font-weight:700; padding:1px 5px; border-radius:4px; color:#0b0d10; }
+.t748 .tbadge, .tbadge.t748 { background:var(--accent); }
+.t388 .tbadge, .tbadge.t388 { background:var(--green); }
+.t359 .tbadge, .tbadge.t359 { background:var(--purple); }
+.tbadge.tother { background:var(--muted); color:var(--text-bright); }
+.gantt-track { flex:1; position:relative; height:22px; background:var(--surface2);
+  border-radius:3px; overflow:hidden;
+  background-image:repeating-linear-gradient(to right, var(--border) 0, var(--border) 1px,
+    transparent 1px, transparent calc(100% / var(--nd, 4))); }
+.gantt-flight { position:absolute; top:1px; height:20px; border-radius:3px; overflow:hidden;
+  display:flex; align-items:center; cursor:default; opacity:0.92; transition:opacity .15s, outline .15s; }
+.gantt-flight:hover { opacity:1; z-index:3; }
+.gantt-flight.dim { opacity:0.12; }
+.gantt-flight .lbl { font-size:10px; font-weight:600; white-space:nowrap; padding:0 5px;
+  color:#0b0d10; text-shadow:0 1px 0 rgba(255,255,255,0.15); }
+.gantt-flight.t748 { background:var(--accent); }
+.gantt-flight.t388 { background:var(--green); }
+.gantt-flight.t359 { background:var(--purple); }
+.gantt-flight.tother { background:var(--muted); }
+.gantt-flight.tother .lbl { color:var(--text-bright); text-shadow:none; }
+.gantt-flight.swap { outline:2px solid var(--amber); outline-offset:-2px; }
+.empty { color:var(--muted); padding:28px; text-align:center; }
+footer { text-align:center; padding:24px 0 8px; font-size:11px; color:var(--muted); }
+footer a { color:var(--muted); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Upcoming <span>Schedule</span></h1>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a class="nav-link" href="/analysis-747">747-8</a>
+      <a class="nav-link" href="/analysis">A380</a>
+      <a class="nav-link" href="/fleet">Fleet DB</a>
+      <a class="nav-link" href="/">&larr; Monitor</a>
+    </div>
+  </div>
+  <div class="meta" id="meta">Loading planned airframe rotations…</div>
+  <div class="controls">
+    <input id="filter" type="text" placeholder="Filter: tail, airport or flight (e.g. HND, D-ABYN, 716)">
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent)"></span>747-8</span>
+      <span><span class="sw" style="background:var(--green)"></span>A380</span>
+      <span><span class="sw" style="background:var(--purple)"></span>A350</span>
+      <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--amber);outline-offset:-2px"></span>reassigned</span>
+    </div>
+  </div>
+  <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
+  <div class="meta" style="margin-top:10px">Bars span scheduled departure&rarr;arrival. Times are as published by Lufthansa (local airport time); use a row to read one airframe's rotation. &#9888; = the assigned tail changed across snapshots.</div>
+</div>
+<footer>
+  <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
+  return d.toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
+function tcls(t){ return ['748','388','359'].includes(t) ? 't'+t : 'tother'; }
+
+async function init(){
+  let d;
+  try { d = await (await fetch('/api/schedule')).json(); }
+  catch(e){ $('gantt').innerHTML='<div class="empty">Failed to load schedule.</div>'; return; }
+  if(d.error){ $('gantt').innerHTML='<div class="empty">'+d.error+'</div>'; return; }
+  if(!d.airframes || !d.airframes.length){ $('gantt').innerHTML='<div class="empty">No upcoming schedule data yet — the nightly collector has not populated future flights.</div>'; $('meta').textContent=''; return; }
+
+  const t0=new Date(d.window.start).getTime(), t1=new Date(d.window.end).getTime();
+  const range=t1-t0, nd=Math.max(1,Math.round(range/86400000));
+  document.documentElement.style.setProperty('--nd', nd);
+
+  let html='<div class="gantt-axis-row"><div class="gantt-label"></div><div class="gantt-axis">';
+  for(let i=0;i<nd;i++){ const day=new Date(t0+i*86400000);
+    html+='<span class="gantt-day">'+day.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'})+'</span>'; }
+  html+='</div></div>';
+
+  d.airframes.forEach(a=>{
+    const tc=tcls(a.type);
+    html+='<div class="gantt-row" data-reg="'+a.reg+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
+    html+='<div class="gantt-label">'+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span></div>';
+    html+='<div class="gantt-track">';
+    a.legs.forEach(l=>{
+      const s=new Date(l.dep_t).getTime(), e=new Date(l.arr_t).getTime();
+      const left=Math.max(0,(s-t0)/range*100), width=Math.max(0.5,(e-s)/range*100);
+      const title=l.fl+'  '+l.dep+' \\u2192 '+l.arr+'\\n'+fmt(l.dep_t)+'  \\u2192  '+fmt(l.arr_t)
+        +'\\n'+a.type+(l.status?'  \\u00b7  '+l.status:'')+(l.prev?'\\nprev: '+l.prev:'')
+        +'\\nlead: +'+l.lead+'d'+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
+      html+='<div class="gantt-flight '+tc+(l.swap?' swap':'')+'" style="left:'+left+'%;width:'+width+'%"'
+        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+l.fl+'" title="'+title.replace(/"/g,'&quot;')+'">'
+        +'<span class="lbl">'+l.fl.replace('LH','')+' '+l.dep+'\\u2192'+l.arr+'</span></div>';
+    });
+    html+='</div></div>';
+  });
+  $('gantt').innerHTML=html;
+  const sw=d.swaps?(' \\u00b7 '+d.swaps+' reassignment'+(d.swaps>1?'s':'')):'';
+  $('meta').textContent=d.airframes.length+' airframes \\u00b7 '+nd+'-day window \\u00b7 updated '
+    +new Date(d.generated).toLocaleString('en-GB',{timeZone:'UTC',hour12:false})+' UTC'+sw;
+}
+
+$('filter').addEventListener('input', e=>{
+  const q=e.target.value.trim().toUpperCase();
+  document.querySelectorAll('.gantt-row').forEach(row=>{
+    if(!q){ row.classList.remove('dim'); row.querySelectorAll('.gantt-flight').forEach(f=>f.classList.remove('dim')); return; }
+    const regMatch=(row.dataset.reg||'').toUpperCase().includes(q);
+    let any=regMatch;
+    row.querySelectorAll('.gantt-flight').forEach(f=>{
+      const hit=regMatch || (f.dataset.dest||'').toUpperCase().includes(q) || (f.dataset.fl||'').toUpperCase().includes(q);
+      f.classList.toggle('dim', !hit); if(hit) any=true;
+    });
+    row.classList.toggle('dim', !any);
+  });
+});
+
+init();
+</script>
+</body>
+</html>"""
+
+
+@app.route("/schedule")
+def schedule():
+    return render_template_string(_SCHEDULE_HTML)
 
 
 if __name__ == "__main__":
