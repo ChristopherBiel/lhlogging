@@ -4976,44 +4976,62 @@ loadAircraft();
 
 # ── Upcoming schedule (Lufthansa FIS observations) ─────────────────
 
-_TYPE_SHORT = {
-    "Boeing 747-8": "748",
-    "Airbus A380-800": "388",
-    "Airbus A350-900": "359",
-    "Airbus A340-600": "346",
-    "Airbus A340-300": "343",
-    "Airbus A330-300": "333",
-    "Boeing 787-9": "789",
-    "Boeing 777-9": "779",
-}
+# Canonical fleet types (from the aircraft table) → short Gantt labels.
+_CANON_SHORT = {"B748": "748", "A388": "388"}
+# Only these airframe types are shown on the schedule.
+_SCHEDULE_TYPES = ("B748", "A388")
+# Tails the user is most interested in — pinned to the top and highlighted.
+_WATCH_TAILS = ("D-ABYN", "D-AIMH")
+# German hub airports (all share the Frankfurt timezone) used to anchor each
+# leg onto a single Frankfurt-local clock.
+_DE_HUBS = {"FRA", "MUC", "DUS", "BER", "HAM", "STR", "CGN", "NUE", "LEJ", "TXL"}
 
 
-def _type_short(t):
-    if not t:
-        return "?"
-    return _TYPE_SHORT.get(t, t.split()[-1][:4])
+def _iso_dur_min(s):
+    """Parse an ISO-8601 duration like 'PT12H40M' / 'PT2H' / 'PT55M' to minutes."""
+    if not s or not s.startswith("PT"):
+        return None
+    h = m = 0
+    num = ""
+    for ch in s[2:]:
+        if ch.isdigit():
+            num += ch
+        elif ch == "H":
+            h, num = int(num or 0), ""
+        elif ch == "M":
+            m, num = int(num or 0), ""
+    return h * 60 + m
 
 
 @app.route("/api/schedule")
 def api_schedule():
     """Per-airframe upcoming schedule from the latest FIS snapshot of each
-    (flight_date, flight_number), grouped by tail for a Gantt timeline."""
+    (flight_date, flight_number), grouped by tail for a Gantt timeline.
+
+    Only B748/A388 airframes (canonical type from the aircraft table) are
+    returned. Bars are laid out on a single Frankfurt-local clock: each leg is
+    anchored to its German-hub endpoint and sized by true flight duration, so
+    both east- and westbound legs show their real length (no tz compression).
+    """
     try:
         conn = _db()
     except Exception as e:
         return jsonify({"error": str(e)}), 503
     try:
         rows = _q(conn, """
-            SELECT DISTINCT ON (flight_date, flight_number)
-                flight_date, airline, flight_number, registration, aircraft_type,
-                seed_type, dep_airport_iata, arr_airport_iata,
-                dep_scheduled, arr_scheduled, overall_status,
-                prev_airline, prev_flight_number
-            FROM flight_status_observations
-            WHERE found AND registration IS NOT NULL AND dep_scheduled IS NOT NULL
-              AND flight_date >= CURRENT_DATE
-            ORDER BY flight_date, flight_number, observed_date DESC
-        """)
+            SELECT DISTINCT ON (o.flight_date, o.flight_number)
+                o.flight_date, o.airline, o.flight_number, o.registration,
+                a.aircraft_type, o.seed_type, o.dep_airport_iata, o.arr_airport_iata,
+                o.dep_scheduled, o.arr_scheduled, o.overall_status,
+                o.prev_airline, o.prev_flight_number,
+                o.raw->'legs'->0->>'flightDuration'
+            FROM flight_status_observations o
+            JOIN aircraft a ON a.registration = o.registration
+            WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
+              AND o.flight_date >= CURRENT_DATE
+              AND a.aircraft_type = ANY(%s)
+            ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+        """, (list(_SCHEDULE_TYPES),))
         swap_rows = _q(conn, """
             SELECT flight_date, flight_number
             FROM flight_status_observations
@@ -5030,15 +5048,24 @@ def api_schedule():
     types = {}
     starts, ends = [], []
     for (fdate, airline, fnum, reg, atype, seed, dep, arr,
-         dep_t, arr_t, status, pa, pn) in rows:
-        starts.append(dep_t)
-        ends.append(arr_t or dep_t)
-        types[reg] = _type_short(atype)
+         dep_t, arr_t, status, pa, pn, dur_iso) in rows:
+        dur = _iso_dur_min(dur_iso)
+        # Put the bar on a Frankfurt-local clock: anchor to the German endpoint
+        # and extend by the real flight duration.
+        if dur and dep in _DE_HUBS:
+            start, end = dep_t, dep_t + timedelta(minutes=dur)
+        elif dur and arr in _DE_HUBS and arr_t:
+            start, end = arr_t - timedelta(minutes=dur), arr_t
+        else:
+            start, end = dep_t, (arr_t or dep_t)
+        starts.append(start)
+        ends.append(end)
+        types[reg] = _CANON_SHORT.get(atype, atype)
         by_reg[reg].append({
             "fl": f"{airline}{fnum}", "dep": dep, "arr": arr,
-            "dep_t": dep_t.isoformat(),
-            "arr_t": arr_t.isoformat() if arr_t else dep_t.isoformat(),
-            "seed": seed, "status": status,
+            "start": start.isoformat(), "end": end.isoformat(),
+            "dep_t": dep_t.isoformat(), "arr_t": arr_t.isoformat() if arr_t else None,
+            "dur": dur, "seed": seed, "status": status,
             "swap": (fdate, fnum) in swapped,
             "lead": (fdate - today).days,
             "prev": f"{pa}{pn}" if pn else None,
@@ -5050,13 +5077,14 @@ def api_schedule():
 
     win_start = min(starts).replace(hour=0, minute=0, second=0, microsecond=0)
     win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    type_order = {"748": 0, "388": 1, "359": 2}
+    type_order = {"748": 0, "388": 1}
     airframes = [
-        {"reg": reg, "type": types[reg],
-         "legs": sorted(by_reg[reg], key=lambda x: x["dep_t"])}
+        {"reg": reg, "type": types[reg], "watch": reg in _WATCH_TAILS,
+         "legs": sorted(by_reg[reg], key=lambda x: x["start"])}
         for reg in by_reg
     ]
-    airframes.sort(key=lambda a: (type_order.get(a["type"], 9), a["reg"]))
+    # watched tails first, then by type group, then registration
+    airframes.sort(key=lambda a: (not a["watch"], type_order.get(a["type"], 9), a["reg"]))
     return jsonify({
         "airframes": airframes,
         "window": {"start": win_start.isoformat(), "end": win_end.isoformat()},
@@ -5107,8 +5135,11 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
   letter-spacing:0.5px; padding-left:6px; border-left:1px solid var(--border); }
 .gantt-row { display:flex; align-items:center; margin-bottom:3px; height:24px; }
 .gantt-row.dim { opacity:0.25; }
+.gantt-row.watch { background:rgba(251,191,36,0.07); border-radius:5px; }
+.gantt-row.watch .gantt-label { color:var(--amber); }
+.gantt-label .star { color:var(--amber); font-size:10px; margin-right:1px; }
 .gantt-label { width:104px; flex-shrink:0; font-size:11px; font-weight:600;
-  color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:6px; }
+  color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; }
 .tbadge { font-size:9px; font-weight:700; padding:1px 5px; border-radius:4px; color:#0b0d10; }
 .t748 .tbadge, .tbadge.t748 { background:var(--accent); }
 .t388 .tbadge, .tbadge.t388 { background:var(--green); }
@@ -5152,12 +5183,12 @@ footer a { color:var(--muted); text-decoration:none; }
     <div class="legend">
       <span><span class="sw" style="background:var(--accent)"></span>747-8</span>
       <span><span class="sw" style="background:var(--green)"></span>A380</span>
-      <span><span class="sw" style="background:var(--purple)"></span>A350</span>
+      <span><span class="star" style="color:var(--amber)">&#9733;</span> watched</span>
       <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--amber);outline-offset:-2px"></span>reassigned</span>
     </div>
   </div>
   <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
-  <div class="meta" style="margin-top:10px">Bars span scheduled departure&rarr;arrival. Times are as published by Lufthansa (local airport time); use a row to read one airframe's rotation. &#9888; = the assigned tail changed across snapshots.</div>
+  <div class="meta" style="margin-top:10px">Times shown in Frankfurt local time; bar length = real flight duration. Hover a leg for the actual local departure/arrival times. &#9733; = watched airframes (pinned on top). &#9888; = assigned tail changed across snapshots.</div>
 </div>
 <footer>
   <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
@@ -5186,15 +5217,17 @@ async function init(){
 
   d.airframes.forEach(a=>{
     const tc=tcls(a.type);
-    html+='<div class="gantt-row" data-reg="'+a.reg+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
-    html+='<div class="gantt-label">'+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span></div>';
+    html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
+    html+='<div class="gantt-label">'+(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span></div>';
     html+='<div class="gantt-track">';
     a.legs.forEach(l=>{
-      const s=new Date(l.dep_t).getTime(), e=new Date(l.arr_t).getTime();
+      const s=new Date(l.start).getTime(), e=new Date(l.end).getTime();
       const left=Math.max(0,(s-t0)/range*100), width=Math.max(0.5,(e-s)/range*100);
-      const title=l.fl+'  '+l.dep+' \\u2192 '+l.arr+'\\n'+fmt(l.dep_t)+'  \\u2192  '+fmt(l.arr_t)
-        +'\\n'+a.type+(l.status?'  \\u00b7  '+l.status:'')+(l.prev?'\\nprev: '+l.prev:'')
-        +'\\nlead: +'+l.lead+'d'+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
+      const dur=l.dur?(Math.floor(l.dur/60)+'h'+String(l.dur%60).padStart(2,'0')):'';
+      const title=l.fl+'  '+l.dep+' \\u2192 '+l.arr
+        +'\\nDep '+fmt(l.dep_t)+' ('+l.dep+')'+(l.arr_t?'\\nArr '+fmt(l.arr_t)+' ('+l.arr+')':'')
+        +(dur?'\\nFlight '+dur:'')+'  \\u00b7  '+a.type+(l.status?'  \\u00b7  '+l.status:'')
+        +(l.prev?'\\nprev: '+l.prev:'')+'\\nlead: +'+l.lead+'d'+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
       html+='<div class="gantt-flight '+tc+(l.swap?' swap':'')+'" style="left:'+left+'%;width:'+width+'%"'
         +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+l.fl+'" title="'+title.replace(/"/g,'&quot;')+'">'
         +'<span class="lbl">'+l.fl.replace('LH','')+' '+l.dep+'\\u2192'+l.arr+'</span></div>';
