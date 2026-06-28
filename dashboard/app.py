@@ -424,6 +424,7 @@ body {
       </div>
     </div>
     <nav class="nav">
+      <a href="/book">Book</a>
       <a href="/schedule">Schedule</a>
       <a href="/fleet">Fleet DB</a>
       <a href="/analysis">A380</a>
