@@ -5409,6 +5409,13 @@ footer a:hover { color:var(--text); }
 .modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
 .modal .close:hover { color:var(--text-bright); }
 .reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:#9a6f1e; border-radius:0; padding:9px 11px; font-size:12px; margin-bottom:16px; }
+.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--border); border-radius:0; padding:10px 12px; margin-bottom:16px; }
+.conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
+.conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
+.conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--mono); }
+.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:#3d7d5c; }
+.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:#9a6f1e; }
+.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:#b4503f; }
 .det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
 .det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
 .det-grid .v { color:var(--text-bright); }
@@ -5568,6 +5575,17 @@ $('filter').addEventListener('input', e=>{
 
 /* ── Flight detail modal ──────────────────────────────── */
 function row(k,v){ return '<span class="k">'+k+'</span><span class="v">'+v+'</span>'; }
+function confChip(hold, reg){
+  if(!hold) return '';
+  const p=Math.round(hold.p*100);
+  const cls=p>=85?'cg':(p>=60?'ca':'cr');
+  const label=p>=85?'likely to hold':(p>=60?'could still change':'often changes');
+  const basis=hold.basis==='route'?'this route':(hold.basis==='type'?'this aircraft type':'all tracked flights');
+  return '<div class="conf-chip '+cls+'"><span class="cp">'+p+'%</span><span class="ct">'
+    +'chance it stays <b>'+(reg||'this tail')+'</b> &middot; '+label
+    +'<br><span class="cn">'+hold.lead+'d before departure &middot; based on '+basis+' (n='+hold.n+')</span>'
+    +'</span></div>';
+}
 function fmtD(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'}); }
 function isoDur(s){ if(!s) return ''; const m=s.match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/); if(!m) return ''; return (m[1]?m[1]+'h':'')+(m[2]?String(m[2]).padStart(2,'0')+'m':''); }
 function closeFl(){ $('fl-modal').classList.remove('show'); }
@@ -5583,6 +5601,7 @@ function renderFlight(d){
   h+='<h3>'+d.flight+(d.dep_iata?'  \\u00b7  '+d.dep_iata+'\\u2192'+d.arr_iata:'')+'</h3>';
   h+='<div class="sub">'+[d.dep_name,d.arr_name].filter(Boolean).join(' \\u2192 ')+'  \\u00b7  '+fmtD(d.flight_date)+'</div>';
   if(d.reassigned){ h+='<div class="reassign-banner">\\u26a0 Reassigned \\u2014 originally <b>'+(d.original_reg||'?')+'</b>, now <b>'+(d.current_reg||'?')+'</b></div>'; }
+  h+=confChip(d.hold, d.current_reg);
   if(d.found){
     const dur=isoDur(d.duration);
     h+='<div class="det-grid">';
