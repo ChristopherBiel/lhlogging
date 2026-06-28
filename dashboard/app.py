@@ -5439,6 +5439,7 @@ footer a:hover { color:var(--text); }
       </div>
     </div>
     <nav class="nav">
+      <a class="nav-link" href="/book">Book</a>
       <a class="nav-link" href="/analysis-747">747-8</a>
       <a class="nav-link" href="/analysis">A380</a>
       <a class="nav-link" href="/fleet">Fleet DB</a>
@@ -5641,6 +5642,279 @@ init();
 @app.route("/schedule")
 def schedule():
     return render_template_string(_SCHEDULE_HTML)
+
+
+_BOOK_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catch a Tail | LH Fleet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#f3efe6; --surface:#ffffff; --surface2:#f1ebdd; --border:#e6dfce; --line:#d3c9b4;
+  --text:#36342c; --text-bright:#1a1812; --muted:#9d9482;
+  --accent:#6aa0d8; --green:#5cb487; --amber:#d3a23c; --red:#e07b6b; --purple:#a487d6; --cyan:#46b2a8;
+  --accent-dim:#dcebf9; --green-dim:#d7f0e2; --amber-dim:#f5ead0; --red-dim:#f8ddd6; --purple-dim:#e8defa;
+  --mono:'Space Mono','SFMono-Regular',ui-monospace,Menlo,monospace;
+  --sans:'Space Grotesk',-apple-system,'Segoe UI',system-ui,sans-serif;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
+.container { width:96vw; max-width:1100px; margin:0 auto; padding:0 18px 48px; }
+.header { padding:22px 0 12px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.brand { display:flex; align-items:center; gap:11px; }
+.led { width:11px; height:11px; background:var(--green); box-shadow:0 0 0 4px var(--green-dim); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.header h1 { font-size:18px; font-weight:700; color:var(--text-bright); letter-spacing:-0.3px; text-transform:uppercase; line-height:1; }
+.header h1 span { color:var(--accent); }
+.model { font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; margin-top:3px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; }
+.nav-link { font-family:var(--mono); font-size:11px; letter-spacing:.4px; text-transform:uppercase; color:var(--text-bright); text-decoration:none; background:var(--surface); border:1.5px solid var(--line); padding:6px 13px; transition:transform .08s ease, background .15s, border-color .15s; }
+.nav-link:hover { background:var(--accent-dim); border-color:var(--accent); transform:translateY(-1px); }
+.grille { height:14px; margin:6px 0 18px; background-image:repeating-linear-gradient(90deg, var(--line) 0 2px, transparent 2px 12px); }
+.meta { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:14px; line-height:1.6; }
+.meta b { color:var(--text); font-weight:700; }
+.modeswitch { display:flex; margin-bottom:12px; }
+.modeswitch button { font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.4px; padding:8px 18px; border:1.5px solid var(--line); border-right-width:0; background:var(--surface); color:var(--text-bright); cursor:pointer; }
+.modeswitch button:last-child { border-right-width:1.5px; }
+.modeswitch button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+.searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.searchbar input { background:var(--surface); border:1.5px solid var(--border); padding:9px 14px; font-size:14px; font-family:var(--mono); color:var(--text-bright); width:200px; text-transform:uppercase; }
+.searchbar input::placeholder { color:var(--muted); text-transform:none; }
+.searchbar input:focus { outline:none; border-color:var(--accent); }
+.searchbar .go { background:var(--accent); border:1.5px solid var(--accent); color:#fff; font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.4px; padding:9px 20px; cursor:pointer; }
+.searchbar .go:hover { background:#5790cc; }
+.hint { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:18px; }
+.results { display:flex; flex-direction:column; gap:8px; }
+.fcard { display:flex; align-items:center; gap:14px; border:1.5px solid var(--border); background:var(--surface); padding:12px 14px; cursor:pointer; transition:border-color .12s; }
+.fcard:hover { border-color:var(--accent); }
+.fcard .when { width:96px; font-family:var(--mono); font-size:11px; color:var(--muted); flex-shrink:0; line-height:1.5; }
+.fcard .when b { display:block; color:var(--text-bright); font-size:13px; }
+.fcard .route { flex:1; min-width:0; }
+.fcard .route .pair { font-size:15px; font-weight:700; color:var(--text-bright); }
+.fcard .route .sub { font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:1px; }
+.fcard .tail { font-family:var(--mono); font-weight:700; font-size:13px; color:var(--text-bright); display:flex; align-items:center; gap:5px; min-width:90px; }
+.fcard .tail .star { color:var(--amber); }
+.tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; color:var(--text-bright); }
+.tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--green); }
+.tbadge.t359 { background:var(--purple); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
+.miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--border); flex-shrink:0; }
+.miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
+.miniconf .cn { font-family:var(--mono); font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:3px; }
+.miniconf.cg { background:var(--green-dim); border-color:var(--green); } .miniconf.cg .p { color:#3d7d5c; }
+.miniconf.ca { background:var(--amber-dim); border-color:var(--amber); } .miniconf.ca .p { color:#9a6f1e; }
+.miniconf.cr { background:var(--red-dim); border-color:var(--red); } .miniconf.cr .p { color:#b4503f; }
+.empty { color:var(--muted); padding:30px; text-align:center; font-family:var(--mono); font-size:12px; border:1.5px dashed var(--border); }
+footer { text-align:center; padding:26px 0 10px; font-family:var(--mono); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
+.modal-bg { display:none; position:fixed; inset:0; background:rgba(36,33,27,0.5); z-index:100; justify-content:center; align-items:center; padding:16px; }
+.modal-bg.show { display:flex; }
+.modal { background:var(--surface); border:1.5px solid var(--border); padding:22px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
+.modal h3 { font-size:15px; color:var(--text-bright); margin-bottom:3px; padding-right:24px; }
+.modal .sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
+.modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
+.modal .close:hover { color:var(--text-bright); }
+.reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:#9a6f1e; padding:9px 11px; font-size:12px; margin-bottom:16px; }
+.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--border); padding:10px 12px; margin-bottom:16px; }
+.conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
+.conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
+.conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--mono); }
+.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:#3d7d5c; }
+.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:#9a6f1e; }
+.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:#b4503f; }
+.det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
+.det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
+.det-grid .v { color:var(--text-bright); }
+.hist-title { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 10px; }
+.hist-row { display:flex; align-items:center; gap:10px; font-size:12px; padding:6px 0; border-bottom:1.5px solid var(--border); }
+.hist-row:last-child { border-bottom:none; }
+.hist-row .obs { width:96px; color:var(--muted); flex-shrink:0; font-family:var(--mono); font-size:11px; }
+.hist-row .reg { font-family:var(--mono); font-weight:700; color:var(--text-bright); min-width:64px; }
+.hist-row.changed .reg { color:var(--amber); }
+.hist-row .tag { font-size:10px; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="brand">
+      <span class="led"></span>
+      <div>
+        <h1>Catch a <span>Tail</span></h1>
+        <div class="model">BOOK &middot; Airframe Finder</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a class="nav-link" href="/schedule">Schedule</a>
+      <a class="nav-link" href="/analysis-747">747-8</a>
+      <a class="nav-link" href="/analysis">A380</a>
+      <a class="nav-link" href="/fleet">Fleet DB</a>
+      <a class="nav-link" href="/">&larr; Monitor</a>
+    </nav>
+  </div>
+  <div class="grille"></div>
+  <div class="meta">Find an upcoming flight by <b>airframe</b> or <b>route</b>, with the currently published tail and a measured chance it still holds by departure. Schedule is published ~4 days out, so check back closer to your date.</div>
+  <div class="modeswitch">
+    <button id="m-tail" class="active" onclick="setMode('tail')">By tail</button>
+    <button id="m-route" onclick="setMode('route')">By route</button>
+  </div>
+  <div class="searchbar">
+    <input id="tail-in" type="text" placeholder="registration, e.g. D-ABYN">
+    <input id="dep-in" type="text" placeholder="from, e.g. FRA" style="display:none">
+    <input id="arr-in" type="text" placeholder="to, e.g. HND" style="display:none">
+    <button class="go" onclick="search()">Search</button>
+  </div>
+  <div class="hint" id="hint">Tip: watched airframes are starred. Confidence is grey when there isn't enough history yet.</div>
+  <div class="results" id="results"><div class="empty">Search a tail (e.g. D-ABYN) or a route (e.g. FRA &rarr; HND).</div></div>
+</div>
+<div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
+<footer>
+  <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+let mode = 'tail';
+function setMode(m){
+  mode = m;
+  $('m-tail').classList.toggle('active', m==='tail');
+  $('m-route').classList.toggle('active', m==='route');
+  $('tail-in').style.display = m==='tail' ? '' : 'none';
+  $('dep-in').style.display = m==='route' ? '' : 'none';
+  $('arr-in').style.display = m==='route' ? '' : 'none';
+  ($(m==='tail'?'tail-in':'dep-in')).focus();
+}
+function fmtDay(iso){ if(!iso) return '?'; return new Date(iso).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}); }
+function fmtClock(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
+function tcls(t){ return ['748','388','359'].includes(t) ? 't'+t : 'tother'; }
+
+function miniChip(hold){
+  if(!hold) return '<div class="miniconf"><span class="p" style="color:var(--muted)">&mdash;</span><span class="cn">no data</span></div>';
+  const p = Math.round(hold.p*100);
+  const cls = p>=85 ? 'cg' : (p>=60 ? 'ca' : 'cr');
+  return '<div class="miniconf '+cls+'" title="chance the published tail still holds by departure ('+hold.lead+'d out, '+hold.basis+', n='+hold.n+')">'
+    +'<span class="p">'+p+'%</span><span class="cn">holds</span></div>';
+}
+
+function renderResults(d){
+  const R = $('results');
+  if(d.error){ R.innerHTML = '<div class="empty">'+d.error+'</div>'; return; }
+  const fs = d.flights || [];
+  if(!fs.length){ R.innerHTML = '<div class="empty">No upcoming flights found. The schedule is only published ~4 days ahead &mdash; try again closer to your date, or check the spelling.</div>'; return; }
+  let h = '';
+  fs.forEach(f => {
+    const lead = f.lead===0 ? 'today' : (f.lead===1 ? 'tomorrow' : 'in '+f.lead+' days');
+    const reassigned = f.reassigned ? ' &middot; <span style="color:var(--amber)">&#9888; reassigned before</span>' : '';
+    h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'">'
+      + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+lead+'</div>'
+      + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+'</div>'
+      + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
+      + '<div class="tail">'+(f.watch?'<span class="star">&#9733;</span>':'')+(f.reg||'?')
+      + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span></div>'
+      + miniChip(f.hold) + '</div>';
+  });
+  R.innerHTML = h;
+}
+
+function search(){
+  let url;
+  if(mode==='tail'){
+    const r = $('tail-in').value.trim().toUpperCase();
+    if(!r){ return; }
+    url = '/api/book?reg=' + encodeURIComponent(r);
+  } else {
+    const dp = $('dep-in').value.trim().toUpperCase();
+    const ar = $('arr-in').value.trim().toUpperCase();
+    if(!dp && !ar){ return; }
+    url = '/api/book?dep=' + encodeURIComponent(dp) + '&arr=' + encodeURIComponent(ar);
+  }
+  $('results').innerHTML = '<div class="empty">Searching&hellip;</div>';
+  fetch(url).then(r=>r.json()).then(renderResults)
+    .catch(()=>{ $('results').innerHTML = '<div class="empty">Search failed.</div>'; });
+}
+
+document.querySelectorAll('.searchbar input').forEach(el =>
+  el.addEventListener('keydown', e => { if(e.key==='Enter') search(); }));
+
+/* ── Flight detail modal (shared shape with /schedule) ─────────── */
+function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
+  return d.toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
+function row(k,v){ return '<span class="k">'+k+'</span><span class="v">'+v+'</span>'; }
+function confChip(hold, reg){
+  if(!hold) return '';
+  const p = Math.round(hold.p*100);
+  const cls = p>=85 ? 'cg' : (p>=60 ? 'ca' : 'cr');
+  const label = p>=85 ? 'likely to hold' : (p>=60 ? 'could still change' : 'often changes');
+  const basis = hold.basis==='route' ? 'this route' : (hold.basis==='type' ? 'this aircraft type' : 'all tracked flights');
+  return '<div class="conf-chip '+cls+'"><span class="cp">'+p+'%</span><span class="ct">'
+    + 'chance it stays <b>'+(reg||'this tail')+'</b> &middot; '+label
+    + '<br><span class="cn">'+hold.lead+'d before departure &middot; based on '+basis+' (n='+hold.n+')</span>'
+    + '</span></div>';
+}
+function fmtD(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'}); }
+function isoDur(s){ if(!s) return ''; const m=s.match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/); if(!m) return ''; return (m[1]?m[1]+'h':'')+(m[2]?String(m[2]).padStart(2,'0')+'m':''); }
+function closeFl(){ $('fl-modal').classList.remove('show'); }
+function openFlight(num, fdate){
+  const b = $('fl-modal-body'); b.innerHTML = '<div class="empty">Loading&hellip;</div>'; $('fl-modal').classList.add('show');
+  fetch('/api/schedule/flight/LH/'+num+'/'+fdate).then(r=>r.json()).then(renderFlight)
+    .catch(()=>{ b.innerHTML = '<button class="close" onclick="closeFl()">&times;</button><div class="empty">Failed to load.</div>'; });
+}
+function renderFlight(d){
+  const b = $('fl-modal-body');
+  let h = '<button class="close" onclick="closeFl()">&times;</button>';
+  if(d.error){ b.innerHTML = h+'<div class="empty">'+d.error+'</div>'; return; }
+  h += '<h3>'+d.flight+(d.dep_iata?'  &middot;  '+d.dep_iata+'&rarr;'+d.arr_iata:'')+'</h3>';
+  h += '<div class="sub">'+[d.dep_name,d.arr_name].filter(Boolean).join(' &rarr; ')+'  &middot;  '+fmtD(d.flight_date)+'</div>';
+  if(d.reassigned){ h += '<div class="reassign-banner">&#9888; Reassigned &mdash; originally <b>'+(d.original_reg||'?')+'</b>, now <b>'+(d.current_reg||'?')+'</b></div>'; }
+  h += confChip(d.hold, d.current_reg);
+  if(d.found){
+    const dur = isoDur(d.duration);
+    h += '<div class="det-grid">';
+    h += row('Aircraft',(d.current_reg||'?')+(d.current_type?' &middot; '+d.current_type:''));
+    h += row('Departure',fmt(d.dep_sched)+(d.dep_term?' &middot; T'+d.dep_term:'')+(d.dep_gate?' &middot; Gate '+d.dep_gate:''));
+    h += row('Arrival',fmt(d.arr_sched)+(d.arr_term?' &middot; T'+d.arr_term:'')+(d.arr_gate?' &middot; Gate '+d.arr_gate:''));
+    if(dur) h += row('Flight time',dur);
+    if(d.status) h += row('Status',d.status);
+    if(d.codeshares&&d.codeshares.length) h += row('Codeshare',d.codeshares.join(', '));
+    if(d.prev) h += row('Previous leg',d.prev+(d.prev_date?' ('+fmtD(d.prev_date)+')':''));
+    h += '</div>';
+  } else { h += '<div class="sub">No current assignment for this date.</div>'; }
+  if(d.history&&d.history.length){
+    h += '<div class="hist-title">Assignment history</div>';
+    let pr = null;
+    d.history.forEach((x,i) => {
+      const ch = pr!==null && x.reg!==pr;
+      const tags = []; if(i===0) tags.push('originally planned'); if(i===d.history.length-1) tags.push('current');
+      h += '<div class="hist-row'+(ch?' changed':'')+'"><span class="obs">'+fmtD(x.observed)+'</span>'
+        + '<span class="reg">'+(x.reg||'&mdash;')+'</span><span class="tag">'
+        + [x.type,tags.join(' &middot; ')].filter(Boolean).join('  &middot;  ')+'</span></div>';
+      pr = x.reg;
+    });
+  }
+  b.innerHTML = h;
+}
+$('results').addEventListener('click', e => { const c=e.target.closest('.fcard'); if(c) openFlight(c.dataset.num, c.dataset.fdate); });
+$('fl-modal').addEventListener('click', e => { if(e.target.id==='fl-modal') closeFl(); });
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeFl(); });
+
+/* Prefill + auto-search from URL (?reg= or ?dep=&arr=) so links land on results */
+(function(){
+  const p = new URLSearchParams(location.search);
+  if(p.get('reg')){ setMode('tail'); $('tail-in').value = p.get('reg'); search(); }
+  else if(p.get('dep') || p.get('arr')){ setMode('route'); $('dep-in').value = p.get('dep')||''; $('arr-in').value = p.get('arr')||''; search(); }
+})();
+</script>
+</body>
+</html>"""
+
+
+@app.route("/book")
+def book():
+    return render_template_string(_BOOK_HTML)
 
 
 if __name__ == "__main__":
