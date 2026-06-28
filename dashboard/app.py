@@ -5295,6 +5295,122 @@ def api_book():
     })
 
 
+@app.route("/api/insights")
+def api_insights():
+    """Descriptive fleet analytics for one aircraft type (optionally one tail):
+    route frequency, rotation transitions, per-airframe profiles, and — for types
+    we collect schedule data on — reliability. Purely backward-looking; no
+    prediction. Drives the parameterised /insights page."""
+    atype = (request.args.get("type") or "B748").strip().upper()
+    reg = (request.args.get("reg") or "").strip().upper() or None
+    short = _CANON_SHORT.get(atype, atype)
+
+    scope = "a.aircraft_type = %s AND NOT f.needs_review"
+    sp = [atype]
+    if reg:
+        scope += " AND btrim(a.registration) = %s"
+        sp.append(reg)
+    # exclude unresolved/loop legs from the route-shaped queries
+    clean = (" AND f.departure_airport_icao IS NOT NULL AND f.arrival_airport_icao IS NOT NULL"
+             " AND f.departure_airport_icao <> f.arrival_airport_icao"
+             " AND f.departure_airport_icao <> 'UNKN' AND f.arrival_airport_icao <> 'UNKN'")
+
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        meta = _q(conn, f"""
+            SELECT COUNT(*), COUNT(DISTINCT a.registration),
+                   MIN(f.flight_date), MAX(f.flight_date)
+            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE {scope}
+        """, sp)[0]
+
+        routes = _q(conn, f"""
+            SELECT f.departure_airport_icao || '-' || f.arrival_airport_icao AS route,
+                   COUNT(*) AS n,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY f.duration_minutes) AS med
+            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE {scope}{clean}
+            GROUP BY route ORDER BY n DESC LIMIT 25
+        """, sp)
+
+        airframes = _q(conn, f"""
+            SELECT btrim(a.registration), COUNT(*),
+                   ROUND(SUM(f.duration_minutes) / 60.0, 1),
+                   MIN(f.flight_date), MAX(f.flight_date)
+            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE {scope}
+            GROUP BY 1 ORDER BY 2 DESC
+        """, sp)
+
+        grounding = _q(conn, f"""
+            WITH g AS (
+              SELECT btrim(a.registration) AS reg,
+                     f.flight_date - LAG(f.flight_date)
+                       OVER (PARTITION BY a.registration ORDER BY f.flight_date) AS gap
+              FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+              WHERE {scope}
+            )
+            SELECT reg, MAX(gap) FROM g GROUP BY reg
+        """, sp)
+
+        rotation = _q(conn, f"""
+            WITH ordered AS (
+              SELECT f.departure_airport_icao || '-' || f.arrival_airport_icao AS route,
+                     LEAD(f.departure_airport_icao || '-' || f.arrival_airport_icao)
+                       OVER (PARTITION BY a.registration ORDER BY f.first_seen) AS nxt
+              FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+              WHERE {scope}{clean}
+            )
+            SELECT route, nxt, COUNT(*) AS n FROM ordered
+            WHERE nxt IS NOT NULL GROUP BY route, nxt ORDER BY n DESC LIMIT 60
+        """, sp)
+
+        # Schedule reliability (FIS) — only meaningful for collected types.
+        ontime = _q(conn, """
+            WITH latest AS (
+                SELECT DISTINCT ON (o.flight_date, o.flight_number) o.overall_status
+                FROM flight_status_observations o
+                JOIN aircraft a ON a.registration = o.registration
+                WHERE o.found AND a.aircraft_type = %s
+                ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+            )
+            SELECT COALESCE(overall_status, 'UNKNOWN'), COUNT(*)
+            FROM latest GROUP BY 1 ORDER BY 2 DESC
+        """, [atype])
+        stab = _reassignment_stability(conn)
+    finally:
+        conn.close()
+
+    ground = {r[0]: r[1] for r in grounding}
+    reliability = None
+    if ontime or stab["type"].get(short):
+        reliability = {
+            "ontime": [{"status": s, "n": n} for s, n in ontime],
+            "hold_by_lead": stab["type"].get(short) or stab["overall"],
+            "churn_by_route": stab["route"],
+        }
+
+    return jsonify({
+        "type": atype, "short": short, "reg": reg,
+        "meta": {"flights": meta[0], "tails": meta[1],
+                 "first": meta[2].isoformat() if meta[2] else None,
+                 "last": meta[3].isoformat() if meta[3] else None},
+        "routes": [{"route": r[0], "n": r[1], "median_min": int(r[2]) if r[2] is not None else None}
+                   for r in routes],
+        "airframes": [{"reg": r[0], "legs": r[1], "hours": float(r[2]) if r[2] is not None else 0.0,
+                       "first": r[3].isoformat() if r[3] else None,
+                       "last": r[4].isoformat() if r[4] else None,
+                       "watch": r[0] in _WATCH_TAILS, "max_ground_days": ground.get(r[0])}
+                      for r in airframes],
+        "rotation": [{"from": r[0], "to": r[1], "n": r[2]} for r in rotation],
+        "reliability": reliability,
+        "generated": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 _SCHEDULE_HTML = """\
 <!DOCTYPE html>
 <html lang="en">
