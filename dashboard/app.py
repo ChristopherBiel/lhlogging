@@ -6095,5 +6095,234 @@ def book():
     return render_template_string(_BOOK_HTML)
 
 
+_INSIGHTS_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fleet Insights | LH Fleet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#f3efe6; --surface:#ffffff; --surface2:#f1ebdd; --border:#e6dfce; --line:#d3c9b4;
+  --text:#36342c; --text-bright:#1a1812; --muted:#9d9482;
+  --accent:#6aa0d8; --green:#5cb487; --amber:#d3a23c; --red:#e07b6b; --purple:#a487d6; --cyan:#46b2a8;
+  --accent-dim:#dcebf9; --green-dim:#d7f0e2; --amber-dim:#f5ead0; --red-dim:#f8ddd6;
+  --mono:'Space Mono','SFMono-Regular',ui-monospace,Menlo,monospace;
+  --sans:'Space Grotesk',-apple-system,'Segoe UI',system-ui,sans-serif;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
+.container { width:96vw; max-width:1180px; margin:0 auto; padding:0 18px 48px; }
+.header { padding:22px 0 12px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.brand { display:flex; align-items:center; gap:11px; }
+.led { width:11px; height:11px; background:var(--green); box-shadow:0 0 0 4px var(--green-dim); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.header h1 { font-size:18px; font-weight:700; color:var(--text-bright); letter-spacing:-0.3px; text-transform:uppercase; line-height:1; }
+.header h1 span { color:var(--accent); }
+.model { font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; margin-top:3px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; }
+.nav-link { font-family:var(--mono); font-size:11px; letter-spacing:.4px; text-transform:uppercase; color:var(--text-bright); text-decoration:none; background:var(--surface); border:1.5px solid var(--line); padding:6px 13px; transition:transform .08s ease, background .15s, border-color .15s; }
+.nav-link:hover { background:var(--accent-dim); border-color:var(--accent); transform:translateY(-1px); }
+.grille { height:14px; margin:6px 0 18px; background-image:repeating-linear-gradient(90deg, var(--line) 0 2px, transparent 2px 12px); }
+.controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+.seg { display:flex; }
+.seg a { font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.4px; padding:8px 18px; border:1.5px solid var(--line); border-right-width:0; background:var(--surface); color:var(--text-bright); text-decoration:none; }
+.seg a:last-child { border-right-width:1.5px; }
+.seg a.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+.controls input { background:var(--surface); border:1.5px solid var(--border); padding:8px 14px; font-size:13px; font-family:var(--mono); color:var(--text-bright); width:190px; text-transform:uppercase; }
+.controls input::placeholder { color:var(--muted); text-transform:none; }
+.controls input:focus { outline:none; border-color:var(--accent); }
+.meta { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:16px; line-height:1.6; }
+.meta b { color:var(--text); font-weight:700; }
+.module { border:1.5px solid var(--border); background:var(--surface); margin-bottom:16px; }
+.modhead { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-bright); padding:11px 14px; border-bottom:1.5px solid var(--border); background:var(--surface2); }
+.modhead .sub { color:var(--muted); text-transform:none; letter-spacing:0; font-size:10px; margin-left:8px; }
+.modbody { padding:14px; }
+.cols { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+@media (max-width:760px){ .cols { grid-template-columns:1fr; } }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+th { text-align:left; font-family:var(--mono); font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:5px 8px; border-bottom:1.5px solid var(--border); }
+td { padding:5px 8px; border-bottom:1px solid var(--surface2); color:var(--text-bright); }
+td.r, th.r { text-align:right; }
+tr:last-child td { border-bottom:none; }
+.tail-reg { font-family:var(--mono); font-weight:700; }
+.star { color:var(--amber); }
+.subhead { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:4px 0 9px; }
+/* reschedulings chart */
+.rs-note { font-family:var(--mono); font-size:10px; color:var(--muted); margin-bottom:12px; }
+.rs-chart { display:flex; align-items:flex-end; gap:8px; padding:4px 2px; }
+.rs-col { flex:1; text-align:center; min-width:34px; }
+.rs-n { font-family:var(--mono); font-size:11px; font-weight:700; color:var(--text-bright); margin-bottom:4px; }
+.rs-barwrap { height:150px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; }
+.rs-bar { width:62%; max-width:46px; background:var(--accent); min-height:2px; }
+.rs-incident .rs-bar { background:var(--red); }
+.rs-mark { color:var(--red); font-size:11px; margin-bottom:2px; }
+.rs-date { font-family:var(--mono); font-size:9px; color:var(--muted); margin-top:6px; white-space:nowrap; }
+.rs-base .rs-bar { background:var(--line); }
+.legend { font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:10px; display:flex; gap:14px; flex-wrap:wrap; }
+.legend .sw { display:inline-block; width:10px; height:10px; vertical-align:middle; margin-right:4px; }
+/* on-time stacked bar */
+.ot-bar { display:flex; height:22px; border:1.5px solid var(--border); margin:4px 0 8px; }
+.ot-seg { height:100%; }
+.ot-list { font-family:var(--mono); font-size:11px; color:var(--muted); }
+.empty { color:var(--muted); padding:22px; text-align:center; font-family:var(--mono); font-size:12px; }
+footer { text-align:center; padding:26px 0 10px; font-family:var(--mono); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="brand">
+      <span class="led"></span>
+      <div>
+        <h1>Fleet <span>Insights</span></h1>
+        <div class="model">INSIGHTS &middot; Fleet Analytics</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a class="nav-link" href="/book">Book</a>
+      <a class="nav-link" href="/schedule">Schedule</a>
+      <a class="nav-link" href="/fleet">Fleet DB</a>
+      <a class="nav-link" href="/">&larr; Monitor</a>
+    </nav>
+  </div>
+  <div class="grille"></div>
+  <div class="controls">
+    <div class="seg">
+      <a href="/insights?type=B748" id="seg-B748">747-8</a>
+      <a href="/insights?type=A388" id="seg-A388">A380</a>
+    </div>
+    <input id="tail-in" type="text" placeholder="filter one tail, e.g. D-ABYN">
+  </div>
+  <div class="meta" id="meta">Loading&hellip;</div>
+  <div id="body"></div>
+</div>
+<footer>
+  <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+const P = new URLSearchParams(location.search);
+const TYPE = (P.get('type') || 'B748').toUpperCase();
+const REG = (P.get('reg') || '').toUpperCase();
+
+function fmtMin(m){ if(m==null) return '—'; return Math.floor(m/60)+'h'+String(m%60).padStart(2,'0'); }
+function shortDate(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{day:'2-digit',month:'short',timeZone:'UTC'}); }
+function esc(s){ return (s==null?'':String(s)).replace(/"/g,'&quot;'); }
+
+function routesTable(routes){
+  if(!routes.length) return '<div class="empty">No routes yet.</div>';
+  let h='<table><tr><th>Route</th><th class="r">Flights</th><th class="r">Median time</th></tr>';
+  routes.slice(0,15).forEach(r=>{ h+='<tr><td>'+r.route+'</td><td class="r">'+r.n+'</td><td class="r">'+fmtMin(r.median_min)+'</td></tr>'; });
+  return h+'</table>';
+}
+function rotationList(rot){
+  if(!rot.length) return '<div class="empty">Not enough sequence data.</div>';
+  let h='<table><tr><th>After</th><th>most often flies</th><th class="r">n</th></tr>';
+  rot.slice(0,14).forEach(r=>{ h+='<tr><td>'+r.from+'</td><td>'+r.to+'</td><td class="r">'+r.n+'</td></tr>'; });
+  return h+'</table>';
+}
+function airframesTable(af){
+  if(!af.length) return '<div class="empty">No airframes.</div>';
+  let h='<table><tr><th>Tail</th><th class="r">Legs</th><th class="r">Hours</th><th class="r">Longest gap</th><th class="r">Last seen</th></tr>';
+  af.forEach(a=>{
+    h+='<tr><td class="tail-reg">'+(a.watch?'<span class="star">&#9733;</span>':'')+a.reg+'</td>'
+      +'<td class="r">'+a.legs+'</td><td class="r">'+a.hours+'h</td>'
+      +'<td class="r">'+(a.max_ground_days!=null?a.max_ground_days+'d':'—')+'</td>'
+      +'<td class="r">'+shortDate(a.last)+'</td></tr>';
+  });
+  return h+'</table>';
+}
+function reschedChart(rel, diversions){
+  const data = (rel && rel.reschedulings) || [];
+  if(!data.length) return '<div class="empty">No schedule data collected for this type yet.</div>';
+  const byDate = {};
+  (diversions||[]).forEach(d=>{ (byDate[d.date]=byDate[d.date]||[]).push(d); });
+  const max = Math.max(1, ...data.map(d=>d.n));
+  let bars='';
+  data.forEach((d,i)=>{
+    const px = Math.round(d.n/max*148);
+    const divs = byDate[d.date]||[];
+    const isDiv = divs.length>0;
+    const isBase = i===0 && d.n===0;
+    const tip = shortDate(d.date)+': '+d.n+' reschedulings'
+      + (isDiv ? '  \\u00b7  '+divs.map(x=>x.reg+' '+x.dep+'\\u2192'+x.arr).join(', ') : '')
+      + (isBase ? '  (collection start)' : '');
+    bars += '<div class="rs-col'+(isDiv?' rs-incident':'')+(isBase?' rs-base':'')+'" title="'+esc(tip)+'">'
+      + '<div class="rs-n">'+d.n+'</div>'
+      + '<div class="rs-barwrap">'+(isDiv?'<div class="rs-mark">&#9670;</div>':'')
+      + '<div class="rs-bar" style="height:'+Math.max(2,px)+'px"></div></div>'
+      + '<div class="rs-date">'+shortDate(d.date)+'</div></div>';
+  });
+  return '<div class="rs-chart">'+bars+'</div>'
+    + '<div class="legend"><span><span class="sw" style="background:var(--accent)"></span>reschedulings/day</span>'
+    + '<span><span class="sw" style="background:var(--red)"></span>&#9670; likely incident (diversion)</span></div>';
+}
+function ontimeBar(rel){
+  const ot = (rel && rel.ontime) || [];
+  if(!ot.length) return '';
+  const total = ot.reduce((s,x)=>s+x.n,0) || 1;
+  const col = s => s==='ONTIME'||s==='EARLY'||s==='ARRIVED' ? 'var(--green)' : s==='DELAYED' ? 'var(--amber)' : 'var(--line)';
+  let seg='', list=[];
+  ot.forEach(x=>{ seg+='<div class="ot-seg" style="width:'+(x.n/total*100)+'%;background:'+col(x.status)+'" title="'+esc(x.status+': '+x.n)+'"></div>'; list.push(x.status+' '+x.n); });
+  return '<div class="subhead">On-time mix (latest snapshot per flight)</div><div class="ot-bar">'+seg+'</div><div class="ot-list">'+list.join('  \\u00b7  ')+'</div>';
+}
+function holdTable(rel){
+  const hb = rel && rel.hold_by_lead;
+  if(!hb) return '';
+  const leads = Object.keys(hb).map(Number).sort((a,b)=>a-b);
+  if(!leads.length) return '';
+  let h='<div class="subhead" style="margin-top:14px">Tail holds by lead (how often the published tail survives to departure)</div>';
+  h+='<table><tr><th>Days out</th><th class="r">Holds</th><th class="r">n</th></tr>';
+  leads.forEach(l=>{ const c=hb[l]; h+='<tr><td>'+l+'d</td><td class="r">'+Math.round(c.p*100)+'%</td><td class="r">'+c.n+'</td></tr>'; });
+  return h+'</table>';
+}
+
+function module(title, sub, inner){
+  return '<div class="module"><div class="modhead">'+title+(sub?'<span class="sub">'+sub+'</span>':'')+'</div><div class="modbody">'+inner+'</div></div>';
+}
+
+async function init(){
+  $('seg-'+TYPE) && $('seg-'+TYPE).classList.add('active');
+  if(REG) $('tail-in').value = REG;
+  let d;
+  try { d = await (await fetch('/api/insights?type='+encodeURIComponent(TYPE)+(REG?'&reg='+encodeURIComponent(REG):''))).json(); }
+  catch(e){ $('body').innerHTML='<div class="empty">Failed to load.</div>'; $('meta').textContent=''; return; }
+  if(d.error){ $('body').innerHTML='<div class="empty">'+d.error+'</div>'; return; }
+  const m=d.meta||{};
+  $('meta').innerHTML = '<b>'+(d.type||'')+'</b>'+(REG?' &middot; '+REG:'')+' &middot; <b>'+(m.flights||0)+'</b> flights &middot; <b>'+(m.tails||0)+'</b> tails &middot; '+shortDate(m.first)+' &ndash; '+shortDate(m.last);
+
+  let html = '';
+  html += module('Schedule reliability', 'reschedulings &amp; incidents',
+      '<div class="rs-note">Bars = tails reassigned each day vs the night before. Diamonds mark likely incidents (widebody at a non-base field) &mdash; watch for a spike <i>after</i> one. Correlation, not proof; early days are thin.</div>'
+      + reschedChart(d.reliability, d.diversions)
+      + '<div style="margin-top:18px">' + ontimeBar(d.reliability) + holdTable(d.reliability) + '</div>');
+  html += module('Routes &amp; rotation', 'where this '+(REG||d.type)+' flies',
+      '<div class="cols"><div><div class="subhead">Top routes</div>'+routesTable(d.routes)+'</div>'
+      + '<div><div class="subhead">Typical next leg</div>'+rotationList(d.rotation)+'</div></div>');
+  html += module('Per-airframe profiles', 'utilisation &amp; groundings',
+      airframesTable(d.airframes));
+  $('body').innerHTML = html;
+}
+$('tail-in').addEventListener('keydown', e=>{
+  if(e.key==='Enter'){ const r=e.target.value.trim().toUpperCase();
+    location.href='/insights?type='+encodeURIComponent(TYPE)+(r?'&reg='+encodeURIComponent(r):''); }
+});
+init();
+</script>
+</body>
+</html>"""
+
+
+@app.route("/insights")
+def insights():
+    return render_template_string(_INSIGHTS_HTML)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=False)
