@@ -129,7 +129,7 @@ def api_stats():
         )
 
         # --- Last run per type ---
-        for run_type in ("state_poller", "flight_detector", "fleet_discovery", "fleet_refresh"):
+        for run_type in ("state_poller", "flight_detector", "fleet_discovery", "fleet_refresh", "flightstatus"):
             row = _q(
                 conn,
                 """
@@ -570,6 +570,20 @@ async function refresh() {
   const fdiscOk = fdisc && fdisc.status === 'ok';
   const fdiscRecent = fdisc && fdisc.started_at &&
     (Date.now() - new Date(fdisc.started_at).getTime()) < 7 * 3600 * 1000;
+  // Flight-status (FIS) runs nightly; classify blocked vs broken vs stale so a
+  // silent outage (the kind a retry can't fix) is visible at a glance.
+  const fs = data.last_flightstatus;
+  const fsAgeH = fs && fs.started_at ? (Date.now() - new Date(fs.started_at).getTime()) / 3600000 : null;
+  const fsFresh = fsAgeH !== null && fsAgeH <= 26;            // one healthy run within ~a day
+  const fsBlocked = fs && fs.status === 'ok' && (fs.aircraft_ok || 0) === 0 && (fs.aircraft_total || 0) > 0;
+  const fsOk = fs && fs.status === 'ok' && (fs.aircraft_ok || 0) > 0 && fsFresh;
+  const fsColor = !fs ? 'var(--red)'
+    : fs.status === 'error' ? 'var(--red)'
+    : fsBlocked ? 'var(--amber)'
+    : !fsFresh ? 'var(--amber)'
+    : fsOk ? 'var(--green)' : 'var(--amber)';
+  const fsNote = !fs ? '' : fs.status === 'error' ? ' \\u00b7 error'
+    : fsBlocked ? ' \\u00b7 blocked' : !fsFresh ? ' \\u00b7 stale' : '';
 
   function healthDetail(run, type) {
     if (!run) return '';
@@ -577,6 +591,7 @@ async function refresh() {
     if (type === 'state_poller') detail = fmt(run.aircraft_ok) + ' seen, ' + fmt(run.flights_upserted) + ' stored';
     else if (type === 'flight_detector') detail = fmt(run.flights_upserted) + ' flights';
     else if (type === 'fleet_discovery') detail = fmt(run.aircraft_ok) + ' discovered';
+    else if (type === 'flightstatus') detail = fmt(run.aircraft_ok) + ' found, ' + fmt(run.aircraft_error) + ' blocked';
     else detail = fmt(run.aircraft_ok) + '/' + fmt(run.aircraft_total) + ' updated';
     return '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + detail + '</div>';
   }
@@ -605,6 +620,12 @@ async function refresh() {
       '<div class="info"><span class="dot" style="background:' + (frOk && frRecent ? 'var(--green)' : !frRecent ? 'var(--amber)' : 'var(--red)') + '"></span>' +
       (fr ? ago(fr.started_at) : 'never') + '</div>' +
       healthDetail(fr, 'fleet_refresh') +
+    '</div>' +
+    '<div class="health-item">' +
+      '<div class="label">Schedule (FIS)</div>' +
+      '<div class="info"><span class="dot" style="background:' + fsColor + '"></span>' +
+      (fs ? ago(fs.started_at) + fsNote : 'never') + '</div>' +
+      healthDetail(fs, 'flightstatus') +
     '</div>' +
     '<div class="health-item">' +
       '<div class="label">Airborne Now</div>' +
