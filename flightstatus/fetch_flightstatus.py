@@ -295,19 +295,32 @@ def fetch_one(sess, flight_number: str, target: date, reset_cb):
     `sess` is a mutable {"page": ...} holder; on a block we wait then call
     `reset_cb()` to swap in a *fresh* session (the effective cure for Distil's
     per-session cap) before retrying.
+
+    Two failure modes share the same wait-and-reset retry: an HTTP block (Distil
+    403 / non-JSON in the response), and a *thrown* `page.evaluate` error — the
+    in-page `fetch()` rejecting with `TypeError: Failed to fetch` when the
+    document context is torn down (Imperva redirect/interstitial), the renderer
+    crashes, or the network blips. Catching the latter keeps one bad lookup from
+    aborting the whole batch (it propagated to run_batch and killed the run).
     """
     fn = f"LH{flight_number}"
     url = f"/service/api/fis/byflightnumber?flightNumber={fn}&date={target.isoformat()}"
     for attempt in range(1, MAX_FETCH_RETRIES + 1):
-        res = sess["page"].evaluate(_FETCH_JS, url)
-        status, ct = res.get("status"), res.get("ct", "")
-        if status == 200 and "json" in ct:
-            try:
-                return json.loads(res["body"])
-            except json.JSONDecodeError:
-                log(f"  {fn} {target}: 200 but bad JSON")
-                return None
-        log(f"  {fn} {target}: HTTP {status} ({ct[:40]}) attempt {attempt}/{MAX_FETCH_RETRIES}")
+        try:
+            res = sess["page"].evaluate(_FETCH_JS, url)
+            status, ct = res.get("status"), res.get("ct", "")
+            if status == 200 and "json" in ct:
+                try:
+                    return json.loads(res["body"])
+                except json.JSONDecodeError:
+                    log(f"  {fn} {target}: 200 but bad JSON")
+                    return None
+            log(f"  {fn} {target}: HTTP {status} ({ct[:40]}) attempt {attempt}/{MAX_FETCH_RETRIES}")
+        except Exception as e:
+            # in-page fetch rejected / evaluate threw (context destroyed, renderer
+            # crash, network blip) — recoverable; fall through to the reset+retry
+            first = str(e).splitlines()[0][:80]
+            log(f"  {fn} {target}: evaluate error ({first}) attempt {attempt}/{MAX_FETCH_RETRIES}")
         if attempt < MAX_FETCH_RETRIES:
             time.sleep(BLOCK_BACKOFF_S)
             reset_cb()  # fresh session — the real fix for a per-session block
