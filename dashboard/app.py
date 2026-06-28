@@ -4867,6 +4867,142 @@ def _berlin_fake_utc(dt):
     return dt.astimezone(_BERLIN).replace(tzinfo=timezone.utc)
 
 
+# ── Reassignment stability + booking confidence ───────────────────────
+# How often the tail published L days before departure still holds as the
+# flight nears, mined from the nightly FIS snapshots. Powers the /book
+# confidence chip and the schedule-reliability insights. Small data → always
+# carry n and fall back route → type → overall. Validated offline by
+# tools/reassignment_stability.py (identical scoring logic).
+_STAB_TTL_S = 600
+_STAB_MIN_N = 10  # below this a slice is too thin to trust on its own → fall back
+_stab_cache = {"ts": 0.0, "data": None}
+
+
+def _stab_rates1(bucket):
+    return {lead: {"p": sum(h) / len(h), "n": len(h)} for lead, h in bucket.items() if h}
+
+
+def _stab_rates2(bucket):
+    out = defaultdict(dict)
+    for (key, lead), h in bucket.items():
+        if h:
+            out[key][lead] = {"p": sum(h) / len(h), "n": len(h)}
+    return dict(out)
+
+
+def _reassignment_stability(conn):
+    """{'overall': {lead:{p,n}}, 'type'|'route'|'tail': {key:{lead:{p,n}}}}.
+
+    'final' assignment = the closest-to-departure snapshot per flight; for each
+    earlier lead we score whether that lead's tail equals the final tail. Type
+    is resolved via the aircraft table (ICAO code), not the raw FIS string.
+    Cached for _STAB_TTL_S so the per-request cost stays flat.
+    """
+    nowts = datetime.now(timezone.utc).timestamp()
+    if _stab_cache["data"] is not None and nowts - _stab_cache["ts"] < _STAB_TTL_S:
+        return _stab_cache["data"]
+
+    rows = _q(conn, """
+        SELECT o.flight_date, o.airline, o.flight_number, o.observed_date,
+               btrim(o.registration), a.aircraft_type,
+               o.dep_airport_iata, o.arr_airport_iata
+        FROM flight_status_observations o
+        LEFT JOIN aircraft a ON a.registration = o.registration
+        WHERE o.found AND o.registration IS NOT NULL
+    """)
+    groups = defaultdict(dict)  # (fdate, airline, fnum) -> {lead: snap}
+    for fdate, airline, fnum, obs, reg, atype, dep, arr in rows:
+        lead = (fdate - obs).days
+        if lead < 0:
+            continue
+        groups[(fdate, airline, fnum)][lead] = {
+            "reg": reg, "type": _CANON_SHORT.get(atype, atype) or "?",
+            "route": f"{dep or '?'}-{arr or '?'}",
+        }
+
+    overall, by_type, by_route, by_tail = (defaultdict(list) for _ in range(4))
+    for snaps in groups.values():
+        if len(snaps) < 2:
+            continue
+        fl = min(snaps)
+        final = snaps[fl]
+        for lead, s in snaps.items():
+            if lead <= fl:
+                continue
+            held = s["reg"] == final["reg"]
+            overall[lead].append(held)
+            by_type[(final["type"], lead)].append(held)
+            by_route[(final["route"], lead)].append(held)
+            by_tail[(final["reg"], lead)].append(held)
+
+    data = {
+        "overall": _stab_rates1(overall),
+        "type": _stab_rates2(by_type),
+        "route": _stab_rates2(by_route),
+        "tail": _stab_rates2(by_tail),
+    }
+    _stab_cache.update(ts=nowts, data=data)
+    return data
+
+
+def _hold_probability(stab, lead, route, short_type, min_n=_STAB_MIN_N):
+    """Most specific stability cell with enough support: route → type → overall.
+    Returns {'p','n','basis','lead'} or None when no data covers this lead."""
+    cell = (stab["route"].get(route) or {}).get(lead)
+    if cell and cell["n"] >= min_n:
+        return {**cell, "basis": "route", "lead": lead}
+    cell = (stab["type"].get(short_type) or {}).get(lead)
+    if cell and cell["n"] >= min_n:
+        return {**cell, "basis": "type", "lead": lead}
+    cell = stab["overall"].get(lead)
+    if cell:
+        return {**cell, "basis": "overall", "lead": lead}
+    return None
+
+
+def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
+                        date_from=None, date_to=None, types=_SCHEDULE_TYPES):
+    """Latest nightly snapshot per upcoming flight, optionally filtered to a tail
+    (its *current* assignment) or a route. The DISTINCT ON collapses to the newest
+    snapshot first, then reg/route filter on that — so a flight reassigned away
+    from a tail no longer shows under it. Ordered by scheduled departure."""
+    inner = ["o.found", "o.registration IS NOT NULL", "o.dep_scheduled IS NOT NULL",
+             "o.flight_date >= CURRENT_DATE"]
+    params = []
+    if date_from:
+        inner.append("o.flight_date >= %s"); params.append(date_from)
+    if date_to:
+        inner.append("o.flight_date <= %s"); params.append(date_to)
+    if types:
+        inner.append("a.aircraft_type = ANY(%s)"); params.append(list(types))
+    outer = []
+    if reg:
+        outer.append("reg = %s"); params.append(reg)
+    if dep:
+        outer.append("dep = %s"); params.append(dep)
+    if arr:
+        outer.append("arr = %s"); params.append(arr)
+    outer_sql = (" WHERE " + " AND ".join(outer)) if outer else ""
+    sql = f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (o.flight_date, o.flight_number)
+                o.flight_date AS fdate, o.airline, o.flight_number AS fnum,
+                btrim(o.registration) AS reg, a.aircraft_type AS atype,
+                o.dep_airport_iata AS dep, o.arr_airport_iata AS arr,
+                o.dep_scheduled, o.arr_scheduled, o.overall_status
+            FROM flight_status_observations o
+            LEFT JOIN aircraft a ON a.registration = o.registration
+            WHERE {" AND ".join(inner)}
+            ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+        )
+        SELECT fdate, airline, fnum, reg, atype, dep, arr,
+               dep_scheduled, arr_scheduled, overall_status
+        FROM latest{outer_sql}
+        ORDER BY dep_scheduled
+    """
+    return _q(conn, sql, params)
+
+
 @app.route("/api/schedule")
 def api_schedule():
     """Per-airframe upcoming schedule from the latest FIS snapshot of each
@@ -5058,6 +5194,7 @@ def api_schedule_flight(airline, number, fdate):
             WHERE o.flight_date=%s AND o.airline=%s AND o.flight_number=%s
             ORDER BY o.observed_date
         """, (fdate_d, airline, number))
+        stab = _reassignment_stability(conn)
     finally:
         conn.close()
 
@@ -5077,6 +5214,9 @@ def api_schedule_flight(airline, number, fdate):
     if latest:
         (reg, at, dep, arr, dep_t, arr_t, st, pa, pn, pd, raw, obs_d) = latest[0]
         raw = raw or {}
+        _lead = (fdate_d - date.today()).days
+        _hold = (_hold_probability(stab, _lead, f"{dep or '?'}-{arr or '?'}",
+                                   _CANON_SHORT.get(at, at)) if _lead >= 0 else None)
         leg = (raw.get("legs") or [{}])[0]
         depj, arrj = leg.get("departure") or {}, leg.get("arrival") or {}
         ac = raw.get("aircraftInfo") or {}
@@ -5095,8 +5235,63 @@ def api_schedule_flight(airline, number, fdate):
             "prev": f"{pa}{pn}" if pn else None,
             "prev_date": pd.isoformat() if pd else None,
             "observed": obs_d.isoformat(),
+            "lead": _lead, "hold": _hold,
         })
     return jsonify(out)
+
+
+_BOOK_SWAP_SQL = """
+    SELECT flight_date, flight_number
+    FROM flight_status_observations
+    WHERE found AND registration IS NOT NULL AND flight_date >= CURRENT_DATE
+    GROUP BY flight_date, flight_number
+    HAVING COUNT(DISTINCT registration) > 1
+"""
+
+
+@app.route("/api/book")
+def api_book():
+    """Upcoming flights for booking — tail-first (?reg=) or route-first
+    (?dep=&arr=) — each with the current published assignment and a measured
+    hold-probability (how often that tail holds to departure)."""
+    reg = (request.args.get("reg") or "").strip().upper() or None
+    dep = (request.args.get("dep") or "").strip().upper() or None
+    arr = (request.args.get("arr") or "").strip().upper() or None
+    if not reg and not dep and not arr:
+        return jsonify({"error": "provide ?reg= (tail) or ?dep=&arr= (route)"}), 400
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        rows = _latest_assignments(conn, reg=reg, dep=dep, arr=arr)
+        swapped = {(r[0], r[1]) for r in _q(conn, _BOOK_SWAP_SQL)}
+        stab = _reassignment_stability(conn)
+    finally:
+        conn.close()
+
+    today = date.today()
+    flights = []
+    for (fdate, airline, fnum, r_reg, atype, d, a, dep_t, arr_t, status) in rows:
+        short = _CANON_SHORT.get(atype, atype)
+        lead = (fdate - today).days
+        flights.append({
+            "flight": f"{airline}{fnum}", "number": fnum, "flight_date": fdate.isoformat(),
+            "dep": d, "arr": a,
+            "dep_sched": dep_t.isoformat() if dep_t else None,
+            "arr_sched": arr_t.isoformat() if arr_t else None,
+            "reg": r_reg, "type": short, "watch": r_reg in _WATCH_TAILS,
+            "lead": lead, "status": status,
+            "reassigned": (fdate, fnum) in swapped,
+            "hold": _hold_probability(stab, lead, f"{d or '?'}-{a or '?'}", short),
+        })
+    return jsonify({
+        "mode": "tail" if reg else "route",
+        "query": {"reg": reg, "dep": dep, "arr": arr},
+        "flights": flights,
+        "horizon": flights[-1]["flight_date"] if flights else None,
+        "generated": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 _SCHEDULE_HTML = """\
