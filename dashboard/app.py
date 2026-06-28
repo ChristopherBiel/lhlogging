@@ -4838,6 +4838,14 @@ _WATCH_TAILS = ("D-ABYN", "D-AIMH")
 # leg onto a single Frankfurt-local clock.
 _DE_HUBS = {"FRA", "MUC", "DUS", "BER", "HAM", "STR", "CGN", "NUE", "LEJ", "TXL"}
 
+# Airports where an LH widebody arrival usually signals a diversion/positioning
+# (i.e. not the FRA/MUC bases). Used to mark likely incidents on the
+# reschedulings timeline — a heuristic, so the hover always shows the real route.
+_DIVERSION_AIRPORTS = frozenset({
+    "EDDK", "EDLW", "EDDP", "EDDV", "EDDN", "EDSB", "ELLX",
+    "EDDH", "EDDB", "EDDL", "EDDS", "EDDR", "EDFH",
+})
+
 
 def _iso_dur_min(s):
     """Parse an ISO-8601 duration like 'PT12H40M' / 'PT2H' / 'PT55M' to minutes."""
@@ -5402,16 +5410,46 @@ def api_insights():
             FROM latest GROUP BY 1 ORDER BY 2 DESC
         """, [atype])
         stab = _reassignment_stability(conn)
+
+        # Reschedulings over time: per observed_date, how many flights had their
+        # tail change vs the previous nightly snapshot (the "re-planned today" axis).
+        reschedulings = _q(conn, """
+            WITH snaps AS (
+                SELECT o.observed_date, btrim(o.registration) AS reg,
+                       LAG(btrim(o.registration)) OVER (
+                           PARTITION BY o.flight_date, o.airline, o.flight_number
+                           ORDER BY o.observed_date) AS prev_reg
+                FROM flight_status_observations o
+                JOIN aircraft a ON a.registration = o.registration
+                WHERE o.found AND o.registration IS NOT NULL AND a.aircraft_type = %s
+            )
+            SELECT observed_date,
+                   COUNT(*) FILTER (WHERE prev_reg IS NOT NULL AND reg <> prev_reg) AS changes
+            FROM snaps GROUP BY observed_date ORDER BY observed_date
+        """, [atype])
+
+        # Likely incidents to overlay: widebody arrivals at non-base fields.
+        diversions = _q(conn, """
+            SELECT btrim(a.registration), f.flight_date, btrim(f.callsign),
+                   f.departure_airport_icao, f.arrival_airport_icao
+            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+            WHERE a.aircraft_type = %s AND NOT f.needs_review
+              AND f.arrival_airport_icao = ANY(%s)
+              AND f.flight_date >= CURRENT_DATE - 21
+            ORDER BY f.first_seen
+        """, [atype, list(_DIVERSION_AIRPORTS)])
     finally:
         conn.close()
 
     ground = {r[0]: r[1] for r in grounding}
+    resched = [{"date": r[0].isoformat(), "n": r[1]} for r in reschedulings]
     reliability = None
-    if ontime or stab["type"].get(short):
+    if ontime or stab["type"].get(short) or resched:
         reliability = {
             "ontime": [{"status": s, "n": n} for s, n in ontime],
             "hold_by_lead": stab["type"].get(short) or stab["overall"],
             "churn_by_route": stab["route"],
+            "reschedulings": resched,
         }
 
     return jsonify({
@@ -5428,6 +5466,8 @@ def api_insights():
                       for r in airframes],
         "rotation": [{"from": r[0], "to": r[1], "n": r[2]} for r in rotation],
         "reliability": reliability,
+        "diversions": [{"reg": r[0], "date": r[1].isoformat(), "callsign": r[2],
+                        "dep": r[3], "arr": r[4]} for r in diversions],
         "generated": datetime.now(timezone.utc).isoformat(),
     })
 
