@@ -3,19 +3,16 @@ Flight detector — runs every 30 minutes via cron.
 Reads position snapshots from the positions table and detects flights
 using a session-based approach.
 
-A session is a contiguous sequence of ADS-B positions for one aircraft
-with no gaps (a gap of more than 2x the poll interval ends a session).
-At each session boundary the detector evaluates:
-  - Session end: did the aircraft land? (altitude, velocity, proximity, on_ground)
-  - Session start: is there an open flight? does this look like a departure?
+The case/state-machine logic lives in lhlogging.detector_core (shared, pure,
+DB-free) so it is exercised identically by the offline replay harness
+(tools/detector_replay.py). This module is the production wiring: it loads
+positions, provides a DB-backed store + nearest-airport lookup, runs the core
+per aircraft over the rolling lookback window, and closes stale flights.
 
-Six cases at session start:
-  1. No open flight, on ground         → scan session for departure
-  2. No open flight, airborne          → infer missed departure
-  3. Open flight, on ground, same cs   → landing detected, close flight
-  4. Open flight, on ground, diff cs   → landing detected, close flight
-  5. Open flight, airborne, same cs    → coverage gap, continue flight
-  6. Open flight, airborne, diff cs    → close old (UNKN), open new (UNKN)
+A session is a contiguous sequence of ADS-B positions for one aircraft with no
+gaps (a gap of more than 4x the poll interval ends a session). See
+detector_core.process_window for the six session-start cases and the
+robustness guards (configured via config.py / env).
 
 Usage:
     python -m lhlogging.flight_detector
@@ -25,577 +22,95 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from lhlogging import config, db
+from lhlogging import detector_core as core
 from lhlogging.utils import setup_logging
 
 
+def _build_config() -> core.DetectorConfig:
+    """Build the detector core config from env-backed config.py values."""
+    return core.DetectorConfig(
+        state_poll_interval_min=config.STATE_POLL_INTERVAL_MINUTES,
+        landing_velocity_threshold_ms=config.LANDING_VELOCITY_THRESHOLD_MS,
+        landing_altitude_threshold_m=config.LANDING_ALTITUDE_THRESHOLD_M,
+        missed_departure_altitude_m=config.MISSED_DEPARTURE_ALTITUDE_M,
+        missed_departure_max_gap_h=config.MISSED_DEPARTURE_MAX_GAP_H,
+        airport_lookup_radius_km=config.AIRPORT_LOOKUP_RADIUS_KM,
+        proximity_landing_altitude_m=config.PROXIMITY_LANDING_ALTITUDE_M,
+        proximity_landing_radius_km=config.PROXIMITY_LANDING_RADIUS_KM,
+        onground_max_speed_ms=config.ONGROUND_MAX_SPEED_MS,
+        onground_max_altitude_m=config.ONGROUND_MAX_ALTITUDE_M,
+        landing_min_consecutive=config.LANDING_MIN_CONSECUTIVE,
+        missed_departure_snap=config.MISSED_DEPARTURE_SNAP,
+        scan_arrival_max_km=config.SCAN_ARRIVAL_MAX_KM,
+        min_turnaround_min=config.MIN_TURNAROUND_MIN,
+    )
+
+
+# Default config for module-level helpers (env is read at import time).
+_DEFAULT_CFG = _build_config()
+
+
 def _is_on_ground(pos: dict) -> bool | None:
+    """Back-compat shim (app/tools/backfill_flights.py) — delegates to the core."""
+    return core.is_on_ground(pos, _DEFAULT_CFG)
+
+
+class _DbStore:
+    """The flights-table store the detector core writes through (DB-backed).
+
+    Mirrors db.upsert_flight / db.update_open_flight / get_positions_for_aircraft_before
+    and preserves the operational "Opened/Closed flight" logging.
     """
-    Determine if an aircraft is on the ground using on_ground flag with
-    a velocity+altitude fallback for when OpenSky's flag is unreliable.
 
-    Returns True (on ground), False (airborne), or None (indeterminate).
-    """
-    if pos["on_ground"] is True:
-        return True
-    if pos["on_ground"] is None:
-        return None
-    # on_ground is False — check velocity+altitude fallback
-    vel = pos.get("velocity_ms")
-    alt = pos.get("altitude_m")
-    if vel is not None and alt is not None:
-        if vel < config.LANDING_VELOCITY_THRESHOLD_MS and alt < config.LANDING_ALTITUDE_THRESHOLD_M:
-            return True
-    return False
+    def __init__(self, conn, icao24, logger):
+        self.conn = conn
+        self.icao24 = icao24
+        self.logger = logger
+        self.count = 0
 
+    def positions_before(self, before, limit):
+        return db.get_positions_for_aircraft_before(self.conn, self.icao24, before, limit)
 
-def _split_sessions(positions: list[dict]) -> list[list[dict]]:
-    """Split a single aircraft's positions into sessions based on time gaps.
-
-    A session boundary exists when the gap between consecutive positions
-    exceeds 4x the poll interval (8 min with 2-min polls), tolerating
-    up to three missed samples (common during taxi/takeoff due to patchy
-    airport ADS-B coverage).
-    """
-    if not positions:
-        return []
-
-    gap_threshold = timedelta(minutes=4 * config.STATE_POLL_INTERVAL_MINUTES)
-    sessions: list[list[dict]] = [[positions[0]]]
-
-    for i in range(1, len(positions)):
-        gap = positions[i]["captured_at"] - positions[i - 1]["captured_at"]
-        if gap > gap_threshold:
-            sessions.append([positions[i]])
-        else:
-            sessions[-1].append(positions[i])
-
-    return sessions
-
-
-def _detect_landing(positions: list[dict], conn) -> dict | None:
-    """Analyze the tail positions of a session for landing indicators.
-
-    Handles three scenarios:
-    1. Direct on_ground detection (via _is_on_ground)
-    2. Descent + deceleration trend ending at low altitude near an airport
-    3. Frozen positions at low altitude near an airport (stale ADS-B after landing)
-
-    Returns {"lat": ..., "lon": ..., "captured_at": ...} if landing detected,
-    or None if the aircraft appears still airborne.
-    """
-    if not positions:
-        return None
-
-    last = positions[-1]
-
-    # Direct on-ground detection
-    if _is_on_ground(last):
-        return {
-            "lat": last["latitude"],
-            "lon": last["longitude"],
-            "captured_at": last["captured_at"],
-        }
-
-    last_alt = last.get("altitude_m")
-    low_altitude = (
-        last_alt is not None
-        and last_alt < config.PROXIMITY_LANDING_ALTITUDE_M
-    )
-
-    if not low_altitude:
-        return None
-
-    # Collect altitude and velocity trends from non-null positions
-    altitudes = [p["altitude_m"] for p in positions if p.get("altitude_m") is not None]
-    velocities = [p["velocity_ms"] for p in positions if p.get("velocity_ms") is not None]
-
-    descending = len(altitudes) >= 2 and altitudes[-1] < altitudes[0]
-    decelerating = len(velocities) >= 2 and velocities[-1] < velocities[0]
-
-    # Check for frozen positions: last N positions have identical lat/lon/alt.
-    # This is a strong signal the transponder stopped updating after landing.
-    frozen = False
-    if len(positions) >= 3:
-        frozen = all(
-            p.get("latitude") == last["latitude"]
-            and p.get("longitude") == last["longitude"]
-            and p.get("altitude_m") == last_alt
-            for p in positions[-3:]
+    def upsert(self, callsign, dep, arr, first_seen, last_seen, needs_review, origin=""):
+        db.upsert_flight(self.conn, {
+            "icao24": self.icao24, "callsign": callsign, "dep": dep, "arr": arr,
+            "first_seen": first_seen, "last_seen": last_seen, "needs_review": needs_review,
+        })
+        self.count += 1
+        self.logger.info(
+            f"Opened flight {self.icao24} from {dep or 'UNKNOWN'} "
+            f"(cs={callsign or '?'}, review={needs_review})"
         )
+        return {"icao24": self.icao24, "callsign": callsign,
+                "departure_airport_icao": dep, "first_seen": first_seen}
 
-    # Landing detected if: low altitude near airport AND (descent trend OR frozen)
-    if descending or frozen:
-        airport = db.lookup_nearest_airport(
-            conn, last["latitude"], last["longitude"],
-            max_km=config.PROXIMITY_LANDING_RADIUS_KM,
+    def update_open(self, first_seen, last_seen, arr=None, callsign=None, needs_review=False):
+        db.update_open_flight(
+            self.conn, self.icao24, first_seen, last_seen,
+            arr=arr, callsign=callsign, needs_review=needs_review,
         )
-        if airport:
-            return {
-                "lat": last["latitude"],
-                "lon": last["longitude"],
-                "captured_at": last["captured_at"],
-            }
-
-    return None
-
-
-def _detect_departure(positions: list[dict]) -> dict | None:
-    """Analyze the first ~5 positions of a session for departure indicators.
-
-    Returns {"lat": ..., "lon": ..., "captured_at": ...} if a departure
-    pattern is detected, or None if the aircraft was already at cruise.
-    """
-    if not positions:
-        return None
-
-    first = positions[0]
-
-    # Direct on-ground detection — aircraft is still at the airport
-    if _is_on_ground(first):
-        return {
-            "lat": first["latitude"],
-            "lon": first["longitude"],
-            "captured_at": first["captured_at"],
-        }
-
-    # Trend-based: climbing + accelerating from low altitude
-    if len(positions) >= 2:
-        altitudes = [p["altitude_m"] for p in positions if p.get("altitude_m") is not None]
-
-        climbing = len(altitudes) >= 2 and altitudes[-1] > altitudes[0]
-        low_start = (
-            first.get("altitude_m") is not None
-            and first["altitude_m"] < config.MISSED_DEPARTURE_ALTITUDE_M
-        )
-
-        if climbing and low_start:
-            return {
-                "lat": first["latitude"],
-                "lon": first["longitude"],
-                "captured_at": first["captured_at"],
-            }
-
-    return None
-
-
-def _get_session_callsign(session: list[dict]) -> str | None:
-    """Return the first non-null callsign in a session, stripped."""
-    for pos in session:
-        cs = pos.get("callsign")
-        if cs and cs.strip():
-            return cs.strip()
-    return None
-
-
-def _callsigns_match(cs_a: str | None, cs_b: str | None) -> bool:
-    """Compare two callsigns. If either is None, treat as matching (not enough info)."""
-    if cs_a is None or cs_b is None:
-        return True
-    return cs_a == cs_b
-
-
-def _scan_for_departure(session: list[dict]) -> dict | None:
-    """Scan a session for a ground→air transition. Returns departure info or None."""
-    prev_ground = None
-    prev_pos = None
-    for pos in session:
-        cur_ground = _is_on_ground(pos)
-        if cur_ground is None:
-            continue
-        if prev_ground is True and cur_ground is False:
-            return {
-                "lat": prev_pos["latitude"],
-                "lon": prev_pos["longitude"],
-                "captured_at": prev_pos["captured_at"],
-            }
-        prev_ground = cur_ground
-        prev_pos = pos
-    return None
-
-
-def _scan_for_arrival_after(session: list[dict], after: datetime) -> dict | None:
-    """Scan a session for an air→ground transition after the given timestamp."""
-    prev_ground = None
-    for pos in session:
-        cur_ground = _is_on_ground(pos)
-        if cur_ground is None:
-            continue
-        if pos["captured_at"] <= after:
-            prev_ground = cur_ground
-            continue
-        if prev_ground is False and cur_ground is True:
-            return {
-                "lat": pos["latitude"],
-                "lon": pos["longitude"],
-                "captured_at": pos["captured_at"],
-            }
-        prev_ground = cur_ground
-    return None
-
-
-def _make_open_flight(icao24, callsign, dep, first_seen, last_seen) -> dict:
-    """Create a normalized open flight dict for tracking within _process_aircraft."""
-    return {
-        "icao24": icao24,
-        "callsign": callsign,
-        "departure_airport_icao": dep,
-        "first_seen": first_seen,
-    }
-
-
-def _open_new_flight(conn, icao24, callsign, dep, first_seen, last_seen,
-                     needs_review, logger) -> dict:
-    """Insert a new flight and return a normalized open flight dict."""
-    db.upsert_flight(conn, {
-        "icao24": icao24,
-        "callsign": callsign,
-        "dep": dep,
-        "arr": None,
-        "first_seen": first_seen,
-        "last_seen": last_seen,
-        "needs_review": needs_review,
-    })
-    logger.info(
-        f"Opened flight {icao24} from {dep or 'UNKNOWN'} "
-        f"(cs={callsign or '?'}, review={needs_review})"
-    )
-    return _make_open_flight(icao24, callsign, dep, first_seen, last_seen)
-
-
-def _close_flight(conn, open_flight, last_seen, arr, callsign, needs_review, logger):
-    """Close an open flight with the given arrival info."""
-    db.update_open_flight(
-        conn,
-        open_flight["icao24"],
-        open_flight["first_seen"],
-        last_seen,
-        arr=arr,
-        callsign=callsign,
-        needs_review=needs_review,
-    )
-    dep = open_flight.get("departure_airport_icao") or "?"
-    logger.info(
-        f"Closed flight {open_flight['icao24']} {dep}→{arr or '?'} "
-        f"(cs={callsign or '?'}, review={needs_review})"
-    )
-
-
-def _process_aircraft(
-    conn,
-    icao24: str,
-    sessions: list[list[dict]],
-    open_flight: dict | None,
-    last_completed: dict | None,
-    logger,
-) -> int:
-    """
-    Unified session-walk for one aircraft.
-
-    Walks sessions in chronological order. At each session boundary,
-    evaluates the session end (landing?) and session start (which of the
-    6 cases applies?). Also scans within sessions for transitions.
-
-    Returns the number of flight records created or closed.
-    """
-    count = 0
-    prev_session = None
-
-    for session in sessions:
-        if not session:
-            continue
-
-        first_pos = session[0]
-        session_cs = _get_session_callsign(session)
-        starts_on_ground = _is_on_ground(first_pos)
-
-        # --- Evaluate session end (previous session's tail) ---
-        # Before classifying the new session start, check if the previous
-        # session's tail indicates a landing. This must happen first so that
-        # session-start classification sees the correct open_flight state.
-        if open_flight and prev_session:
-            tail = prev_session[-15:]
-            landing_info = _detect_landing(tail, conn)
-            if landing_info:
-                arr_icao = db.lookup_nearest_airport(
-                    conn, landing_info["lat"], landing_info["lon"]
-                )
-                dep_icao = open_flight.get("departure_airport_icao")
-                review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
-                flight_cs = (open_flight.get("callsign") or "").strip() or None
-                _close_flight(
-                    conn, open_flight, landing_info["captured_at"],
-                    arr=arr_icao, callsign=flight_cs,
-                    needs_review=review, logger=logger,
-                )
-                count += 1
-                open_flight = None
-
-        # --- Evaluate session start ---
-
-        if open_flight is None:
-            # Skip sessions already covered by a recently completed flight.
-            # This prevents reprocessing positions from overlapping lookback windows.
-            if (
-                last_completed
-                and last_completed["last_seen"] >= first_pos["captured_at"]
-            ):
-                continue
-
-            if starts_on_ground is True:
-                # CASE 1: No open flight, on ground.
-                # Scan session for a ground→air departure transition.
-                dep_result = _scan_for_departure(session)
-                if dep_result:
-                    dep_icao = db.lookup_nearest_airport(
-                        conn, dep_result["lat"], dep_result["lon"]
-                    )
-                    open_flight = _open_new_flight(
-                        conn, icao24, session_cs, dep_icao,
-                        dep_result["captured_at"], session[-1]["captured_at"],
-                        needs_review=False, logger=logger,
-                    )
-                    count += 1
-
-                    # Check if the session also contains a landing (short flight)
-                    arr_result = _scan_for_arrival_after(
-                        session, dep_result["captured_at"]
-                    )
-                    if arr_result:
-                        arr_icao = db.lookup_nearest_airport(
-                            conn, arr_result["lat"], arr_result["lon"]
-                        )
-                        review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
-                        _close_flight(
-                            conn, open_flight, arr_result["captured_at"],
-                            arr=arr_icao, callsign=session_cs,
-                            needs_review=review, logger=logger,
-                        )
-                        open_flight = None
-
-            elif starts_on_ground is False:
-                # CASE 2: No open flight, airborne. Missed departure.
-                dep_info = _detect_departure(session[:5])
-                dep_icao = None
-                review = True
-                if dep_info:
-                    dep_icao = db.lookup_nearest_airport(
-                        conn, dep_info["lat"], dep_info["lon"]
-                    )
-                    if dep_icao:
-                        review = False
-
-                # Fallback: if position-based detection failed (e.g. at cruise),
-                # use last completed flight's arrival airport as departure —
-                # but only if the gap is short enough that the aircraft likely
-                # didn't fly elsewhere in between.
-                if not dep_icao and last_completed:
-                    gap = first_pos["captured_at"] - last_completed["last_seen"]
-                    max_gap = timedelta(hours=config.MISSED_DEPARTURE_MAX_GAP_H)
-                    if gap <= max_gap:
-                        dep_icao = (
-                            last_completed.get("arrival_airport_icao") or ""
-                        ).strip() or None
-                        if dep_icao and dep_icao != "UNKN":
-                            review = False
-                            logger.info(
-                                f"Case 2 fallback: using last arrival {dep_icao} "
-                                f"as departure for {icao24} "
-                                f"(gap={gap.total_seconds() / 3600:.1f}h)"
-                            )
-
-                open_flight = _open_new_flight(
-                    conn, icao24, session_cs, dep_icao,
-                    session[0]["captured_at"], session[-1]["captured_at"],
-                    needs_review=review, logger=logger,
-                )
-                count += 1
-
-                # Check if session also contains a landing
-                arr_result = _scan_for_arrival_after(
-                    session, session[0]["captured_at"]
-                )
-                if arr_result:
-                    arr_icao = db.lookup_nearest_airport(
-                        conn, arr_result["lat"], arr_result["lon"]
-                    )
-                    review_arr = bool(dep_icao and arr_icao and dep_icao == arr_icao)
-                    _close_flight(
-                        conn, open_flight, arr_result["captured_at"],
-                        arr=arr_icao, callsign=session_cs,
-                        needs_review=review or review_arr, logger=logger,
-                    )
-                    open_flight = None
-
-            # starts_on_ground is None (indeterminate) — skip
-
-        else:
-            # We have an open flight
-            flight_cs = (open_flight.get("callsign") or "").strip() or None
-            cs_match = _callsigns_match(flight_cs, session_cs)
-
-            if starts_on_ground is True:
-                # CASE 3 (same cs) / CASE 4 (diff cs): Landing detected.
-                # Use the last ~5 positions before this session for arrival
-                # airport resolution (descent trend).
-                landing_positions = db.get_positions_for_aircraft_before(
-                    conn, icao24, first_pos["captured_at"], limit=15
-                )
-                landing_info = _detect_landing(landing_positions, conn)
-
-                if landing_info:
-                    arr_icao = db.lookup_nearest_airport(
-                        conn, landing_info["lat"], landing_info["lon"]
-                    )
-                    last_seen = landing_info["captured_at"]
-                else:
-                    # Fallback: aircraft is on ground now, use current position
-                    arr_icao = db.lookup_nearest_airport(
-                        conn, first_pos["latitude"], first_pos["longitude"]
-                    )
-                    last_seen = first_pos["captured_at"]
-
-                dep_icao = open_flight.get("departure_airport_icao")
-                review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
-
-                _close_flight(
-                    conn, open_flight, last_seen,
-                    arr=arr_icao, callsign=session_cs or flight_cs,
-                    needs_review=review, logger=logger,
-                )
-                count += 1
-                open_flight = None
-
-                # After closing, scan this session for a new departure
-                dep_result = _scan_for_departure(session)
-                if dep_result:
-                    new_dep_icao = db.lookup_nearest_airport(
-                        conn, dep_result["lat"], dep_result["lon"]
-                    )
-                    new_cs = _get_session_callsign(
-                        [p for p in session if p["captured_at"] >= dep_result["captured_at"]]
-                    ) or session_cs
-                    open_flight = _open_new_flight(
-                        conn, icao24, new_cs, new_dep_icao,
-                        dep_result["captured_at"], session[-1]["captured_at"],
-                        needs_review=False, logger=logger,
-                    )
-                    count += 1
-
-                    # Check for arrival within the same session
-                    arr_result = _scan_for_arrival_after(
-                        session, dep_result["captured_at"]
-                    )
-                    if arr_result:
-                        arr_icao2 = db.lookup_nearest_airport(
-                            conn, arr_result["lat"], arr_result["lon"]
-                        )
-                        review2 = bool(
-                            new_dep_icao and arr_icao2 and new_dep_icao == arr_icao2
-                        )
-                        _close_flight(
-                            conn, open_flight, arr_result["captured_at"],
-                            arr=arr_icao2, callsign=new_cs,
-                            needs_review=review2, logger=logger,
-                        )
-                        open_flight = None
-
-            elif starts_on_ground is False:
-                if cs_match:
-                    # CASE 5: Coverage gap, same callsign. Continue flight.
-                    db.update_open_flight(
-                        conn, icao24, open_flight["first_seen"],
-                        session[-1]["captured_at"],
-                        callsign=session_cs or flight_cs,
-                    )
-
-                    # Scan session for a landing
-                    arr_result = _scan_for_arrival_after(
-                        session, session[0]["captured_at"]
-                    )
-                    if arr_result:
-                        arr_icao = db.lookup_nearest_airport(
-                            conn, arr_result["lat"], arr_result["lon"]
-                        )
-                        dep_icao = open_flight.get("departure_airport_icao")
-                        review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
-                        _close_flight(
-                            conn, open_flight, arr_result["captured_at"],
-                            arr=arr_icao, callsign=session_cs or flight_cs,
-                            needs_review=review, logger=logger,
-                        )
-                        count += 1
-                        open_flight = None
-
-                else:
-                    # CASE 6: Different callsign, airborne. Close old, open new.
-                    _close_flight(
-                        conn, open_flight, session[0]["captured_at"],
-                        arr="UNKN", callsign=flight_cs,
-                        needs_review=True, logger=logger,
-                    )
-                    count += 1
-
-                    open_flight = _open_new_flight(
-                        conn, icao24, session_cs, None,
-                        session[0]["captured_at"], session[-1]["captured_at"],
-                        needs_review=True, logger=logger,
-                    )
-                    count += 1
-
-                    # Scan session for a landing
-                    arr_result = _scan_for_arrival_after(
-                        session, session[0]["captured_at"]
-                    )
-                    if arr_result:
-                        arr_icao = db.lookup_nearest_airport(
-                            conn, arr_result["lat"], arr_result["lon"]
-                        )
-                        _close_flight(
-                            conn, open_flight, arr_result["captured_at"],
-                            arr=arr_icao, callsign=session_cs,
-                            needs_review=True, logger=logger,
-                        )
-                        open_flight = None
-
-            # starts_on_ground is None — update last_seen conservatively
-            elif starts_on_ground is None and open_flight:
-                db.update_open_flight(
-                    conn, icao24, open_flight["first_seen"],
-                    session[-1]["captured_at"],
-                    callsign=session_cs or flight_cs,
-                )
-
-        prev_session = session
-
-    # After all sessions: if flight is still open, update last_seen to latest position
-    if open_flight and sessions and sessions[-1]:
-        latest = sessions[-1][-1]
-        flight_cs = (open_flight.get("callsign") or "").strip() or None
-        latest_cs = _get_session_callsign(sessions[-1])
-
-        # Evaluate the end of the last session for landing
-        tail = sessions[-1][-15:]
-        landing_info = _detect_landing(tail, conn)
-        if landing_info:
-            arr_icao = db.lookup_nearest_airport(
-                conn, landing_info["lat"], landing_info["lon"]
-            )
-            dep_icao = open_flight.get("departure_airport_icao")
-            review = bool(dep_icao and arr_icao and dep_icao == arr_icao)
-            _close_flight(
-                conn, open_flight, landing_info["captured_at"],
-                arr=arr_icao, callsign=latest_cs or flight_cs,
-                needs_review=review, logger=logger,
-            )
-            count += 1
-        else:
-            db.update_open_flight(
-                conn, icao24, open_flight["first_seen"],
-                latest["captured_at"],
-                callsign=latest_cs or flight_cs,
+        if arr:
+            self.count += 1
+            self.logger.info(
+                f"Closed flight {self.icao24} →{arr} "
+                f"(cs={callsign or '?'}, review={needs_review})"
             )
 
-    return count
+
+def _process_aircraft(conn, icao24, sessions, open_flight, last_completed, logger, cfg) -> int:
+    """Run the detector core for one aircraft over one lookback window.
+
+    open_flight/last_completed are the dicts from db.get_open_flights /
+    db.get_last_completed_flights (the core reads only the keys it needs).
+    Returns the number of flight rows opened/closed (for stats).
+    """
+    store = _DbStore(conn, icao24, logger)
+
+    def nearest(lat, lon, max_km=None):
+        return db.lookup_nearest_airport(conn, lat, lon, max_km=max_km)
+
+    core.process_window(store, icao24, sessions, open_flight, last_completed, nearest, cfg)
+    return store.count
 
 
 def _close_stale_flights(conn, logger, max_age_hours: int = 24) -> int:
@@ -682,6 +197,7 @@ def _close_stale_flights(conn, logger, max_age_hours: int = 24) -> int:
 def main() -> int:
     logger = setup_logging("flight_detector")
     logger.info("Flight detector starting")
+    cfg = _build_config()
 
     try:
         conn = db.get_connection()
@@ -735,12 +251,12 @@ def main() -> int:
     # Process each active aircraft
     total = 0
     for icao24, acft_positions in grouped.items():
-        sessions = _split_sessions(acft_positions)
+        sessions = core.split_sessions(acft_positions, cfg)
         open_flight = open_flights_map.get(icao24)
         last_completed = last_completed_map.get(icao24)
         try:
             n = _process_aircraft(
-                conn, icao24, sessions, open_flight, last_completed, logger
+                conn, icao24, sessions, open_flight, last_completed, logger, cfg
             )
             total += n
         except Exception as e:

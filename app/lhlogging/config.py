@@ -73,6 +73,19 @@ PROXIMITY_LANDING_ALTITUDE_M: float = float(_optional("PROXIMITY_LANDING_ALTITUD
 PROXIMITY_LANDING_RADIUS_KM: float = float(_optional("PROXIMITY_LANDING_RADIUS_KM", "8.0"))
 PROXIMITY_LANDING_MIN_STALE_MINUTES: int = int(_optional("PROXIMITY_LANDING_MIN_STALE_MINUTES", "10"))
 
+# Detector robustness guards (see lhlogging.detector_core). Defaults ON; each can
+# be disabled live via env (e.g. ONGROUND_MAX_SPEED_MS=0) without a code change.
+# A single spurious on_ground=true sample at cruise was splitting one flight into
+# two — these distrust physically impossible "on ground" reports and over-eager
+# nearest-airport snapping. Validated by tools/run_corpus.py + tools/eval_detector.py.
+ONGROUND_MAX_SPEED_MS: float = float(_optional("ONGROUND_MAX_SPEED_MS", "80.0"))   # P1
+ONGROUND_MAX_ALTITUDE_M: float = float(_optional("ONGROUND_MAX_ALTITUDE_M", "6000.0"))  # P1 (alt-glitch)
+LANDING_MIN_CONSECUTIVE: int = int(_optional("LANDING_MIN_CONSECUTIVE", "1"))      # P2 (1 = off)
+MISSED_DEPARTURE_SNAP: bool = _optional("MISSED_DEPARTURE_SNAP", "true").strip().lower() in (
+    "1", "true", "yes", "on")                                                       # P3
+SCAN_ARRIVAL_MAX_KM: float = float(_optional("SCAN_ARRIVAL_MAX_KM", "8.0"))        # P4
+MIN_TURNAROUND_MIN: int = int(_optional("MIN_TURNAROUND_MIN", "0"))               # P5 (0 = off)
+
 # Logging
 LOG_DIR: str = _optional("LOG_DIR", "/var/log/lhlogging")
 LOG_LEVEL: str = _optional("LOG_LEVEL", "INFO")
