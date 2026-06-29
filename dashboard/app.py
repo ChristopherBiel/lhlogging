@@ -2748,6 +2748,49 @@ def _icao_to_iata(code):
     return _ICAO_IATA.get(code, code)
 
 
+def _route_endpoints(conn):
+    """callsign -> {endpoint ICAOs} from flight_routes; {} if the table is absent
+    (migration 004 not yet applied) so stitching degrades to a no-op."""
+    try:
+        rows = _q(conn, "SELECT btrim(callsign), departure_airport_icao, "
+                        "arrival_airport_icao FROM flight_routes")
+    except Exception:
+        return {}
+    out = {}
+    for cs, dep, arr in rows:
+        s = {(c or "").strip() for c in (dep, arr)}
+        out[cs] = s - {"", "UNKN"}
+    return out
+
+
+def _stitch_phantom_legs(legs, endpoints):
+    """Collapse consecutive same-callsign legs split by a phantom waypoint —
+    leg1.arr == leg2.dep where that airport is NOT an endpoint of the callsign's
+    reference route (the on_ground cruise-snap signature). Returns a new list;
+    the merged leg keeps leg1's dep/start and takes leg2's arr/end. Defensive
+    read-time mirror of the detector fix, so phantom splits never reach the
+    plan-vs-actual overlay even before backfill catches them.
+
+    Each leg is a dict with cs / dep / arr (ICAO) and start / end.
+    """
+    if not legs:
+        return legs
+    out = [dict(legs[0])]
+    for leg in legs[1:]:
+        prev = out[-1]
+        cs = (leg.get("cs") or "").strip()
+        shared = (prev.get("arr") or "").strip()
+        ep = endpoints.get(cs)
+        if (cs and cs == (prev.get("cs") or "").strip() and shared
+                and shared == (leg.get("dep") or "").strip()
+                and ep is not None and shared not in ep):
+            prev["arr"] = leg.get("arr")
+            prev["end"] = leg.get("end")
+        else:
+            out.append(dict(leg))
+    return out
+
+
 def _digits(s):
     return "".join(c for c in (s or "") if c.isdigit())
 
@@ -2946,19 +2989,29 @@ def api_schedule():
               AND f.departure_airport_icao IS NOT NULL
             ORDER BY a.registration, f.first_seen
         """, (list(_SCHEDULE_TYPES),))
+        endpoints = _route_endpoints(conn)
     finally:
         conn.close()
 
     swapped = {(r[0], r[1]) for r in swap_rows}
 
-    # Actual legs per registration, on the same fake-UTC (Berlin) axis.
-    actuals = defaultdict(list)
+    # Actual legs per registration, on the same fake-UTC (Berlin) axis. Stitch
+    # phantom cruise-snap splits (A→phantom + phantom→B) back into one leg so the
+    # plan-vs-actual overlay never shows a false "extra" bar / "deviation".
+    raw_actuals = defaultdict(list)
     for reg, cs, dep_icao, arr_icao, fs, ls in act_rows:
-        actuals[reg].append({
-            "cs": (cs or "").strip(),
-            "dep": _icao_to_iata(dep_icao), "arr": _icao_to_iata(arr_icao),
-            "start": _berlin_fake_utc(fs), "end": _berlin_fake_utc(ls), "used": False,
+        raw_actuals[reg].append({
+            "cs": (cs or "").strip(), "dep": dep_icao, "arr": arr_icao,
+            "start": _berlin_fake_utc(fs), "end": _berlin_fake_utc(ls),
         })
+    actuals = defaultdict(list)
+    for reg, legs in raw_actuals.items():
+        for leg in _stitch_phantom_legs(legs, endpoints):
+            actuals[reg].append({
+                "cs": leg["cs"],
+                "dep": _icao_to_iata(leg["dep"]), "arr": _icao_to_iata(leg["arr"]),
+                "start": leg["start"], "end": leg["end"], "used": False,
+            })
 
     by_reg = defaultdict(list)
     types = {}
@@ -3299,6 +3352,17 @@ def api_insights():
             WHERE a.aircraft_type = %s AND NOT f.needs_review
               AND f.arrival_airport_icao = ANY(%s)
               AND f.flight_date >= CURRENT_DATE - 21
+              AND NOT EXISTS (
+                  -- exclude interior phantoms / continued stops: the same
+                  -- callsign departs this same airport again shortly after,
+                  -- so it wasn't a terminal incident.
+                  SELECT 1 FROM flights f2
+                  WHERE f2.icao24 = f.icao24
+                    AND btrim(f2.callsign) = btrim(f.callsign)
+                    AND btrim(f2.departure_airport_icao) = btrim(f.arrival_airport_icao)
+                    AND f2.first_seen > f.first_seen
+                    AND f2.first_seen < f.last_seen + INTERVAL '6 hours'
+              )
             ORDER BY f.first_seen
         """, [atype, list(_DIVERSION_AIRPORTS)])
     finally:
