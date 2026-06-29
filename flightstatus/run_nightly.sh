@@ -11,7 +11,10 @@
 set -euo pipefail
 
 if [ "${NIGHTLY_JITTER:-1}" = "1" ]; then
-  SLEEP=$(( RANDOM % 3600 ))
+  # Random start delay (default up to 2h) so the two daily runs land at
+  # unpredictable, spread-out times rather than a fixed instant.
+  MAX_JITTER="${NIGHTLY_JITTER_MAX_S:-7200}"
+  SLEEP=$(( RANDOM % MAX_JITTER ))
   echo "$(date -u +%FT%TZ) jitter: sleeping ${SLEEP}s before run"
   sleep "$SLEEP"
 fi

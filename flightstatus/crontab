@@ -2,6 +2,9 @@ SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 TZ=Europe/Berlin
 
-# Nightly Lufthansa flight-status fetch. Fires at 22:00 Europe/Berlin; run_nightly.sh
-# then adds a random ≤1h jitter so the actual request lands within 22:00–23:00.
-0 22 * * *  root  . /etc/environment && /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
+# Lufthansa flight-status fetch — twice daily for resilience (one failed run no
+# longer loses a day) and tighter incident→reschedule correlation. Each then
+# sleeps a random 0–2h (run_nightly.sh), so the actual hits are spread and
+# unpredictable: morning ~08:00–10:00, evening ~20:00–22:00 Europe/Berlin.
+0 8  * * *  root  . /etc/environment && /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
+0 20 * * *  root  . /etc/environment && /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1

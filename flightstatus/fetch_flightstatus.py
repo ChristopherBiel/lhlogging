@@ -143,6 +143,11 @@ def upsert_observation(conn: psycopg.Connection, obs: dict) -> None:
                 prev_flight_number = EXCLUDED.prev_flight_number,
                 prev_flight_date   = EXCLUDED.prev_flight_date,
                 raw                = EXCLUDED.raw
+            -- With twice-daily runs, don't let a blocked/not-found second run of
+            -- the same day clobber a good assignment the first run already
+            -- captured: only overwrite when the new row found a flight, or the
+            -- existing row hadn't found one either.
+            WHERE EXCLUDED.found OR NOT flight_status_observations.found
             """,
             obs,
         )
@@ -365,6 +370,7 @@ def run_batch(dry_run: bool = False) -> int:
             if key not in queued:
                 queued.add(key)
                 work.append((s["flight_number"], t, s["seed_type"], 0))
+    random.shuffle(work)  # randomise lookup order so the request pattern differs each run
 
     run_id = log_batch_start(conn)
     total = ok = err = upserted = chained = resets = 0
