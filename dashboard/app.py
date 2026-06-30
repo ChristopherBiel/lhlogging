@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 import psycopg.rows
 from dotenv import load_dotenv
-from flask import Flask, jsonify, redirect, render_template_string, request
+from flask import Flask, Response, jsonify, redirect, render_template_string, request
 
 load_dotenv()
 
@@ -39,6 +39,181 @@ def _q(conn, sql, params=None):
 def _q1(conn, sql, params=None):
     rows = _q(conn, sql, params)
     return rows[0][0] if rows else None
+
+
+# ── Faceplate design system (vendored from github:ChristopherBiel/faceplate#v1.0.0) ──
+# Embedded as constants so the single-file deploy model keeps working
+# (the Dockerfile copies only app.py). Pages load /faceplate.css and alias
+# their semantic CSS variables onto the --fp-* tokens defined here.
+_FACEPLATE_CSS = r"""/*! Faceplate v1.0 — Christopher Biel's portable design system
+ *  TE-inspired · hard square edges · sage + terracotta · Manrope + IBM Plex Mono
+ *  Everything is prefixed `--fp-` / `.fp-` to avoid collisions in existing codebases.
+ *  Styles live in @layer fp.* so a project's own (unlayered) CSS always wins / can override.
+ *  Fonts are NOT imported here — see fonts.css (self-host) or add a Google Fonts <link>.
+ */
+
+@layer fp.tokens, fp.base, fp.components, fp.utilities;
+
+/* ============================================================ TOKENS */
+@layer fp.tokens {
+  :root {
+    /* base neutrals */
+    --fp-bg:#FFFFFF;
+    --fp-surface:#F7F8F8;
+    --fp-border:#E4E7E9;
+    --fp-muted:#8A9097;
+    --fp-body:#52585E;
+    --fp-ink:#1C1E21;
+
+    /* accent — sage */
+    --fp-sage:#5E7A50;
+    --fp-sage-deep:#455C3A;   /* small text / links on white (AA) */
+    --fp-sage-tint:#DCE5D2;
+    --fp-sage-xl:#EFF3EA;
+
+    /* complement — terracotta */
+    --fp-terra:#BB6240;
+    --fp-terra-deep:#9E4F33;
+    --fp-terra-tint:#F0D9CC;
+
+    /* signature neutral — #CBCBCB reads as CB·CB·CB */
+    --fp-gray:#CBCBCB;
+
+    /* data visualization (categorical) */
+    --fp-dv-1:#5E7A50; --fp-dv-2:#BB6240; --fp-dv-3:#D6A23C;
+    --fp-dv-4:#2C7A78; --fp-dv-5:#8A6A53; --fp-dv-6:#9BA0A4;
+
+    /* typography */
+    --fp-font-sans:"Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --fp-font-mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --fp-text-xs:.75rem;     --fp-text-sm:.875rem;   --fp-text-base:1rem;
+    --fp-text-h3:1.25rem;    --fp-text-h2:1.5625rem; --fp-text-h1:2rem;  --fp-text-display:2.5rem;
+    --fp-leading:1.65;       --fp-leading-tight:1.15;
+    --fp-track-tight:-.02em; --fp-track-label:.12em;
+
+    /* shape & structure */
+    --fp-radius:0;          /* hard square edges — the Faceplate signature */
+    --fp-keyline:1.5px;     /* structural border (ink) */
+    --fp-hairline:1px;
+    --fp-rule:var(--fp-sage);
+
+    /* spacing — 8px base */
+    --fp-space-1:.25rem; --fp-space-2:.5rem; --fp-space-3:1rem;
+    --fp-space-4:1.5rem; --fp-space-5:2rem; --fp-space-6:3rem; --fp-space-7:4rem;
+  }
+}
+
+/* ============================================================ BASE (opt-in) */
+/* Apply class `fp` to a wrapper (or <body>) to adopt the base type/colors.
+   Kept opt-in so Faceplate never restyles a host project globally. */
+@layer fp.base {
+  .fp {
+    font-family:var(--fp-font-sans);
+    color:var(--fp-ink);
+    background:var(--fp-bg);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .fp :where(p){ color:var(--fp-body); line-height:var(--fp-leading); }
+  .fp :where(a):not([class]){ color:var(--fp-sage-deep); }
+}
+
+/* ============================================================ COMPONENTS */
+@layer fp.components {
+  /* --- type --- */
+  .fp-display{ font-weight:800; font-size:var(--fp-text-display); letter-spacing:var(--fp-track-tight); line-height:var(--fp-leading-tight); }
+  .fp-h1{ font-weight:800; font-size:var(--fp-text-h1); letter-spacing:var(--fp-track-tight); line-height:1.15; }
+  .fp-h2{ font-weight:700; font-size:var(--fp-text-h2); letter-spacing:-.01em; line-height:1.2; }
+  .fp-h3{ font-weight:600; font-size:var(--fp-text-h3); line-height:1.3; }
+  .fp-body{ font-size:var(--fp-text-base); line-height:var(--fp-leading); color:var(--fp-body); }
+  .fp-mono{ font-family:var(--fp-font-mono); }
+  .fp-label{ font-family:var(--fp-font-mono); font-weight:500; font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-muted); }
+  .fp-kicker{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-sage); }
+  .fp-wordmark{ font-family:var(--fp-font-sans); font-weight:800; letter-spacing:var(--fp-track-tight); line-height:1; }
+
+  /* accent rule under a heading */
+  .fp-rule{ display:block; height:3px; width:48px; background:var(--fp-rule); border:0; }
+
+  /* monogram / mark plate (square, #CBCBCB by default) */
+  .fp-plate{ display:inline-grid; place-items:center; aspect-ratio:1; background:var(--fp-gray); color:var(--fp-ink); border-radius:var(--fp-radius); }
+  .fp-plate--sage{ background:var(--fp-sage); color:#fff; }
+
+  /* buttons */
+  .fp-btn{ display:inline-block; font-family:var(--fp-font-sans); font-weight:700; font-size:.8125rem; letter-spacing:.01em;
+           padding:.62em 1.05em; border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius);
+           background:var(--fp-bg); color:var(--fp-ink); cursor:pointer; text-decoration:none; line-height:1; }
+  .fp-btn--solid{ background:var(--fp-sage); border-color:var(--fp-sage); color:#fff; }
+  .fp-btn--terra{ background:var(--fp-terra); border-color:var(--fp-terra); color:#fff; }
+  .fp-btn--ghost{ background:transparent; }
+
+  /* chips & topical tags (chip + icon) */
+  .fp-chip{ display:inline-flex; align-items:center; gap:.45em; font-family:var(--fp-font-mono); font-weight:600;
+            font-size:.65rem; letter-spacing:.06em; text-transform:uppercase;
+            padding:.32em .62em; border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); }
+  .fp-chip--sage{ background:var(--fp-sage-tint); }
+  .fp-chip--terra{ background:var(--fp-terra-tint); }
+  .fp-chip--gray{ background:var(--fp-gray); }
+  .fp-chip svg{ width:1.05em; height:1.05em; }
+  .fp-tag{ /* alias for a chip used as a category tag with an icon */ }
+
+  /* card & panel */
+  .fp-card{ background:var(--fp-bg); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); padding:var(--fp-space-4); }
+  .fp-panel{ background:var(--fp-surface); border:var(--fp-hairline) solid var(--fp-border); border-radius:var(--fp-radius); padding:var(--fp-space-4); }
+
+  /* segmented control */
+  .fp-seg{ display:inline-flex; border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); }
+  .fp-seg > *{ font-family:var(--fp-font-mono); font-size:.75rem; padding:.42em .82em; border-right:var(--fp-keyline) solid var(--fp-ink); background:transparent; }
+  .fp-seg > *:last-child{ border-right:0; }
+  .fp-seg > .is-on, .fp-seg > [aria-selected="true"]{ background:var(--fp-ink); color:#fff; }
+
+  /* dividers */
+  .fp-hr{ border:0; border-top:2px solid var(--fp-ink); }
+  .fp-hr--dashed{ border:0; border-top:2px dashed var(--fp-ink); }
+  .fp-hr--gray{ border:0; border-top:var(--fp-hairline) solid var(--fp-gray); }
+
+  /* link */
+  .fp-link{ color:var(--fp-sage-deep); font-weight:600; text-decoration:none; border-bottom:2px solid var(--fp-sage-tint); }
+
+  /* intensity bands (reversed surfaces for registers 03/04) */
+  .fp-band{ background:var(--fp-sage); color:#fff; }
+  .fp-band--terra{ background:var(--fp-terra); color:#fff; }
+  .fp-band--ink{ background:var(--fp-ink); color:#fff; }
+}
+
+/* ============================================================ UTILITIES */
+@layer fp.utilities {
+  .fp-square{ border-radius:0 !important; }
+  .fp-c-ink{ color:var(--fp-ink); }   .fp-c-sage{ color:var(--fp-sage); }   .fp-c-terra{ color:var(--fp-terra); }
+  .fp-c-muted{ color:var(--fp-muted); } .fp-c-body{ color:var(--fp-body); }
+  .fp-bg-sage{ background:var(--fp-sage); color:#fff; }
+  .fp-bg-gray{ background:var(--fp-gray); color:var(--fp-ink); }
+  .fp-bg-surface{ background:var(--fp-surface); }
+}"""
+
+_FAVICON_SVG = r"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Christopher Biel favicon">
+  <!-- Favicon: sage step-response curve on transparent. Setpoint line dropped for clarity at tiny sizes. -->
+  <path d="M 8.00,52.00 L 15.68,52.00 L 16.32,51.84 L 16.96,51.12 L 17.60,49.92 L 18.24,48.32 L 18.88,46.42 L 19.52,44.29 L 20.16,42.00 L 20.80,39.63 L 21.44,37.23 L 22.08,34.85 L 22.72,32.54 L 23.36,30.34 L 24.00,28.26 L 24.64,26.35 L 25.28,24.61 L 25.92,23.06 L 26.56,21.69 L 27.20,20.52 L 27.84,19.54 L 28.48,18.74 L 29.12,18.12 L 29.76,17.65 L 30.40,17.34 L 31.04,17.16 L 31.68,17.11 L 32.32,17.16 L 32.96,17.30 L 33.60,17.51 L 34.24,17.79 L 34.88,18.11 L 35.52,18.46 L 36.16,18.84 L 36.80,19.23 L 37.44,19.62 L 38.08,20.01 L 38.72,20.38 L 39.36,20.73 L 40.00,21.06 L 40.64,21.37 L 41.28,21.64 L 41.92,21.89 L 42.56,22.10 L 43.20,22.29 L 43.84,22.44 L 44.48,22.56 L 45.12,22.66 L 45.76,22.72 L 46.40,22.77 L 47.04,22.79 L 47.68,22.80 L 48.32,22.78 L 48.96,22.76 L 49.60,22.72 L 50.24,22.67 L 50.88,22.62 L 51.52,22.56 L 52.16,22.50 L 52.80,22.43 L 53.44,22.37 L 54.08,22.31 L 54.72,22.25 L 55.36,22.19 L 56.00,22.14"
+        fill="none" stroke="#5E7A50" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="56" cy="22.14" r="3.6" fill="#5E7A50"/>
+</svg>"""
+
+
+@app.route("/faceplate.css")
+def faceplate_css():
+    return Response(
+        _FACEPLATE_CSS,
+        mimetype="text/css",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.route("/favicon.svg")
+def favicon_svg():
+    return Response(
+        _FAVICON_SVG,
+        mimetype="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.route("/api/stats")
@@ -256,35 +431,38 @@ _HTML = """\
 <title>LH Fleet Monitor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  /* chassis — light cream Teenage-Engineering faceplate */
-  --bg:#f3efe6;
-  --surface:#ffffff;
-  --surface2:#f1ebdd;
-  --border:#e6dfce;
-  --line:#d3c9b4;
-  --text:#36342c;
-  --text-bright:#1a1812;
-  --muted:#9d9482;
-  /* pastel "ink" accents — readable on cream and used as solid key fills */
-  --accent:#6aa0d8;   /* sky */
-  --green:#5cb487;    /* mint */
-  --amber:#d3a23c;    /* butter */
-  --red:#e07b6b;      /* coral */
-  --purple:#a487d6;   /* lavender */
-  --cyan:#46b2a8;     /* teal */
-  /* pale pastel fills */
-  --accent-dim:#dcebf9;
-  --green-dim:#d7f0e2;
-  --amber-dim:#f5ead0;
-  --red-dim:#f8ddd6;
-  --purple-dim:#e8defa;
-  --radius:0;
-  --radius-sm:0;
-  --mono:'Space Mono','SFMono-Regular',ui-monospace,Menlo,monospace;
-  --sans:'Space Grotesk',-apple-system,'Segoe UI',system-ui,sans-serif;
+  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css).
+     Sage primary, terracotta complement, ochre/teal/clay for categorical data. */
+  --bg:var(--fp-surface);          /* soft off-white page; cards sit on white   */
+  --surface:var(--fp-bg);          /* #fff cards / panels                        */
+  --surface2:var(--fp-sage-xl);    /* faint sage wells, tracks, hovers           */
+  --border:var(--fp-border);
+  --line:var(--fp-gray);           /* #CBCBCB structural keyline (CB·CB·CB)      */
+  --text:var(--fp-body);
+  --text-bright:var(--fp-ink);
+  --muted:var(--fp-muted);
+  /* solid key fills — Faceplate accents */
+  --accent:var(--fp-sage);         /* sage — primary / info / B748              */
+  --green:var(--fp-dv-4);          /* teal — ok / A388                          */
+  --amber:var(--fp-dv-3);          /* ochre — warn / watch                      */
+  --red:var(--fp-terra);           /* terracotta — error / deviation            */
+  --purple:var(--fp-dv-5);         /* clay — A359                               */
+  --cyan:var(--fp-dv-4);           /* teal — extra                              */
+  /* pale fills */
+  --accent-dim:var(--fp-sage-tint);
+  --green-dim:color-mix(in srgb, var(--fp-dv-4) 16%, var(--fp-bg));
+  --amber-dim:color-mix(in srgb, var(--fp-dv-3) 22%, var(--fp-bg));
+  --red-dim:var(--fp-terra-tint);
+  --purple-dim:color-mix(in srgb, var(--fp-dv-5) 18%, var(--fp-bg));
+  --radius:var(--fp-radius);
+  --radius-sm:var(--fp-radius);
+  --mono:var(--fp-font-mono);
+  --sans:var(--fp-font-sans);
 }
 
 * { box-sizing:border-box; margin:0; padding:0; }
@@ -302,26 +480,28 @@ body {
 .container { max-width:480px; margin:0 auto; padding:0 16px 40px; }
 
 /* ── Header / device label ──────────────────────────────── */
-.header { display:flex; align-items:center; gap:14px 16px; flex-wrap:wrap; padding:22px 0 14px; }
-.brand { display:flex; align-items:center; gap:11px; }
-.led { width:11px; height:11px; border-radius:0; background:var(--green);
-  box-shadow:0 0 0 4px var(--green-dim); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-size:18px; font-weight:700; letter-spacing:-0.3px; color:var(--text-bright);
-  text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--accent); }
-.model { font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; color:var(--muted);
-  text-transform:uppercase; margin-top:3px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; }
-.nav a { font-family:var(--mono); font-size:11px; letter-spacing:.4px; text-transform:uppercase;
-  color:var(--text-bright); text-decoration:none; background:var(--surface); border:1.5px solid var(--line);
-  border-radius:0; padding:6px 13px; transition:transform .08s ease, background .15s, border-color .15s; }
-.nav a:hover { background:var(--accent-dim); border-color:var(--accent); transform:translateY(-1px); }
-.updated { font-family:var(--mono); font-size:11px; color:var(--muted); margin-left:auto; }
-
-/* speaker grille / perforation strip */
-.grille { height:14px; margin:6px 0 24px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--line) 0 2px, transparent 2px 12px); }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
+.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
+/* registration-tick strip under the band */
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 
 /* ── Health strip ───────────────────────────────────────── */
 .health-strip { display:flex; gap:9px; margin-bottom:26px; flex-wrap:wrap; counter-reset:hk; }
@@ -383,11 +563,10 @@ body {
 .batch-type { font-weight:600; color:var(--text); width:90px; flex-shrink:0; font-size:11px; text-transform:capitalize; }
 .batch-time { font-family:var(--mono); color:var(--muted); font-size:11px; width:56px; flex-shrink:0; }
 .batch-detail { flex:1; font-size:11px; color:var(--muted); }
-.badge { display:inline-block; font-family:var(--mono); padding:3px 9px; border-radius:0; font-size:9.5px;
-  font-weight:700; letter-spacing:.4px; text-transform:uppercase; }
-.badge-ok { background:var(--green-dim); color:#2f8159; }
-.badge-error { background:var(--red-dim); color:#c0533f; }
-.badge-running { background:var(--accent-dim); color:#3a6ea5; }
+/* status badges = Faceplate .fp-chip + a semantic tint */
+.badge-ok { background:var(--green-dim); color:var(--green); }
+.badge-error { background:var(--red-dim); color:var(--fp-terra-deep); }
+.badge-running { background:var(--accent-dim); color:var(--fp-sage-deep); }
 
 /* ── Route table ────────────────────────────────────────── */
 .route-row { display:flex; align-items:center; padding:7px 0; border-bottom:1.5px solid var(--border); font-size:12px; }
@@ -398,7 +577,7 @@ body {
 
 /* ── Misc ───────────────────────────────────────────────── */
 #error-banner { display:none; background:var(--red-dim); border:1.5px solid var(--red); border-radius:0;
-  padding:11px 14px; margin-bottom:16px; color:#bb4f3c; font-size:12px; }
+  padding:11px 14px; margin-bottom:16px; color:var(--fp-terra-deep); font-size:12px; }
 .tooltip { position:fixed; background:var(--text-bright); border:none; border-radius:0; padding:5px 9px;
   font-family:var(--mono); font-size:11px; color:#fff; pointer-events:none; z-index:100; white-space:nowrap; display:none; }
 .err-text { font-size:10px; color:var(--red); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -412,15 +591,15 @@ body {
 }
 </style>
 </head>
-<body>
+<body class="fp">
 <div class="container">
 
-  <div class="header">
+  <div class="header fp-band">
     <div class="brand">
       <span class="led"></span>
       <div>
         <h1>LH&middot;Fleet <span>Monitor</span></h1>
-        <div class="model">FLT-MON &middot; Fleet Telemetry</div>
+        <div class="fp-label model">FLT-MON &middot; Fleet Telemetry</div>
       </div>
     </div>
     <nav class="nav">
@@ -518,7 +697,7 @@ function ago(iso) {
 
 function badge(status) {
   const c = status === 'ok' ? 'badge-ok' : status === 'running' ? 'badge-running' : 'badge-error';
-  return '<span class="badge ' + c + '">' + status + '</span>';
+  return '<span class="fp-chip ' + c + '">' + status + '</span>';
 }
 
 // Tooltip
@@ -749,15 +928,21 @@ def index():
 # ── Legal Pages ─────────────────────────────────────────────────────
 
 _LEGAL_CSS = """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  --bg: #101114; --surface: #191b20; --border: #2a2c35;
-  --text: #c9cdd6; --text-bright: #e4e7ed; --muted: #6b7280; --accent: #5b8def;
+  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --border:var(--fp-border);
+  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted); --accent:var(--fp-sage-deep);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: var(--bg); color: var(--text);
-  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--fp-font-sans);
   font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased;
 }
 .container { max-width: 480px; margin: 0 auto; padding: 24px 16px 32px; }
@@ -766,7 +951,27 @@ h2 { color: var(--text-bright); font-size: 15px; margin: 20px 0 8px; }
 p, li { margin-bottom: 8px; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.back { font-size: 12px; margin-bottom: 16px; display: inline-block; }
+
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; margin-bottom:0; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); text-decoration:none; }
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 </style>
 """
 
@@ -775,8 +980,18 @@ _IMPRESSUM_HTML = (
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
     "<title>Impressum</title>"
     + _LEGAL_CSS
-    + """</head><body><div class="container">
-<a class="back" href="/">&larr; Back</a>
+    + """</head><body class="fp"><div class="container">
+<div class="header fp-band">
+  <div class="brand">
+    <span class="led"></span>
+    <div>
+      <h1>LH&middot;Fleet <span>Monitor</span></h1>
+      <div class="fp-label model">LEGAL &middot; Impressum</div>
+    </div>
+  </div>
+  <nav class="nav"><a class="nav-link" href="/">&larr; Back</a></nav>
+</div>
+<div class="grille"></div>
 <h1>Impressum</h1>
 <h2>Angaben gem&auml;&szlig; &sect; 5 TMG</h2>
 <p>Christopher Biel<br>Leopoldstr. 48<br>80802 M&uuml;nchen</p>
@@ -790,8 +1005,18 @@ _DATENSCHUTZ_HTML = (
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
     "<title>Datenschutzerkl&auml;rung</title>"
     + _LEGAL_CSS
-    + """</head><body><div class="container">
-<a class="back" href="/">&larr; Back</a>
+    + """</head><body class="fp"><div class="container">
+<div class="header fp-band">
+  <div class="brand">
+    <span class="led"></span>
+    <div>
+      <h1>LH&middot;Fleet <span>Monitor</span></h1>
+      <div class="fp-label model">LEGAL &middot; Datenschutz</div>
+    </div>
+  </div>
+  <nav class="nav"><a class="nav-link" href="/">&larr; Back</a></nav>
+</div>
+<div class="grille"></div>
 <h1>Datenschutzerkl&auml;rung</h1>
 <h2>1. Verantwortlicher</h2>
 <p>Christopher Biel, Leopoldstr. 48, 80802 M&uuml;nchen</p>
@@ -1026,33 +1251,58 @@ _FLEET_HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LH Fleet Database</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  --bg: #101114; --surface: #191b20; --surface2: #1f2128;
-  --border: #2a2c35; --text: #c9cdd6; --text-bright: #e4e7ed;
-  --muted: #6b7280; --accent: #5b8def; --accent-dim: rgba(91,141,239,0.12);
-  --green: #4ade80; --green-dim: rgba(74,222,128,0.12);
-  --red: #f87171; --red-dim: rgba(248,113,113,0.12);
-  --amber: #fbbf24; --radius: 10px;
+  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl);
+  --border:var(--fp-border); --line:var(--fp-gray); --text:var(--fp-body); --text-bright:var(--fp-ink);
+  --muted:var(--fp-muted); --accent:var(--fp-sage); --accent-dim:var(--fp-sage-tint);
+  --green:var(--fp-dv-4); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg));
+  --red:var(--fp-terra); --red-dim:var(--fp-terra-tint);
+  --amber:var(--fp-dv-3); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --radius:var(--fp-radius);
+  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
+/* Faceplate: hard square edges + mono instrument labels */
+input, select, button, textarea,
+.btn, .badge, .badge-active, .badge-retired, .badge-review, .badge-tracking,
+.toggle-group, .toggle-btn, .nav-link, .card, .metric, .modal, .toast,
+.toolbar input, .toolbar select, .route-track, .route-fill, .chart-bar,
+.editable { border-radius: 0 !important; }
+th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-mono); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: var(--bg); color: var(--text);
-  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--fp-font-sans);
   font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
 }
 .container { max-width: 1200px; margin: 0 auto; padding: 0 16px 40px; }
-.header {
-  padding: 16px 0 12px; display: flex; justify-content: space-between;
-  align-items: center; border-bottom: 1px solid var(--border); margin-bottom: 20px;
-}
-.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); letter-spacing: -0.3px; }
-.header h1 span { color: var(--accent); font-weight: 700; }
-.nav-link {
-  font-size: 12px; color: var(--accent); text-decoration: none;
-  padding: 4px 10px; border: 1px solid var(--accent); border-radius: 6px;
-}
-.nav-link:hover { background: var(--accent-dim); }
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
+.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
+/* registration-tick strip under the band */
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 
 /* Toolbar */
 .toolbar {
@@ -1070,16 +1320,9 @@ body {
 }
 .toolbar .count { font-size: 12px; color: var(--muted); margin-left: auto; }
 
-/* Toggle buttons */
-.toggle-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.toggle-btn {
-  background: var(--surface); border: none; color: var(--muted); padding: 6px 12px;
-  font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border);
-  text-transform: uppercase; letter-spacing: 0.5px;
-}
-.toggle-btn:last-child { border-right: none; }
-.toggle-btn.active { background: var(--accent-dim); color: var(--accent); }
-.toggle-btn:hover:not(.active) { color: var(--text); }
+/* status filter = Faceplate .fp-seg; .toggle-btn kept as JS hook, reset <button> UA */
+.fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
+.fp-seg > .active { background:var(--fp-ink); color:#fff; }
 
 /* Table */
 .fleet-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -1093,7 +1336,7 @@ body {
 .fleet-table th .sort-arrow { font-size: 9px; margin-left: 3px; opacity: 0.5; }
 .fleet-table th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
 .fleet-table td {
-  padding: 7px 10px; border-bottom: 1px solid rgba(42,44,53,0.4);
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
   color: var(--text); white-space: nowrap;
 }
 .fleet-table tr { cursor: pointer; transition: background 0.1s; }
@@ -1106,24 +1349,13 @@ body {
   font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer;
 }
 .review-toggle input { cursor: pointer; }
-.fleet-table tr.review-row { background: rgba(255, 180, 50, 0.08); }
-.fleet-table tr.review-row:hover { background: rgba(255, 180, 50, 0.15); }
-.badge-review {
-  display: inline-block; padding: 1px 7px; border-radius: 999px;
-  font-size: 10px; font-weight: 600; background: rgba(255, 180, 50, 0.15); color: #ffb432;
-}
-.badge-active {
-  display: inline-block; padding: 1px 7px; border-radius: 999px;
-  font-size: 10px; font-weight: 600; background: var(--green-dim); color: var(--green);
-}
-.badge-retired {
-  display: inline-block; padding: 1px 7px; border-radius: 999px;
-  font-size: 10px; font-weight: 600; background: var(--red-dim); color: var(--red);
-}
-.badge-tracking {
-  display: inline-block; padding: 1px 7px; border-radius: 999px;
-  font-size: 10px; font-weight: 600; background: rgba(56, 189, 248, 0.15); color: #38bdf8;
-}
+.fleet-table tr.review-row { background: color-mix(in srgb,var(--fp-dv-3) 12%,var(--fp-bg)); }
+.fleet-table tr.review-row:hover { background: var(--amber-dim); }
+/* status badges = Faceplate .fp-chip + a semantic tint */
+.badge-review { background: var(--amber-dim); color: var(--amber); }
+.badge-active { background: var(--green-dim); color: var(--green); }
+.badge-retired { background: var(--red-dim); color: var(--red); }
+.badge-tracking { background: var(--green-dim); color: var(--green); }
 
 .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
 .error-banner {
@@ -1138,16 +1370,23 @@ body {
 }
 </style>
 </head>
-<body>
+<body class="fp">
 <div class="container">
 
-  <div class="header">
-    <h1>LH Fleet <span>Database</span></h1>
-    <div style="display:flex;gap:10px;align-items:center">
+  <div class="header fp-band">
+    <div class="brand">
+      <span class="led"></span>
+      <div>
+        <h1>LH Fleet <span>Database</span></h1>
+        <div class="fp-label model">FLEET DB &middot; Aircraft Registry</div>
+      </div>
+    </div>
+    <nav class="nav">
       <a class="nav-link" href="/">&larr; Monitor</a>
       <a class="nav-link" href="/insights">Insights</a>
-    </div>
+    </nav>
   </div>
+  <div class="grille"></div>
 
   <div class="error-banner" id="error-banner"></div>
   <div class="loading" id="loading">Loading fleet data&hellip;</div>
@@ -1156,7 +1395,7 @@ body {
     <div class="toolbar">
       <input type="text" id="search" placeholder="Search registration, ICAO24, type, model...">
       <select id="type-filter"><option value="">All types</option></select>
-      <div class="toggle-group">
+      <div class="fp-seg">
         <button class="toggle-btn active" data-status="all">All</button>
         <button class="toggle-btn" data-status="active">Active</button>
         <button class="toggle-btn" data-status="retired">Retired</button>
@@ -1277,10 +1516,10 @@ function render() {
   const tbody = $('table-body');
   tbody.innerHTML = sorted.map(a => {
     const statusBadge = a.is_active
-      ? '<span class="badge-active">active</span>'
-      : '<span class="badge-retired">retired</span>';
-    const trackingBadge = a.currently_tracking ? ' <span class="badge-tracking">tracking</span>' : '';
-    const reviewBadge = a.needs_review ? ' <span class="badge-review">review</span>' : '';
+      ? '<span class="fp-chip badge-active">active</span>'
+      : '<span class="fp-chip badge-retired">retired</span>';
+    const trackingBadge = a.currently_tracking ? ' <span class="fp-chip badge-tracking">tracking</span>' : '';
+    const reviewBadge = a.needs_review ? ' <span class="fp-chip badge-review">review</span>' : '';
     const rowClass = a.needs_review ? ' class="review-row"' : '';
     return '<tr' + rowClass + ' onclick="location.href=\\'/fleet/' + a.icao24 + '\\'">' +
       '<td class="reg">' + esc(a.registration) + '</td>' +
@@ -1350,33 +1589,58 @@ _FLEET_DETAIL_HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aircraft Detail</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  --bg: #101114; --surface: #191b20; --surface2: #1f2128;
-  --border: #2a2c35; --text: #c9cdd6; --text-bright: #e4e7ed;
-  --muted: #6b7280; --accent: #5b8def; --accent-dim: rgba(91,141,239,0.12);
-  --green: #4ade80; --green-dim: rgba(74,222,128,0.12);
-  --red: #f87171; --red-dim: rgba(248,113,113,0.12);
-  --amber: #fbbf24; --radius: 10px;
+  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl);
+  --border:var(--fp-border); --line:var(--fp-gray); --text:var(--fp-body); --text-bright:var(--fp-ink);
+  --muted:var(--fp-muted); --accent:var(--fp-sage); --accent-dim:var(--fp-sage-tint);
+  --green:var(--fp-dv-4); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg));
+  --red:var(--fp-terra); --red-dim:var(--fp-terra-tint);
+  --amber:var(--fp-dv-3); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --radius:var(--fp-radius);
+  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
+/* Faceplate: hard square edges + mono instrument labels */
+input, select, button, textarea,
+.btn, .badge, .badge-active, .badge-retired, .badge-review, .badge-tracking,
+.toggle-group, .toggle-btn, .nav-link, .card, .metric, .modal, .toast,
+.toolbar input, .toolbar select, .route-track, .route-fill, .chart-bar,
+.editable { border-radius: 0 !important; }
+th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-mono); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: var(--bg); color: var(--text);
-  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--fp-font-sans);
   font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
 }
 .container { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; }
-.header {
-  padding: 16px 0 12px; display: flex; justify-content: space-between;
-  align-items: center; border-bottom: 1px solid var(--border); margin-bottom: 20px;
-}
-.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); }
-.header h1 span { color: var(--accent); font-weight: 700; }
-.nav-link {
-  font-size: 12px; color: var(--accent); text-decoration: none;
-  padding: 4px 10px; border: 1px solid var(--accent); border-radius: 6px;
-}
-.nav-link:hover { background: var(--accent-dim); }
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
+.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
+/* registration-tick strip under the band */
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 
 .card {
   background: var(--surface); border: 1px solid var(--border);
@@ -1410,13 +1674,10 @@ body {
 }
 .metric .value { font-size: 22px; font-weight: 700; color: var(--text-bright); }
 
-.badge-active {
-  display: inline-block; padding: 2px 10px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; background: var(--green-dim); color: var(--green);
-}
+/* status badges = Faceplate .fp-chip + a semantic tint */
+.badge-active { background: var(--green-dim); color: var(--green); }
 .badge-retired {
-  display: inline-block; padding: 2px 10px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; background: var(--red-dim); color: var(--red);
+  background: var(--red-dim); color: var(--red);
 }
 
 /* Route bars */
@@ -1446,7 +1707,7 @@ body {
   border-bottom: 2px solid var(--border);
 }
 .flight-table td {
-  padding: 5px 8px; border-bottom: 1px solid rgba(42,44,53,0.3); color: var(--text);
+  padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text);
 }
 .flight-table .cs { font-weight: 600; color: var(--text-bright); }
 
@@ -1461,16 +1722,23 @@ body {
 @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
 </style>
 </head>
-<body>
+<body class="fp">
 <div class="container">
 
-  <div class="header">
-    <h1 id="page-title">Aircraft <span>Detail</span></h1>
-    <div style="display:flex;gap:10px">
+  <div class="header fp-band">
+    <div class="brand">
+      <span class="led"></span>
+      <div>
+        <h1 id="page-title">Aircraft <span>Detail</span></h1>
+        <div class="fp-label model">AIRCRAFT &middot; Tail Detail</div>
+      </div>
+    </div>
+    <nav class="nav">
       <a class="nav-link" href="/fleet">&larr; Fleet DB</a>
       <a class="nav-link" href="/">Monitor</a>
-    </div>
+    </nav>
   </div>
+  <div class="grille"></div>
 
   <div class="error-banner" id="error-banner"></div>
   <div class="loading" id="loading">Loading aircraft data&hellip;</div>
@@ -1543,8 +1811,8 @@ async function init() {
   $('page-title').innerHTML = '<span>' + esc(info.registration) + '</span> ' + esc(info.aircraft_subtype || info.aircraft_type || '');
 
   const statusBadge = info.is_active
-    ? '<span class="badge-active">active</span>'
-    : '<span class="badge-retired">retired</span>';
+    ? '<span class="fp-chip badge-active">active</span>'
+    : '<span class="fp-chip badge-retired">retired</span>';
 
   $('info-card').innerHTML = '<div class="info-grid">' +
     item('Registration', info.registration) +
@@ -2148,38 +2416,58 @@ if ADMIN_PATH_PREFIX:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LH Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  --bg: #101114;
-  --surface: #191b20;
-  --surface2: #1f2128;
-  --border: #2a2c35;
-  --text: #c9cdd6;
-  --text-bright: #e4e7ed;
-  --muted: #6b7280;
-  --accent: #5b8def;
-  --accent-dim: rgba(91,141,239,0.12);
-  --green: #4ade80;
-  --green-dim: rgba(74,222,128,0.12);
-  --red: #f87171;
-  --red-dim: rgba(248,113,113,0.12);
-  --amber: #fbbf24;
-  --amber-dim: rgba(251,191,36,0.12);
-  --radius: 10px;
+  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl);
+  --border:var(--fp-border); --line:var(--fp-gray); --text:var(--fp-body); --text-bright:var(--fp-ink);
+  --muted:var(--fp-muted); --accent:var(--fp-sage); --accent-dim:var(--fp-sage-tint);
+  --green:var(--fp-dv-4); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg));
+  --red:var(--fp-terra); --red-dim:var(--fp-terra-tint);
+  --amber:var(--fp-dv-3); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --radius:var(--fp-radius);
+  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
+/* Faceplate: hard square edges + mono instrument labels */
+input, select, button, textarea,
+.btn, .badge, .badge-active, .badge-retired, .badge-review, .badge-tracking,
+.toggle-group, .toggle-btn, .nav-link, .card, .metric, .modal, .toast,
+.toolbar input, .toolbar select, .route-track, .route-fill, .chart-bar,
+.editable { border-radius: 0 !important; }
+th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-mono); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: var(--bg); color: var(--text);
-  font-family: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--fp-font-sans);
   font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
 }
 .container { max-width: 1100px; margin: 0 auto; padding: 0 16px 32px; }
-.header {
-  padding: 16px 0 12px; display: flex; justify-content: space-between;
-  align-items: center; border-bottom: 1px solid var(--border); margin-bottom: 20px;
-}
-.header h1 { font-size: 17px; font-weight: 600; color: var(--text-bright); }
-.header h1 span { color: var(--accent); }
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
+.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
+/* registration-tick strip under the band */
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 
 /* Tabs */
 .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
@@ -2205,15 +2493,9 @@ input::placeholder { color: var(--muted); }
 select { cursor: pointer; }
 
 /* Buttons */
-.btn {
-  padding: 7px 14px; border: none; border-radius: 6px; font-size: 12px;
-  font-weight: 600; cursor: pointer; transition: opacity 0.2s; white-space: nowrap;
-}
-.btn:hover { opacity: 0.85; }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-danger { background: var(--red); color: #fff; }
-.btn-success { background: var(--green); color: #111; }
-.btn-muted { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+/* buttons use the Faceplate .fp-btn component; these add hover + a small size */
+.fp-btn { transition: opacity 0.2s; white-space: nowrap; }
+.fp-btn:hover { opacity: 0.85; }
 .btn-sm { padding: 4px 10px; font-size: 11px; }
 
 /* Table */
@@ -2228,7 +2510,7 @@ th {
 }
 th:hover { color: var(--text); }
 td {
-  padding: 6px; border-bottom: 1px solid rgba(42,44,53,0.5);
+  padding: 6px; border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
 tr:hover td { background: var(--surface); }
@@ -2268,10 +2550,7 @@ tr.review td { background: var(--amber-dim); }
 }
 
 /* Status badges */
-.badge {
-  display: inline-block; padding: 1px 7px; border-radius: 999px;
-  font-size: 10px; font-weight: 600;
-}
+/* status badges = Faceplate .fp-chip + a semantic tint */
 .badge-active { background: var(--green-dim); color: var(--green); }
 .badge-retired { background: var(--red-dim); color: var(--red); }
 .badge-review { background: var(--amber-dim); color: var(--amber); }
@@ -2282,16 +2561,25 @@ tr.review td { background: var(--amber-dim); }
   border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 200;
   transition: opacity 0.3s; pointer-events: none;
 }
-.toast-ok { background: var(--green); color: #111; }
+.toast-ok { background: var(--green); color: #fff; }
 .toast-err { background: var(--red); color: #fff; }
 </style>
 </head>
-<body>
+<body class="fp">
 <div class="container">
-  <div class="header">
-    <h1><span>LH</span> Admin</h1>
-    <a href="/" style="color:var(--muted);font-size:12px;text-decoration:none">&larr; Dashboard</a>
+  <div class="header fp-band">
+    <div class="brand">
+      <span class="led"></span>
+      <div>
+        <h1><span>LH</span> Admin</h1>
+        <div class="fp-label model">ADMIN &middot; Fleet Editor</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a class="nav-link" href="/">&larr; Dashboard</a>
+    </nav>
   </div>
+  <div class="grille"></div>
 
   <div class="tabs">
     <div class="tab active" onclick="switchTab('aircraft')">Aircraft</div>
@@ -2312,7 +2600,7 @@ tr.review td { background: var(--amber-dim); }
         <input type="checkbox" id="ac-review" onchange="loadAircraft()"> Needs review
       </label>
       <div style="flex:1"></div>
-      <button class="btn btn-primary" onclick="showAddAircraft()">+ Aircraft</button>
+      <button class="fp-btn fp-btn--solid" onclick="showAddAircraft()">+ Aircraft</button>
     </div>
     <div style="overflow-x:auto">
       <table>
@@ -2339,7 +2627,7 @@ tr.review td { background: var(--amber-dim); }
         <input type="checkbox" id="fl-review" onchange="loadFlights()"> Review
       </label>
       <div style="flex:1"></div>
-      <button class="btn btn-primary" onclick="showAddFlight()">+ Flight</button>
+      <button class="fp-btn fp-btn--solid" onclick="showAddFlight()">+ Flight</button>
     </div>
     <div style="overflow-x:auto">
       <table>
@@ -2370,8 +2658,8 @@ tr.review td { background: var(--amber-dim); }
     <label>Airline IATA</label>
     <input id="m-ac-airline" maxlength="3" placeholder="LH" value="LH">
     <div class="modal-actions">
-      <button class="btn btn-muted" onclick="closeModal('modal-ac')">Cancel</button>
-      <button class="btn btn-primary" id="modal-ac-save" onclick="saveAircraft()">Add</button>
+      <button class="fp-btn" onclick="closeModal('modal-ac')">Cancel</button>
+      <button class="fp-btn fp-btn--solid" id="modal-ac-save" onclick="saveAircraft()">Add</button>
     </div>
   </div>
 </div>
@@ -2393,8 +2681,8 @@ tr.review td { background: var(--amber-dim); }
     <label>Last Seen (UTC)</label>
     <input id="m-fl-last" type="datetime-local">
     <div class="modal-actions">
-      <button class="btn btn-muted" onclick="closeModal('modal-fl')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveFlight()">Add</button>
+      <button class="fp-btn" onclick="closeModal('modal-fl')">Cancel</button>
+      <button class="fp-btn fp-btn--solid" onclick="saveFlight()">Add</button>
     </div>
   </div>
 </div>
@@ -2468,10 +2756,10 @@ async function loadAircraft() {
   $('ac-body').innerHTML = d.aircraft.map(a => {
     const cls = a.needs_review ? ' class="review"' : '';
     const statusBadge = a.is_active
-      ? '<span class="badge badge-active">Active</span>'
-      : '<span class="badge badge-retired">Retired</span>';
+      ? '<span class="fp-chip badge-active">Active</span>'
+      : '<span class="fp-chip badge-retired">Retired</span>';
     const reviewBadge = a.needs_review
-      ? '<span class="badge badge-review">Review</span>' : '';
+      ? '<span class="fp-chip badge-review">Review</span>' : '';
     return '<tr' + cls + '>' +
       '<td>' + esc(a.icao24) + '</td>' +
       '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="registration" onblur="inlineEditAc(this)">' + esc(a.registration) + '</span></td>' +
@@ -2482,11 +2770,11 @@ async function loadAircraft() {
       '<td>' + reviewBadge + '</td>' +
       '<td class="actions">' +
         (a.is_active
-          ? '<button class="btn btn-muted btn-sm" onclick="retireAc(\\'' + esc(a.icao24) + '\\')">Retire</button>'
-          : '<button class="btn btn-success btn-sm" onclick="reactivateAc(\\'' + esc(a.icao24) + '\\')">Reactivate</button>') +
-        '<button class="btn btn-danger btn-sm" onclick="deleteAc(\\'' + esc(a.icao24) + '\\')">Del</button>' +
+          ? '<button class="fp-btn btn-sm" onclick="retireAc(\\'' + esc(a.icao24) + '\\')">Retire</button>'
+          : '<button class="fp-btn fp-btn--solid btn-sm" onclick="reactivateAc(\\'' + esc(a.icao24) + '\\')">Reactivate</button>') +
+        '<button class="fp-btn fp-btn--terra btn-sm" onclick="deleteAc(\\'' + esc(a.icao24) + '\\')">Del</button>' +
         (a.needs_review
-          ? '<button class="btn btn-muted btn-sm" onclick="clearReviewAc(\\'' + esc(a.icao24) + '\\')">OK</button>'
+          ? '<button class="fp-btn btn-sm" onclick="clearReviewAc(\\'' + esc(a.icao24) + '\\')">OK</button>'
           : '') +
       '</td></tr>';
   }).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--muted)">No aircraft found</td></tr>';
@@ -2577,7 +2865,7 @@ async function loadFlights() {
     const dur = f.duration_minutes != null ? Math.floor(f.duration_minutes/60) + 'h ' + (f.duration_minutes%60) + 'm' : '\\u2014';
     const depTime = f.first_seen ? f.first_seen.slice(11,16) : '';
     const arrTime = f.last_seen ? f.last_seen.slice(11,16) : '';
-    const reviewBadge = f.needs_review ? '<span class="badge badge-review">Review</span>' : '';
+    const reviewBadge = f.needs_review ? '<span class="fp-chip badge-review">Review</span>' : '';
     return '<tr' + cls + '>' +
       '<td>' + esc(f.flight_date) + '</td>' +
       '<td>' + esc(f.icao24) + '</td>' +
@@ -2590,17 +2878,17 @@ async function loadFlights() {
       '<td>' + dur + '</td>' +
       '<td>' + reviewBadge + '</td>' +
       '<td class="actions">' +
-        (f.needs_review ? '<button class="btn btn-muted btn-sm" onclick="clearReviewFl(' + f.id + ')">OK</button>' : '') +
-        '<button class="btn btn-danger btn-sm" onclick="deleteFl(' + f.id + ')">Del</button>' +
+        (f.needs_review ? '<button class="fp-btn btn-sm" onclick="clearReviewFl(' + f.id + ')">OK</button>' : '') +
+        '<button class="fp-btn fp-btn--terra btn-sm" onclick="deleteFl(' + f.id + ')">Del</button>' +
       '</td></tr>';
   }).join('') || '<tr><td colspan="11" style="text-align:center;color:var(--muted)">No flights found</td></tr>';
 
   // Pagination
   const pg = $('fl-pagination');
   if (d.pages > 1) {
-    let html = '<button class="btn btn-muted btn-sm" onclick="flGo(' + (d.page-1) + ')" ' + (d.page<=1?'disabled':'') + '>&laquo;</button>';
+    let html = '<button class="fp-btn btn-sm" onclick="flGo(' + (d.page-1) + ')" ' + (d.page<=1?'disabled':'') + '>&laquo;</button>';
     html += '<span>Page ' + d.page + ' / ' + d.pages + ' (' + d.total + ' flights)</span>';
-    html += '<button class="btn btn-muted btn-sm" onclick="flGo(' + (d.page+1) + ')" ' + (d.page>=d.pages?'disabled':'') + '>&raquo;</button>';
+    html += '<button class="fp-btn btn-sm" onclick="flGo(' + (d.page+1) + ')" ' + (d.page>=d.pages?'disabled':'') + '>&raquo;</button>';
     pg.innerHTML = html;
   } else {
     pg.innerHTML = d.total ? '<span>' + d.total + ' flights</span>' : '';
@@ -3408,19 +3696,18 @@ _SCHEDULE_HTML = """\
 <title>Upcoming Schedule | LH Fleet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  /* chassis — light cream Teenage-Engineering faceplate */
-  --bg:#f3efe6; --surface:#ffffff; --surface2:#f1ebdd; --border:#e6dfce; --line:#d3c9b4;
-  --text:#36342c; --text-bright:#1a1812; --muted:#9d9482;
-  /* pastel "ink" accents */
-  --accent:#6aa0d8; --green:#5cb487; --amber:#d3a23c; --red:#e07b6b; --purple:#a487d6; --cyan:#46b2a8;
-  /* pale pastel fills */
-  --accent-dim:#dcebf9; --green-dim:#d7f0e2; --amber-dim:#f5ead0; --red-dim:#f8ddd6; --purple-dim:#e8defa;
+  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
+  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
+  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
+  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
   --radius:0; --radius-sm:0;
-  --mono:'Space Mono','SFMono-Regular',ui-monospace,Menlo,monospace;
-  --sans:'Space Grotesk',-apple-system,'Segoe UI',system-ui,sans-serif;
+  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
 * { box-sizing:border-box; margin:0; padding:0; }
 body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
@@ -3428,22 +3715,28 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .container { width:96vw; max-width:2000px; margin:0 auto; padding:0 18px 48px; }
 
 /* header / device label */
-.header { padding:22px 0 12px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
-.brand { display:flex; align-items:center; gap:11px; }
-.led { width:11px; height:11px; border-radius:0; background:var(--green);
-  box-shadow:0 0 0 4px var(--green-dim); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-size:18px; font-weight:700; color:var(--text-bright); letter-spacing:-0.3px; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--accent); }
-.model { font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; margin-top:3px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; }
-.nav-link { font-family:var(--mono); font-size:11px; letter-spacing:.4px; text-transform:uppercase;
-  color:var(--text-bright); text-decoration:none; background:var(--surface); border:1.5px solid var(--line);
-  border-radius:0; padding:6px 13px; transition:transform .08s ease, background .15s, border-color .15s; }
-.nav-link:hover { background:var(--accent-dim); border-color:var(--accent); transform:translateY(-1px); }
-
-.grille { height:14px; margin:6px 0 18px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--line) 0 2px, transparent 2px 12px); }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
+.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
+/* registration-tick strip under the band */
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 
 .meta { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:14px; line-height:1.6; }
 .meta b { color:var(--text); font-weight:700; }
@@ -3513,14 +3806,14 @@ footer a:hover { color:var(--text); }
 .modal .sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
 .modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
 .modal .close:hover { color:var(--text-bright); }
-.reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:#9a6f1e; border-radius:0; padding:9px 11px; font-size:12px; margin-bottom:16px; }
+.reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); border-radius:0; padding:9px 11px; font-size:12px; margin-bottom:16px; }
 .conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--border); border-radius:0; padding:10px 12px; margin-bottom:16px; }
 .conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
 .conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
 .conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--mono); }
-.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:#3d7d5c; }
-.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:#9a6f1e; }
-.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:#b4503f; }
+.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:var(--green); }
+.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
+.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:var(--fp-terra-deep); }
 .det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
 .det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
 .det-grid .v { color:var(--text-bright); }
@@ -3533,14 +3826,14 @@ footer a:hover { color:var(--text); }
 .hist-row .tag { font-size:10px; color:var(--muted); }
 </style>
 </head>
-<body>
+<body class="fp">
 <div class="container">
-  <div class="header">
+  <div class="header fp-band">
     <div class="brand">
       <span class="led"></span>
       <div>
         <h1>Upcoming <span>Schedule</span></h1>
-        <div class="model">SCHED &middot; Airframe Rotation</div>
+        <div class="fp-label model">SCHED &middot; Airframe Rotation</div>
       </div>
     </div>
     <nav class="nav">
@@ -3757,42 +4050,53 @@ _BOOK_HTML = """\
 <title>Catch a Tail | LH Fleet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  --bg:#f3efe6; --surface:#ffffff; --surface2:#f1ebdd; --border:#e6dfce; --line:#d3c9b4;
-  --text:#36342c; --text-bright:#1a1812; --muted:#9d9482;
-  --accent:#6aa0d8; --green:#5cb487; --amber:#d3a23c; --red:#e07b6b; --purple:#a487d6; --cyan:#46b2a8;
-  --accent-dim:#dcebf9; --green-dim:#d7f0e2; --amber-dim:#f5ead0; --red-dim:#f8ddd6; --purple-dim:#e8defa;
-  --mono:'Space Mono','SFMono-Regular',ui-monospace,Menlo,monospace;
-  --sans:'Space Grotesk',-apple-system,'Segoe UI',system-ui,sans-serif;
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
+  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
+  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
+  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
+  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
 * { box-sizing:border-box; margin:0; padding:0; }
 body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
 .container { width:96vw; max-width:1100px; margin:0 auto; padding:0 18px 48px; }
-.header { padding:22px 0 12px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
-.brand { display:flex; align-items:center; gap:11px; }
-.led { width:11px; height:11px; background:var(--green); box-shadow:0 0 0 4px var(--green-dim); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-size:18px; font-weight:700; color:var(--text-bright); letter-spacing:-0.3px; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--accent); }
-.model { font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; margin-top:3px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; }
-.nav-link { font-family:var(--mono); font-size:11px; letter-spacing:.4px; text-transform:uppercase; color:var(--text-bright); text-decoration:none; background:var(--surface); border:1.5px solid var(--line); padding:6px 13px; transition:transform .08s ease, background .15s, border-color .15s; }
-.nav-link:hover { background:var(--accent-dim); border-color:var(--accent); transform:translateY(-1px); }
-.grille { height:14px; margin:6px 0 18px; background-image:repeating-linear-gradient(90deg, var(--line) 0 2px, transparent 2px 12px); }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
+.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
+/* registration-tick strip under the band */
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 .meta { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:14px; line-height:1.6; }
 .meta b { color:var(--text); font-weight:700; }
-.modeswitch { display:flex; margin-bottom:12px; }
-.modeswitch button { font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.4px; padding:8px 18px; border:1.5px solid var(--line); border-right-width:0; background:var(--surface); color:var(--text-bright); cursor:pointer; }
-.modeswitch button:last-child { border-right-width:1.5px; }
-.modeswitch button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+/* segmented control = Faceplate .fp-seg; reset <button> UA borders + map .active */
+.fp-seg { margin-bottom:12px; }
+.fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
+.fp-seg > .active { background:var(--fp-ink); color:#fff; }
 .searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
 .searchbar input { background:var(--surface); border:1.5px solid var(--border); padding:9px 14px; font-size:14px; font-family:var(--mono); color:var(--text-bright); width:200px; text-transform:uppercase; }
 .searchbar input::placeholder { color:var(--muted); text-transform:none; }
 .searchbar input:focus { outline:none; border-color:var(--accent); }
-.searchbar .go { background:var(--accent); border:1.5px solid var(--accent); color:#fff; font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.4px; padding:9px 20px; cursor:pointer; }
-.searchbar .go:hover { background:#5790cc; }
+.fp-btn:hover { opacity:.88; }  /* search button uses .fp-btn--solid */
 .hint { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:18px; }
 .results { display:flex; flex-direction:column; gap:8px; }
 .fcard { display:flex; align-items:center; gap:14px; border:1.5px solid var(--border); background:var(--surface); padding:12px 14px; cursor:pointer; transition:border-color .12s; }
@@ -3810,9 +4114,9 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--border); flex-shrink:0; }
 .miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
 .miniconf .cn { font-family:var(--mono); font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:3px; }
-.miniconf.cg { background:var(--green-dim); border-color:var(--green); } .miniconf.cg .p { color:#3d7d5c; }
-.miniconf.ca { background:var(--amber-dim); border-color:var(--amber); } .miniconf.ca .p { color:#9a6f1e; }
-.miniconf.cr { background:var(--red-dim); border-color:var(--red); } .miniconf.cr .p { color:#b4503f; }
+.miniconf.cg { background:var(--green-dim); border-color:var(--green); } .miniconf.cg .p { color:var(--green); }
+.miniconf.ca { background:var(--amber-dim); border-color:var(--amber); } .miniconf.ca .p { color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
+.miniconf.cr { background:var(--red-dim); border-color:var(--red); } .miniconf.cr .p { color:var(--fp-terra-deep); }
 .empty { color:var(--muted); padding:30px; text-align:center; font-family:var(--mono); font-size:12px; border:1.5px dashed var(--border); }
 footer { text-align:center; padding:26px 0 10px; font-family:var(--mono); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
 footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
@@ -3823,14 +4127,14 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
 .modal .sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
 .modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
 .modal .close:hover { color:var(--text-bright); }
-.reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:#9a6f1e; padding:9px 11px; font-size:12px; margin-bottom:16px; }
+.reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); padding:9px 11px; font-size:12px; margin-bottom:16px; }
 .conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--border); padding:10px 12px; margin-bottom:16px; }
 .conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
 .conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
 .conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--mono); }
-.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:#3d7d5c; }
-.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:#9a6f1e; }
-.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:#b4503f; }
+.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:var(--green); }
+.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
+.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:var(--fp-terra-deep); }
 .det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
 .det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
 .det-grid .v { color:var(--text-bright); }
@@ -3843,14 +4147,14 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
 .hist-row .tag { font-size:10px; color:var(--muted); }
 </style>
 </head>
-<body>
+<body class="fp">
 <div class="container">
-  <div class="header">
+  <div class="header fp-band">
     <div class="brand">
       <span class="led"></span>
       <div>
         <h1>Catch a <span>Tail</span></h1>
-        <div class="model">BOOK &middot; Airframe Finder</div>
+        <div class="fp-label model">BOOK &middot; Airframe Finder</div>
       </div>
     </div>
     <nav class="nav">
@@ -3862,7 +4166,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
   </div>
   <div class="grille"></div>
   <div class="meta">Find an upcoming flight by <b>airframe</b> or <b>route</b>, with the currently published tail and a measured chance it still holds by departure. Schedule is published ~4 days out, so check back closer to your date.</div>
-  <div class="modeswitch">
+  <div class="fp-seg">
     <button id="m-tail" class="active" onclick="setMode('tail')">By tail</button>
     <button id="m-route" onclick="setMode('route')">By route</button>
   </div>
@@ -3870,7 +4174,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
     <input id="tail-in" type="text" placeholder="registration, e.g. D-ABYN">
     <input id="dep-in" type="text" placeholder="from, e.g. FRA" style="display:none">
     <input id="arr-in" type="text" placeholder="to, e.g. HND" style="display:none">
-    <button class="go" onclick="search()">Search</button>
+    <button class="fp-btn fp-btn--solid" onclick="search()">Search</button>
   </div>
   <div class="hint" id="hint">Tip: watched airframes are starred. Confidence is grey when there isn't enough history yet.</div>
   <div class="results" id="results"><div class="empty">Search a tail (e.g. D-ABYN) or a route (e.g. FRA &rarr; HND).</div></div>
@@ -4029,35 +4333,46 @@ _INSIGHTS_HTML = """\
 <title>Fleet Insights | LH Fleet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/faceplate.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root {
-  --bg:#f3efe6; --surface:#ffffff; --surface2:#f1ebdd; --border:#e6dfce; --line:#d3c9b4;
-  --text:#36342c; --text-bright:#1a1812; --muted:#9d9482;
-  --accent:#6aa0d8; --green:#5cb487; --amber:#d3a23c; --red:#e07b6b; --purple:#a487d6; --cyan:#46b2a8;
-  --accent-dim:#dcebf9; --green-dim:#d7f0e2; --amber-dim:#f5ead0; --red-dim:#f8ddd6;
-  --mono:'Space Mono','SFMono-Regular',ui-monospace,Menlo,monospace;
-  --sans:'Space Grotesk',-apple-system,'Segoe UI',system-ui,sans-serif;
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
+  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
+  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
+  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
+  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
 * { box-sizing:border-box; margin:0; padding:0; }
 body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
 .container { width:96vw; max-width:1180px; margin:0 auto; padding:0 18px 48px; }
-.header { padding:22px 0 12px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
-.brand { display:flex; align-items:center; gap:11px; }
-.led { width:11px; height:11px; background:var(--green); box-shadow:0 0 0 4px var(--green-dim); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
+/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
+.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
+  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
+.brand { display:flex; align-items:center; gap:12px; }
+.led { width:10px; height:10px; border-radius:0; background:#fff;
+  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-size:18px; font-weight:700; color:var(--text-bright); letter-spacing:-0.3px; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--accent); }
-.model { font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; margin-top:3px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; }
-.nav-link { font-family:var(--mono); font-size:11px; letter-spacing:.4px; text-transform:uppercase; color:var(--text-bright); text-decoration:none; background:var(--surface); border:1.5px solid var(--line); padding:6px 13px; transition:transform .08s ease, background .15s, border-color .15s; }
-.nav-link:hover { background:var(--accent-dim); border-color:var(--accent); transform:translateY(-1px); }
-.grille { height:14px; margin:6px 0 18px; background-image:repeating-linear-gradient(90deg, var(--line) 0 2px, transparent 2px 12px); }
+.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1.05; }
+.header h1 span { color:var(--fp-sage-tint); }
+.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
+  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
+.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
+  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
+  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
+  transition:background .14s, color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
+.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
+/* registration-tick strip under the band */
+.grille { height:9px; margin:0 0 22px; border-radius:0;
+  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
 .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
-.seg { display:flex; }
-.seg a { font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.4px; padding:8px 18px; border:1.5px solid var(--line); border-right-width:0; background:var(--surface); color:var(--text-bright); text-decoration:none; }
-.seg a:last-child { border-right-width:1.5px; }
-.seg a.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+/* segmented control = Faceplate .fp-seg; <a> children just need link resets */
+.fp-seg > a { color:var(--fp-ink); text-decoration:none; }
+.fp-seg > .active { background:var(--fp-ink); color:#fff; }
 .controls input { background:var(--surface); border:1.5px solid var(--border); padding:8px 14px; font-size:13px; font-family:var(--mono); color:var(--text-bright); width:190px; text-transform:uppercase; }
 .controls input::placeholder { color:var(--muted); text-transform:none; }
 .controls input:focus { outline:none; border-color:var(--accent); }
@@ -4099,14 +4414,14 @@ footer { text-align:center; padding:26px 0 10px; font-family:var(--mono); font-s
 footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
 </style>
 </head>
-<body>
+<body class="fp">
 <div class="container">
-  <div class="header">
+  <div class="header fp-band">
     <div class="brand">
       <span class="led"></span>
       <div>
         <h1>Fleet <span>Insights</span></h1>
-        <div class="model">INSIGHTS &middot; Fleet Analytics</div>
+        <div class="fp-label model">INSIGHTS &middot; Fleet Analytics</div>
       </div>
     </div>
     <nav class="nav">
@@ -4118,7 +4433,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
   </div>
   <div class="grille"></div>
   <div class="controls">
-    <div class="seg">
+    <div class="fp-seg">
       <a href="/insights?type=B748" id="seg-B748">747-8</a>
       <a href="/insights?type=A388" id="seg-A388">A380</a>
     </div>
