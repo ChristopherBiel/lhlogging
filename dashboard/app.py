@@ -3779,8 +3779,9 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
 /* SWAP / reassignment */
 .gantt-flight.is-swap { box-shadow:inset 0 0 0 2px var(--amber); }
 .gantt-flight.is-swap.st-actual { box-shadow:inset 0 0 0 2px var(--amber), inset 6px 0 0 var(--fp-terra); }
-.gantt-flight .swapchip { position:absolute; right:0; top:0; height:100%; display:flex; align-items:center;
-  font-family:var(--sans); font-size:7.5px; font-weight:700; letter-spacing:.05em; color:var(--fp-ink); background:var(--amber); padding:0 5px; }
+.gantt-flight .swapchip { position:absolute; right:0; top:0; height:100%; text-align:center; line-height:1;
+  writing-mode:vertical-rl; transform:rotate(180deg);   /* "SWAP" reads bottom-to-top: a thin vertical strip */
+  font-family:var(--sans); font-size:6px; font-weight:700; letter-spacing:-.02em; color:var(--fp-ink); background:var(--amber); padding:0 2px; }
 
 /* rotation tie — the "stay" parked away from base; hover-only, drawn behind bars */
 .tie { position:absolute; top:10px; height:3px; background:var(--_s); opacity:.4; z-index:0; cursor:help; }
@@ -3904,9 +3905,14 @@ async function init(){
   // midnight ticks (fake-UTC midnights are epoch multiples of a day)
   const ticks=[]; for(let m=Math.ceil(t0/dayMs)*dayMs; m<t1; m+=dayMs) ticks.push(m);
 
-  // axis: day labels at the left edge + each midnight
+  // axis: day labels at the left edge + each midnight. Drop the partial first-day
+  // label when the first midnight is so close to the left edge that the two would
+  // overlap (e.g. when "now-24h" lands late in the day) — that day is still named by
+  // the midnight tick just to its right.
   let html='<div class="gantt-axis-row"><div class="gantt-label"></div><div class="gantt-axis">';
-  html+='<span class="gantt-day" style="left:0;border-left:none">'+dayName(t0)+'</span>';
+  const firstTickPct = ticks.length ? frac(ticks[0])*100 : 100;
+  if(firstTickPct >= 8)
+    html+='<span class="gantt-day" style="left:0;border-left:none">'+dayName(t0)+'</span>';
   ticks.forEach(m=>{ html+='<span class="gantt-day" style="left:'+(frac(m)*100)+'%">'+dayName(m)+'</span>'; });
   html+='</div></div>';
 
@@ -3939,7 +3945,7 @@ async function init(){
             +'\\n'+(l.fl||'?')+' \\u2192 '+(n.fl||'?')
             +'\\non ground '+fmt(l.end)+' \\u2192 '+fmt(n.start);
           html+='<div class="tie '+tc+'" style="left:'+gl+'%;width:'+(gr-gl)+'%" title="'+tip.replace(/"/g,'&quot;')+'">'
-            +'<span class="tielab">@'+l.arr+' '+hrs+'H</span></div>';
+            +(hrs>=10?'<span class="tielab">@'+l.arr+' '+hrs+'H</span>':'')+'</div>';   // short stays: line only, label in tooltip
         }
       }
     });
