@@ -431,7 +431,7 @@ _HTML = """\
 <title>LH Fleet Monitor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -480,32 +480,27 @@ body {
 .container { max-width:480px; margin:0 auto; padding:0 16px 40px; }
 
 /* ── Header / device label ──────────────────────────────── */
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
-.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
-/* registration-tick strip under the band */
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
 
 /* ── Health strip ───────────────────────────────────────── */
 .health-strip { display:flex; gap:9px; margin-bottom:26px; flex-wrap:wrap; counter-reset:hk; }
-.health-item { flex:1; min-width:86px; background:var(--surface); border:1.5px solid var(--border);
+.health-item { flex:1; min-width:86px; background:var(--surface); border:1.5px solid var(--fp-ink);
   border-radius:0; padding:12px 12px 11px; text-align:left; }
 .health-item .label { font-family:var(--mono); font-size:9px; text-transform:uppercase; letter-spacing:.7px;
   color:var(--muted); margin-bottom:8px; }
@@ -523,7 +518,7 @@ body {
 
 /* ── Metric keys ────────────────────────────────────────── */
 .metrics { display:grid; grid-template-columns:1fr 1fr 1fr; gap:9px; margin-bottom:24px; counter-reset:key; }
-.metric { background:var(--surface); border:1.5px solid var(--border); border-radius:0;
+.metric { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0;
   padding:14px 13px 13px; position:relative; }
 .metric::after { content:''; position:absolute; top:13px; right:13px; width:7px; height:7px; border-radius:0; background:var(--accent); }
 .metric:nth-child(3n+1)::after { background:var(--green); }
@@ -536,7 +531,7 @@ body {
 .metric .sub { font-size:10px; color:var(--muted); margin-top:4px; }
 
 /* ── Cards ──────────────────────────────────────────────── */
-.card { background:var(--surface); border:1.5px solid var(--border); border-radius:0; padding:16px; margin-bottom:14px; }
+.card { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0; padding:16px; margin-bottom:14px; }
 
 /* ── Chart bars ─────────────────────────────────────────── */
 .chart-bars { display:flex; align-items:flex-end; gap:3px; height:64px; }
@@ -596,7 +591,7 @@ body {
 
   <div class="header fp-band">
     <div class="brand">
-      <span class="led"></span>
+      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>LH&middot;Fleet <span>Monitor</span></h1>
         <div class="fp-label model">FLT-MON &middot; Fleet Telemetry</div>
@@ -611,8 +606,7 @@ body {
     <span class="updated" id="last-updated"></span>
   </div>
 
-  <div class="grille"></div>
-
+  
   <div id="error-banner"></div>
 
   <!-- Health strip -->
@@ -634,8 +628,8 @@ body {
     <div class="card">
       <div class="section-label">Daily flights &amp; unique routes (14d)</div>
       <div class="chart-legend">
-        <span><span class="swatch" style="background:var(--accent)"></span>Flights</span>
-        <span><span class="swatch" style="background:var(--amber)"></span>Unique callsigns</span>
+        <span><span class="swatch" style="background:var(--fp-dv-1)"></span>Flights</span>
+        <span><span class="swatch" style="background:var(--fp-dv-3)"></span>Unique callsigns</span>
       </div>
       <div class="chart-bars" id="flight-chart" style="height:80px"></div>
       <div class="chart-labels" id="flight-chart-labels"></div>
@@ -648,9 +642,9 @@ body {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div class="section-label" style="margin-bottom:0">Aircraft by type</div>
         <div style="font-size:10px;color:var(--muted)">
-          <span style="color:var(--accent)">In DB</span>
+          <span style="color:var(--fp-dv-6)">In DB</span>
           <span style="margin:0 4px">/</span>
-          <span style="color:var(--green)">Flew 7d</span>
+          <span style="color:var(--fp-dv-1)">Flew 7d</span>
         </div>
       </div>
       <div id="type-chart"></div>
@@ -836,8 +830,8 @@ async function refresh() {
     const csH = Math.max(0, Math.round(csCount / maxF * 76));
     return '<div style="flex:1;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-end;height:80px" ' +
       'onmouseenter="showTip(\\'' + d.date + ': ' + d.count + ' flights, ' + csCount + ' callsigns\\', event)" onmouseleave="hideTip()">' +
-      '<div style="height:' + h + 'px;background:var(--accent);border-radius:0;opacity:0.7;position:relative">' +
-      (csH > 0 ? '<div style="position:absolute;bottom:0;left:0;right:0;height:' + Math.min(csH, h) + 'px;background:var(--amber);border-radius:0;opacity:0.6"></div>' : '') +
+      '<div style="height:' + h + 'px;background:var(--fp-dv-1);border-radius:0;position:relative">' +
+      (csH > 0 ? '<div style="position:absolute;bottom:0;left:0;right:0;height:' + Math.min(csH, h) + 'px;background:var(--fp-dv-3);border-radius:0"></div>' : '') +
       '</div></div>';
   }).join('');
 
@@ -860,8 +854,8 @@ async function refresh() {
     return '<div class="hbar-row">' +
       '<div class="hbar-label">' + t.type + '</div>' +
       '<div class="hbar-track">' +
-        '<div class="hbar-fill" style="width:' + pct + '%;background:var(--accent);opacity:0.5;position:relative">' +
-          '<div style="position:absolute;top:0;left:0;height:100%;width:' + (t.count > 0 ? Math.round(flewCount / t.count * 100) : 0) + '%;background:var(--green);border-radius:0;opacity:0.8"></div>' +
+        '<div class="hbar-fill" style="width:' + pct + '%;background:var(--fp-dv-6);position:relative">' +
+          '<div style="position:absolute;top:0;left:0;height:100%;width:' + (t.count > 0 ? Math.round(flewCount / t.count * 100) : 0) + '%;background:var(--fp-dv-1);border-radius:0"></div>' +
         '</div>' +
       '</div>' +
       '<div class="hbar-count">' + t.count + '</div>' +
@@ -930,7 +924,7 @@ def index():
 _LEGAL_CSS = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -952,26 +946,22 @@ p, li { margin-bottom: 8px; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; margin-bottom:0; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; margin-bottom:0; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); text-decoration:none; }
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
 </style>
 """
 
@@ -983,7 +973,7 @@ _IMPRESSUM_HTML = (
     + """</head><body class="fp"><div class="container">
 <div class="header fp-band">
   <div class="brand">
-    <span class="led"></span>
+    <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
     <div>
       <h1>LH&middot;Fleet <span>Monitor</span></h1>
       <div class="fp-label model">LEGAL &middot; Impressum</div>
@@ -991,7 +981,6 @@ _IMPRESSUM_HTML = (
   </div>
   <nav class="nav"><a class="nav-link" href="/">&larr; Back</a></nav>
 </div>
-<div class="grille"></div>
 <h1>Impressum</h1>
 <h2>Angaben gem&auml;&szlig; &sect; 5 TMG</h2>
 <p>Christopher Biel<br>Leopoldstr. 48<br>80802 M&uuml;nchen</p>
@@ -1008,7 +997,7 @@ _DATENSCHUTZ_HTML = (
     + """</head><body class="fp"><div class="container">
 <div class="header fp-band">
   <div class="brand">
-    <span class="led"></span>
+    <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
     <div>
       <h1>LH&middot;Fleet <span>Monitor</span></h1>
       <div class="fp-label model">LEGAL &middot; Datenschutz</div>
@@ -1016,7 +1005,6 @@ _DATENSCHUTZ_HTML = (
   </div>
   <nav class="nav"><a class="nav-link" href="/">&larr; Back</a></nav>
 </div>
-<div class="grille"></div>
 <h1>Datenschutzerkl&auml;rung</h1>
 <h2>1. Verantwortlicher</h2>
 <p>Christopher Biel, Leopoldstr. 48, 80802 M&uuml;nchen</p>
@@ -1253,7 +1241,7 @@ _FLEET_HTML = """\
 <title>LH Fleet Database</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -1281,41 +1269,36 @@ body {
   font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
 }
 .container { max-width: 1200px; margin: 0 auto; padding: 0 16px 40px; }
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
-.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
-/* registration-tick strip under the band */
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
 
 /* Toolbar */
 .toolbar {
   display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
 }
 .toolbar input[type="text"] {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 6px;
   color: var(--text-bright); padding: 7px 12px; font-size: 13px; flex: 1; min-width: 200px;
   outline: none;
 }
 .toolbar input[type="text"]:focus { border-color: var(--accent); }
 .toolbar select {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 6px;
   color: var(--text); padding: 7px 10px; font-size: 12px; outline: none; cursor: pointer;
 }
 .toolbar .count { font-size: 12px; color: var(--muted); margin-left: auto; }
@@ -1375,7 +1358,7 @@ body {
 
   <div class="header fp-band">
     <div class="brand">
-      <span class="led"></span>
+      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>LH Fleet <span>Database</span></h1>
         <div class="fp-label model">FLEET DB &middot; Aircraft Registry</div>
@@ -1386,8 +1369,7 @@ body {
       <a class="nav-link" href="/insights">Insights</a>
     </nav>
   </div>
-  <div class="grille"></div>
-
+  
   <div class="error-banner" id="error-banner"></div>
   <div class="loading" id="loading">Loading fleet data&hellip;</div>
 
@@ -1591,7 +1573,7 @@ _FLEET_DETAIL_HTML = """\
 <title>Aircraft Detail</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -1619,31 +1601,26 @@ body {
   font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
 }
 .container { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; }
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
-.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
-/* registration-tick strip under the band */
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
 
 .card {
-  background: var(--surface); border: 1px solid var(--border);
+  background: var(--surface); border: 1.5px solid var(--fp-ink);
   border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
 }
 .card-title {
@@ -1665,7 +1642,7 @@ body {
 /* Metrics */
 .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
 .metric {
-  background: var(--surface); border: 1px solid var(--border);
+  background: var(--surface); border: 1.5px solid var(--fp-ink);
   border-radius: var(--radius); padding: 12px; text-align: center;
 }
 .metric .label {
@@ -1686,13 +1663,13 @@ body {
 }
 .route-label { width: 90px; text-align: right; font-size: 12px; color: var(--text); font-weight: 500; }
 .route-track { flex: 1; height: 18px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
-.route-fill { height: 100%; border-radius: 3px; background: var(--accent); opacity: 0.7; }
+.route-fill { height: 100%; border-radius: 0; background: var(--fp-dv-1); }
 .route-count { width: 30px; font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Activity chart */
 .chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 60px; }
 .chart-bar {
-  flex: 1; border-radius: 2px 2px 0 0; min-height: 0; background: var(--accent); opacity: 0.7;
+  flex: 1; border-radius: 0; min-height: 0; background: var(--fp-dv-1);
 }
 .chart-labels {
   display: flex; justify-content: space-between; font-size: 10px;
@@ -1727,7 +1704,7 @@ body {
 
   <div class="header fp-band">
     <div class="brand">
-      <span class="led"></span>
+      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1 id="page-title">Aircraft <span>Detail</span></h1>
         <div class="fp-label model">AIRCRAFT &middot; Tail Detail</div>
@@ -1738,8 +1715,7 @@ body {
       <a class="nav-link" href="/">Monitor</a>
     </nav>
   </div>
-  <div class="grille"></div>
-
+  
   <div class="error-banner" id="error-banner"></div>
   <div class="loading" id="loading">Loading aircraft data&hellip;</div>
 
@@ -2418,7 +2394,7 @@ if ADMIN_PATH_PREFIX:
 <title>LH Admin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -2446,28 +2422,23 @@ body {
   font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
 }
 .container { max-width: 1100px; margin: 0 auto; padding: 0 16px 32px; }
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
-.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
-/* registration-tick strip under the band */
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
 
 /* Tabs */
 .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
@@ -2485,7 +2456,7 @@ body {
   display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center;
 }
 input, select {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 6px;
   padding: 7px 10px; color: var(--text); font-size: 13px; outline: none;
 }
 input:focus, select:focus { border-color: var(--accent); }
@@ -2532,7 +2503,7 @@ tr.review td { background: var(--amber-dim); }
 }
 .modal-bg.show { display: flex; }
 .modal {
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: var(--radius);
   padding: 24px; width: 90%; max-width: 440px;
 }
 .modal h3 { font-size: 15px; color: var(--text-bright); margin-bottom: 16px; }
@@ -2569,7 +2540,7 @@ tr.review td { background: var(--amber-dim); }
 <div class="container">
   <div class="header fp-band">
     <div class="brand">
-      <span class="led"></span>
+      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1><span>LH</span> Admin</h1>
         <div class="fp-label model">ADMIN &middot; Fleet Editor</div>
@@ -2579,8 +2550,7 @@ tr.review td { background: var(--amber-dim); }
       <a class="nav-link" href="/">&larr; Dashboard</a>
     </nav>
   </div>
-  <div class="grille"></div>
-
+  
   <div class="tabs">
     <div class="tab active" onclick="switchTab('aircraft')">Aircraft</div>
     <div class="tab" onclick="switchTab('flights')">Flights</div>
@@ -3696,7 +3666,7 @@ _SCHEDULE_HTML = """\
 <title>Upcoming Schedule | LH Fleet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -3715,34 +3685,29 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .container { width:96vw; max-width:2000px; margin:0 auto; padding:0 18px 48px; }
 
 /* header / device label */
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
-.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
-/* registration-tick strip under the band */
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
 
 .meta { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:14px; line-height:1.6; }
 .meta b { color:var(--text); font-weight:700; }
 
 .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
-.controls input { background:var(--surface); border:1.5px solid var(--border); border-radius:0;
+.controls input { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0;
   color:var(--text-bright); padding:8px 14px; font-size:13px; width:300px; font-family:var(--mono); }
 .controls input:focus { outline:none; border-color:var(--accent); }
 .controls input::placeholder { color:var(--muted); }
@@ -3751,7 +3716,7 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .legend .sw { display:inline-block; width:12px; height:12px; border-radius:0; vertical-align:middle; margin-right:5px; }
 
 /* gantt */
-.gantt { overflow-x:auto; border:1.5px solid var(--border); border-radius:0; background:var(--surface); padding:14px 14px 6px; }
+.gantt { overflow-x:auto; border:1.5px solid var(--fp-ink); border-radius:0; background:var(--surface); padding:14px 14px 6px; }
 .gantt-inner { min-width:820px; }
 .gantt-axis-row { display:flex; align-items:center; margin-bottom:10px; }
 .gantt-axis { flex:1; position:relative; height:13px; }
@@ -3801,13 +3766,13 @@ footer a:hover { color:var(--text); }
 /* flight detail modal */
 .modal-bg { display:none; position:fixed; inset:0; background:rgba(36,33,27,0.5); z-index:100; justify-content:center; align-items:center; padding:16px; }
 .modal-bg.show { display:flex; }
-.modal { background:var(--surface); border:1.5px solid var(--border); border-radius:0; padding:22px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
+.modal { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0; padding:22px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
 .modal h3 { font-size:15px; color:var(--text-bright); margin-bottom:3px; padding-right:24px; }
 .modal .sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
 .modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
 .modal .close:hover { color:var(--text-bright); }
 .reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); border-radius:0; padding:9px 11px; font-size:12px; margin-bottom:16px; }
-.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--border); border-radius:0; padding:10px 12px; margin-bottom:16px; }
+.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--fp-ink); border-radius:0; padding:10px 12px; margin-bottom:16px; }
 .conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
 .conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
 .conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--mono); }
@@ -3830,7 +3795,7 @@ footer a:hover { color:var(--text); }
 <div class="container">
   <div class="header fp-band">
     <div class="brand">
-      <span class="led"></span>
+      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>Upcoming <span>Schedule</span></h1>
         <div class="fp-label model">SCHED &middot; Airframe Rotation</div>
@@ -3843,8 +3808,7 @@ footer a:hover { color:var(--text); }
       <a class="nav-link" href="/">&larr; Monitor</a>
     </nav>
   </div>
-  <div class="grille"></div>
-  <div class="meta" id="meta">Loading planned airframe rotations…</div>
+    <div class="meta" id="meta">Loading planned airframe rotations…</div>
   <div class="controls">
     <input id="filter" type="text" placeholder="Filter: tail, airport or flight (e.g. HND, D-ABYN, 716)">
     <div class="legend">
@@ -4050,7 +4014,7 @@ _BOOK_HTML = """\
 <title>Catch a Tail | LH Fleet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -4064,28 +4028,23 @@ _BOOK_HTML = """\
 * { box-sizing:border-box; margin:0; padding:0; }
 body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
 .container { width:96vw; max-width:1100px; margin:0 auto; padding:0 18px 48px; }
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
-.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
-/* registration-tick strip under the band */
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
 .meta { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:14px; line-height:1.6; }
 .meta b { color:var(--text); font-weight:700; }
 /* segmented control = Faceplate .fp-seg; reset <button> UA borders + map .active */
@@ -4093,13 +4052,13 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
 .fp-seg > .active { background:var(--fp-ink); color:#fff; }
 .searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
-.searchbar input { background:var(--surface); border:1.5px solid var(--border); padding:9px 14px; font-size:14px; font-family:var(--mono); color:var(--text-bright); width:200px; text-transform:uppercase; }
+.searchbar input { background:var(--surface); border:1.5px solid var(--fp-ink); padding:9px 14px; font-size:14px; font-family:var(--mono); color:var(--text-bright); width:200px; text-transform:uppercase; }
 .searchbar input::placeholder { color:var(--muted); text-transform:none; }
 .searchbar input:focus { outline:none; border-color:var(--accent); }
 .fp-btn:hover { opacity:.88; }  /* search button uses .fp-btn--solid */
 .hint { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:18px; }
 .results { display:flex; flex-direction:column; gap:8px; }
-.fcard { display:flex; align-items:center; gap:14px; border:1.5px solid var(--border); background:var(--surface); padding:12px 14px; cursor:pointer; transition:border-color .12s; }
+.fcard { display:flex; align-items:center; gap:14px; border:1.5px solid var(--fp-ink); background:var(--surface); padding:12px 14px; cursor:pointer; transition:border-color .12s; }
 .fcard:hover { border-color:var(--accent); }
 .fcard .when { width:96px; font-family:var(--mono); font-size:11px; color:var(--muted); flex-shrink:0; line-height:1.5; }
 .fcard .when b { display:block; color:var(--text-bright); font-size:13px; }
@@ -4111,7 +4070,7 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; color:var(--text-bright); }
 .tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--green); }
 .tbadge.t359 { background:var(--purple); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
-.miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--border); flex-shrink:0; }
+.miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--fp-ink); flex-shrink:0; }
 .miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
 .miniconf .cn { font-family:var(--mono); font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:3px; }
 .miniconf.cg { background:var(--green-dim); border-color:var(--green); } .miniconf.cg .p { color:var(--green); }
@@ -4122,13 +4081,13 @@ footer { text-align:center; padding:26px 0 10px; font-family:var(--mono); font-s
 footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
 .modal-bg { display:none; position:fixed; inset:0; background:rgba(36,33,27,0.5); z-index:100; justify-content:center; align-items:center; padding:16px; }
 .modal-bg.show { display:flex; }
-.modal { background:var(--surface); border:1.5px solid var(--border); padding:22px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
+.modal { background:var(--surface); border:1.5px solid var(--fp-ink); padding:22px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
 .modal h3 { font-size:15px; color:var(--text-bright); margin-bottom:3px; padding-right:24px; }
 .modal .sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
 .modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
 .modal .close:hover { color:var(--text-bright); }
 .reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); padding:9px 11px; font-size:12px; margin-bottom:16px; }
-.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--border); padding:10px 12px; margin-bottom:16px; }
+.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--fp-ink); padding:10px 12px; margin-bottom:16px; }
 .conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
 .conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
 .conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--mono); }
@@ -4151,7 +4110,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
 <div class="container">
   <div class="header fp-band">
     <div class="brand">
-      <span class="led"></span>
+      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>Catch a <span>Tail</span></h1>
         <div class="fp-label model">BOOK &middot; Airframe Finder</div>
@@ -4164,8 +4123,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
       <a class="nav-link" href="/">&larr; Monitor</a>
     </nav>
   </div>
-  <div class="grille"></div>
-  <div class="meta">Find an upcoming flight by <b>airframe</b> or <b>route</b>, with the currently published tail and a measured chance it still holds by departure. Schedule is published ~4 days out, so check back closer to your date.</div>
+    <div class="meta">Find an upcoming flight by <b>airframe</b> or <b>route</b>, with the currently published tail and a measured chance it still holds by departure. Schedule is published ~4 days out, so check back closer to your date.</div>
   <div class="fp-seg">
     <button id="m-tail" class="active" onclick="setMode('tail')">By tail</button>
     <button id="m-route" onclick="setMode('route')">By route</button>
@@ -4333,7 +4291,7 @@ _INSIGHTS_HTML = """\
 <title>Fleet Insights | LH Fleet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/faceplate.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -4347,38 +4305,33 @@ _INSIGHTS_HTML = """\
 * { box-sizing:border-box; margin:0; padding:0; }
 body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
 .container { width:96vw; max-width:1180px; margin:0 auto; padding:0 18px 48px; }
-/* ── Header · Faceplate intensity 03 (bold sage band) ─────── */
-.header { display:flex; align-items:center; gap:12px 18px; flex-wrap:wrap;
-  padding:15px 20px; margin:18px 0 0; }  /* sage band + #fff text come from .fp-band */
-.brand { display:flex; align-items:center; gap:12px; }
-.led { width:10px; height:10px; border-radius:0; background:#fff;
-  box-shadow:0 0 0 4px rgba(255,255,255,.22); animation:pulse 2.6s ease-in-out infinite; flex-shrink:0; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.header h1 { font-family:var(--fp-font-sans); font-size:20px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1.05; }
+/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
+.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
+  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
+.brand .fp-plate svg { width:27px; height:27px; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
+  color:#fff; text-transform:uppercase; line-height:1; }
 .header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-mono); font-size:9.5px; letter-spacing:1.5px;
-  color:rgba(255,255,255,.8); text-transform:uppercase; margin-top:4px; }
-.nav { display:flex; gap:7px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.4px;
-  text-transform:uppercase; color:#fff; text-decoration:none; background:transparent;
-  border:1.5px solid rgba(255,255,255,.5); border-radius:0; padding:6px 13px;
-  transition:background .14s, color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { background:#fff; border-color:#fff; color:var(--fp-sage); transform:none; }
-.updated { font-family:var(--fp-font-mono); font-size:11px; color:rgba(255,255,255,.8); }
-/* registration-tick strip under the band */
-.grille { height:9px; margin:0 0 22px; border-radius:0;
-  background-image:repeating-linear-gradient(90deg, var(--fp-sage) 0 2px, transparent 2px 11px); }
+.model { font-family:var(--fp-font-mono); font-size:10px; letter-spacing:.12em;
+  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
+.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-mono); font-size:11px; font-weight:500; letter-spacing:.1em;
+  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
+  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
 .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
 /* segmented control = Faceplate .fp-seg; <a> children just need link resets */
 .fp-seg > a { color:var(--fp-ink); text-decoration:none; }
 .fp-seg > .active { background:var(--fp-ink); color:#fff; }
-.controls input { background:var(--surface); border:1.5px solid var(--border); padding:8px 14px; font-size:13px; font-family:var(--mono); color:var(--text-bright); width:190px; text-transform:uppercase; }
+.controls input { background:var(--surface); border:1.5px solid var(--fp-ink); padding:8px 14px; font-size:13px; font-family:var(--mono); color:var(--text-bright); width:190px; text-transform:uppercase; }
 .controls input::placeholder { color:var(--muted); text-transform:none; }
 .controls input:focus { outline:none; border-color:var(--accent); }
 .meta { font-family:var(--mono); font-size:11px; color:var(--muted); margin-bottom:16px; line-height:1.6; }
 .meta b { color:var(--text); font-weight:700; }
-.module { border:1.5px solid var(--border); background:var(--surface); margin-bottom:16px; }
+.module { border:1.5px solid var(--fp-ink); background:var(--surface); margin-bottom:16px; }
 .modhead { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-bright); padding:11px 14px; border-bottom:1.5px solid var(--border); background:var(--surface2); }
 .modhead .sub { color:var(--muted); text-transform:none; letter-spacing:0; font-size:10px; margin-left:8px; }
 .modbody { padding:14px; }
@@ -4398,15 +4351,15 @@ tr:last-child td { border-bottom:none; }
 .rs-col { flex:1; text-align:center; min-width:34px; }
 .rs-n { font-family:var(--mono); font-size:11px; font-weight:700; color:var(--text-bright); margin-bottom:4px; }
 .rs-barwrap { height:150px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; }
-.rs-bar { width:62%; max-width:46px; background:var(--accent); min-height:2px; }
-.rs-incident .rs-bar { background:var(--red); }
+.rs-bar { width:62%; max-width:46px; background:var(--fp-dv-1); min-height:2px; }
+.rs-incident .rs-bar { background:var(--fp-dv-2); }
 .rs-mark { color:var(--red); font-size:11px; margin-bottom:2px; }
 .rs-date { font-family:var(--mono); font-size:9px; color:var(--muted); margin-top:6px; white-space:nowrap; }
-.rs-base .rs-bar { background:var(--line); }
+.rs-base .rs-bar { background:var(--fp-dv-6); }
 .legend { font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:10px; display:flex; gap:14px; flex-wrap:wrap; }
 .legend .sw { display:inline-block; width:10px; height:10px; vertical-align:middle; margin-right:4px; }
 /* on-time stacked bar */
-.ot-bar { display:flex; height:22px; border:1.5px solid var(--border); margin:4px 0 8px; }
+.ot-bar { display:flex; height:22px; border:1.5px solid var(--fp-ink); margin:4px 0 8px; }
 .ot-seg { height:100%; }
 .ot-list { font-family:var(--mono); font-size:11px; color:var(--muted); }
 .empty { color:var(--muted); padding:22px; text-align:center; font-family:var(--mono); font-size:12px; }
@@ -4418,7 +4371,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
 <div class="container">
   <div class="header fp-band">
     <div class="brand">
-      <span class="led"></span>
+      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>Fleet <span>Insights</span></h1>
         <div class="fp-label model">INSIGHTS &middot; Fleet Analytics</div>
@@ -4431,8 +4384,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
       <a class="nav-link" href="/">&larr; Monitor</a>
     </nav>
   </div>
-  <div class="grille"></div>
-  <div class="controls">
+    <div class="controls">
     <div class="fp-seg">
       <a href="/insights?type=B748" id="seg-B748">747-8</a>
       <a href="/insights?type=A388" id="seg-A388">A380</a>
@@ -4507,7 +4459,7 @@ function ontimeBar(rel){
   const ot = (rel && rel.ontime) || [];
   if(!ot.length) return '';
   const total = ot.reduce((s,x)=>s+x.n,0) || 1;
-  const col = s => s==='ONTIME'||s==='EARLY'||s==='ARRIVED' ? 'var(--green)' : s==='DELAYED' ? 'var(--amber)' : 'var(--line)';
+  const col = s => s==='ONTIME'||s==='EARLY'||s==='ARRIVED' ? 'var(--fp-dv-1)' : s==='DELAYED' ? 'var(--fp-dv-3)' : 'var(--fp-dv-6)';
   let seg='', list=[];
   ot.forEach(x=>{ seg+='<div class="ot-seg" style="width:'+(x.n/total*100)+'%;background:'+col(x.status)+'" title="'+esc(x.status+': '+x.n)+'"></div>'; list.push(x.status+' '+x.n); });
   return '<div class="subhead">On-time mix (latest snapshot per flight)</div><div class="ot-bar">'+seg+'</div><div class="ot-list">'+list.join('  \\u00b7  ')+'</div>';
