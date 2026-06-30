@@ -3219,7 +3219,7 @@ def api_schedule():
         rows = _q(conn, """
             SELECT DISTINCT ON (o.flight_date, o.flight_number)
                 o.flight_date, o.airline, o.flight_number, o.registration,
-                a.aircraft_type, o.seed_type, o.dep_airport_iata, o.arr_airport_iata,
+                a.aircraft_type, a.icao24, o.seed_type, o.dep_airport_iata, o.arr_airport_iata,
                 o.dep_scheduled, o.arr_scheduled, o.overall_status,
                 o.prev_airline, o.prev_flight_number,
                 o.raw->'legs'->0->>'flightDuration'
@@ -3273,8 +3273,9 @@ def api_schedule():
 
     by_reg = defaultdict(list)
     types = {}
+    icao24_by_reg = {}
     starts, ends = [], []
-    for (fdate, airline, fnum, reg, atype, seed, dep, arr,
+    for (fdate, airline, fnum, reg, atype, icao24, seed, dep, arr,
          dep_t, arr_t, fis_status, pa, pn, dur_iso) in rows:
         dur = _iso_dur_min(dur_iso)
         # Frankfurt-local clock: anchor to the German endpoint, size by duration.
@@ -3289,6 +3290,7 @@ def api_schedule():
         starts.append(start)
         ends.append(end)
         types[reg] = _CANON_SHORT.get(atype, atype)
+        icao24_by_reg[reg] = icao24
 
         leg = {
             "fl": f"{airline}{fnum}", "num": fnum, "fdate": fdate.isoformat(),
@@ -3354,6 +3356,7 @@ def api_schedule():
     type_order = {"748": 0, "388": 1}
     airframes = [
         {"reg": reg, "type": types[reg], "watch": reg in _WATCH_TAILS,
+         "icao24": icao24_by_reg.get(reg),
          "legs": sorted(by_reg[reg], key=lambda x: x["start"])}
         for reg in by_reg
     ]
@@ -3725,39 +3728,79 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .gantt-rows { position:relative; }
 .gantt-grid { position:absolute; inset:0; pointer-events:none; z-index:4; }
 .grid-line { position:absolute; top:0; bottom:0; width:1px; background:var(--line); opacity:.7; }
-.gantt-row { display:flex; align-items:center; margin-bottom:4px; height:24px; }
+.gantt-row { display:flex; align-items:center; margin-bottom:6px; height:24px; }
 .gantt-row.dim { opacity:.22; }
 .gantt-row.watch { background:var(--amber-dim); border-radius:0; }
 .gantt-row.watch .gantt-label { color:var(--text-bright); }
 .gantt-label .star { color:var(--amber); font-size:10px; margin-right:1px; }
 .gantt-label { width:104px; flex-shrink:0; font-family:var(--mono); font-size:11px; font-weight:700;
-  color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; }
+  color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; text-decoration:none; }
+a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; }
 .tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; border-radius:0; color:var(--text-bright); }
 .t748 .tbadge, .tbadge.t748 { background:var(--accent); }
 .t388 .tbadge, .tbadge.t388 { background:var(--green); }
 .t359 .tbadge, .tbadge.t359 { background:var(--purple); }
 .tbadge.tother { background:var(--surface2); color:var(--muted); }
-.gantt-track { flex:1; position:relative; height:22px; background:var(--surface2); border-radius:0; overflow:hidden; }
+.gantt-track { flex:1; position:relative; height:22px; background:color-mix(in srgb,var(--fp-gray) 26%,#fff); border-radius:0; overflow:visible; }
+/* per-type colour tokens — saturated hue / light tint / deep text (white text on hue, deep on tint) */
+.gantt-flight.t748, .tie.t748 { --_s:var(--fp-sage); --_t:var(--fp-sage-tint); --_d:color-mix(in srgb,var(--fp-sage) 72%,#000); }
+.gantt-flight.t388, .tie.t388 { --_s:var(--fp-dv-4);  --_t:color-mix(in srgb,var(--fp-dv-4) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-4) 74%,#000); }
+.gantt-flight.t359, .tie.t359 { --_s:var(--fp-dv-5);  --_t:color-mix(in srgb,var(--fp-dv-5) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-5) 74%,#000); }
+.gantt-flight.tother, .tie.tother { --_s:var(--fp-gray); --_t:color-mix(in srgb,var(--fp-gray) 34%,#fff); --_d:var(--fp-body); }
+
 .gantt-flight { position:absolute; top:1px; height:20px; border-radius:0; overflow:hidden; display:flex;
-  align-items:center; cursor:pointer; opacity:.95; transition:opacity .15s, outline .15s; }
-.gantt-flight:hover { opacity:1; z-index:3; }
+  align-items:center; opacity:1; transition:opacity .15s, box-shadow .15s; }
 .gantt-flight.dim { opacity:.12; }
-.gantt-flight .lbl { font-family:var(--mono); font-size:10px; font-weight:700; white-space:nowrap; padding:0 6px; color:var(--text-bright); }
-.gantt-flight.t748 { background:var(--accent); }
-.gantt-flight.t388 { background:var(--green); }
-.gantt-flight.t359 { background:var(--purple); }
-.gantt-flight.tother { background:var(--surface2); }
-.gantt-flight.tother .lbl { color:var(--muted); }
-.gantt-flight.swap { outline:2px solid var(--amber); outline-offset:-2px; }
-/* plan-vs-actual status borders (left of "now") */
-.gantt-flight.ob-tracked   { outline:2px solid var(--text-bright); outline-offset:-2px; }
-.gantt-flight.ob-deviation { outline:2px dashed var(--red); outline-offset:-2px; }
-.gantt-flight.ob-missing   { outline:2px dashed var(--muted); outline-offset:-2px; }
-.gantt-flight.ob-extra     { outline:2px solid var(--cyan); outline-offset:-2px; }
-.gantt-flight.ghost { opacity:.34; }
-.gantt-flight.ghost .lbl { opacity:.7; }
+.gantt-flight .lbl { font-family:var(--mono); font-size:10.5px; font-weight:700; white-space:nowrap; padding:0 7px;
+  letter-spacing:.2px; display:flex; align-items:baseline; gap:5px; }
+.gantt-flight .lbl .fl { font-weight:500; font-size:9.5px; opacity:.85; }
+.clk { cursor:pointer; }
+.clk:hover { z-index:3; outline:2px solid var(--fp-ink); outline-offset:-2px; }   /* outline composes with status box-shadows */
+
+/* PAST — saturated fill + bold white label (incl. flight #) */
+.gantt-flight.st-tracked, .gantt-flight.st-actual, .gantt-flight.st-extra { background:var(--_s); }
+.gantt-flight.st-tracked .lbl, .gantt-flight.st-actual .lbl, .gantt-flight.st-extra .lbl {
+  color:#fff; text-shadow:0 1px 1.5px rgba(0,0,0,.45); }
+.gantt-flight.st-actual { box-shadow:inset 6px 0 0 var(--fp-terra); }   /* deviation: what actually flew */
+.gantt-flight.st-extra  { background:repeating-linear-gradient(45deg,var(--_s) 0 6px,color-mix(in srgb,var(--_s) 60%,#fff) 6px 11px); }
+
+/* FUTURE — light tint + bold deep label */
+.gantt-flight.st-planned { background:var(--_t); }
+.gantt-flight.st-planned .lbl { color:var(--_d); }
+
+/* NOT TRACKED yet — light grey dashed */
+.gantt-flight.st-missing { background:color-mix(in srgb,var(--fp-gray) 20%,#fff); border:1.5px dashed var(--fp-gray); }
+.gantt-flight.st-missing .lbl { color:var(--fp-muted); }
+
+/* ORIGINAL PLANNED SLOT a deviation departed from (ghost, dashed terracotta) */
+.gantt-flight.st-ghost { background:color-mix(in srgb,var(--fp-terra) 9%,transparent); border:1.5px dashed var(--fp-terra); }
+.gantt-flight.st-ghost .lbl { color:var(--fp-terra-deep); }
+
+/* SWAP / reassignment */
+.gantt-flight.is-swap { box-shadow:inset 0 0 0 2px var(--amber); }
+.gantt-flight.is-swap.st-actual { box-shadow:inset 0 0 0 2px var(--amber), inset 6px 0 0 var(--fp-terra); }
+.gantt-flight .swapchip { position:absolute; right:0; top:0; height:100%; display:flex; align-items:center;
+  font-family:var(--sans); font-size:7.5px; font-weight:700; letter-spacing:.05em; color:var(--fp-ink); background:var(--amber); padding:0 5px; }
+
+/* rotation tie — the "stay" parked away from base; hover-only, drawn behind bars */
+.tie { position:absolute; top:10px; height:3px; background:var(--_s); opacity:.4; z-index:0; cursor:help; }
+.tie::before, .tie::after { content:''; position:absolute; top:-2px; width:2px; height:7px; background:var(--_s); opacity:.75; }
+.tie::before { left:0; } .tie::after { right:0; }
+.tielab { position:absolute; top:-7px; left:50%; transform:translateX(-50%); font-family:var(--mono);
+  font-size:10px; font-weight:800; letter-spacing:.2px; color:var(--_d); background:var(--surface); padding:0 5px; white-space:nowrap; }
 .now-line { position:absolute; top:0; bottom:0; width:2px; background:var(--amber); opacity:.95; z-index:6; pointer-events:none; }
 .now-line::after { content:''; position:absolute; top:-3px; left:-3px; width:8px; height:8px; border-radius:0; background:var(--amber); }
+/* phone: don't compact — keep the timeline wide & scroll sideways; pin the reg column */
+@media (max-width:640px){
+  .gantt-inner { min-width:1040px; }
+  .gantt-row { height:40px; align-items:flex-start; padding-top:2px; }
+  .gantt-label { position:sticky; left:0; z-index:7; background:var(--surface); align-self:stretch; align-items:center; }
+  .gantt-row.watch .gantt-label { background:var(--amber-dim); }
+  .gantt-axis-row .gantt-label { background:var(--surface); }
+  .gantt-flight .lbl .fl { display:none; }     /* drop flight numbers on phone */
+  .tie { top:25px; }                            /* connecting line moved below the bars */
+  .tielab { top:3px; font-size:9.5px; }
+}
 .empty { color:var(--muted); padding:30px; text-align:center; font-family:var(--sans); font-size:12px; }
 footer { text-align:center; padding:26px 0 10px; font-family:var(--sans); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
 footer a { color:var(--muted); text-decoration:none; }
@@ -3816,15 +3859,16 @@ footer a:hover { color:var(--text); }
       <span><span class="sw" style="background:var(--green)"></span>A380</span>
       <span><span class="star" style="color:var(--amber)">&#9733;</span>watched</span>
       <span style="opacity:0.4">|</span>
-      <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--text-bright);outline-offset:-2px"></span>tracked</span>
-      <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--cyan);outline-offset:-2px"></span>actual (unplanned)</span>
-      <span><span class="sw" style="background:var(--surface2);outline:2px dashed var(--red);outline-offset:-2px"></span>deviation</span>
-      <span><span class="sw" style="background:var(--surface2);outline:2px dashed var(--muted);outline-offset:-2px"></span>not tracked</span>
-      <span><span class="sw" style="background:var(--surface2);outline:2px solid var(--amber);outline-offset:-2px"></span>reassigned</span>
+      <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
+      <span><span class="sw" style="background:var(--accent);box-shadow:inset 5px 0 0 var(--red)"></span>deviation</span>
+      <span><span class="sw" style="background:color-mix(in srgb,var(--red) 9%,#fff);border:1.5px dashed var(--red)"></span>planned slot</span>
+      <span><span class="sw" style="background:color-mix(in srgb,var(--line) 20%,#fff);border:1.5px dashed var(--line)"></span>not tracked</span>
+      <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,color-mix(in srgb,var(--accent) 60%,#fff) 4px 7px)"></span>unplanned</span>
+      <span><span class="sw" style="background:var(--accent-dim)"></span>planned (future)</span>
     </div>
   </div>
   <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
-  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The amber <b>now</b> line splits the chart: <b>left</b> = what each tail is actually doing (ADS-B) overlaid on the plan &mdash; <span style="color:var(--green)">green</span> flew the planned route, <span style="color:var(--red)">red</span> deviation, grey not-tracked-yet, <span style="color:var(--cyan)">cyan</span> flew something unplanned; <b>right</b> = the plan. Click a leg for details &amp; history.</div>
+  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The amber <b>now</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) &mdash; a <span style="color:var(--red)">terracotta cap</span> marks a deviation, with the dashed <span style="color:var(--red)">planned slot</span> beside it, and a hatched bar is an unplanned flight; to the <b>right</b>, pale bars are the plan. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
@@ -3835,6 +3879,14 @@ const $ = id => document.getElementById(id);
 function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
   return d.toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
 function tcls(t){ return ['748','388','359'].includes(t) ? 't'+t : 'tother'; }
+const HUBS=['FRA','MUC'];                       // German bases these widebodies rotate from
+function legDisplay(dep,arr){                   // destination-led label: arrow + the non-hub endpoint
+  const dh=HUBS.includes(dep), ah=HUBS.includes(arr);
+  if(dh&&!ah) return {arrow:'\\u2192', stn:arr};
+  if(!dh&&ah) return {arrow:'\\u2190', stn:dep};
+  return {arrow:'\\u2192', stn:arr||dep||'?'};
+}
+const legByKey={};                              // num|fdate -> leg, so the modal can show the actual track
 
 async function init(){
   let d;
@@ -3868,9 +3920,30 @@ async function init(){
 
   d.airframes.forEach(a=>{
     const tc=tcls(a.type);
+    const lblInner=(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span>';
     html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
-    html+='<div class="gantt-label">'+(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span></div>';
+    html+= a.icao24
+      ? '<a class="gantt-label" href="/fleet/'+a.icao24+'" title="Open '+a.reg+' in Fleet DB">'+lblInner+'</a>'
+      : '<div class="gantt-label">'+lblInner+'</div>';
     html+='<div class="gantt-track">';
+
+    // rotation ties ("stays"): consecutive legs where the tail sits at an outstation (out & back)
+    a.legs.forEach((l,i)=>{
+      const n=a.legs[i+1]; if(!n) return;
+      if(l.arr && n.dep && l.arr===n.dep && !HUBS.includes(l.arr)){
+        const ge=new Date(l.end).getTime(), gs=new Date(n.start).getTime();
+        let gl=Math.max(0,Math.min(100,(ge-t0)/range*100)), gr=Math.max(0,Math.min(100,(gs-t0)/range*100));
+        if(gr-gl>0.3){
+          const hrs=Math.max(0,Math.round((gs-ge)/3600000));
+          const tip=a.reg+' parked at '+l.arr+'\\nturnaround '+hrs+'h'
+            +'\\n'+(l.fl||'?')+' \\u2192 '+(n.fl||'?')
+            +'\\non ground '+fmt(l.end)+' \\u2192 '+fmt(n.start);
+          html+='<div class="tie '+tc+'" style="left:'+gl+'%;width:'+(gr-gl)+'%" title="'+tip.replace(/"/g,'&quot;')+'">'
+            +'<span class="tielab">@'+l.arr+' '+hrs+'H</span></div>';
+        }
+      }
+    });
+
     a.legs.forEach(l=>{
       const s=new Date(l.start).getTime(), e=new Date(l.end).getTime();
       // clip to the visible window: keep the true end position, cut the start at the edge
@@ -3878,38 +3951,48 @@ async function init(){
       const width=Math.max(0.5,right-left);
       const dur=l.dur?(Math.floor(l.dur/60)+'h'+String(l.dur%60).padStart(2,'0')):'';
       const st=l.status||'planned';
-      const obCls = st==='tracked'?' ob-tracked' : st==='deviation'?' ob-deviation'
-        : st==='missing'?' ob-missing' : st==='extra'?' ob-extra' : (l.swap?' swap':'');
-      const ghost = (st==='deviation'||st==='missing')?' ghost':'';
+      // hue = aircraft type; status = a presentation class (cap / texture / tint), never a text-colour swap
+      const stCls = st==='tracked'?'st-tracked' : st==='missing'?'st-missing'
+        : st==='deviation'?'st-ghost' : st==='extra'?'st-extra' : 'st-planned';
+      const dsp=legDisplay(l.dep,l.arr), flnum=(l.fl||'').replace('LH','');
       let title;
       if(st==='extra'){
-        title=(l.fl||'actual')+'  '+l.dep+' \\u2192 '+l.arr+'\\n\\u2713 tracked (actual) \\u00b7 no matching plan'
+        title=(l.fl||'actual')+'  '+l.dep+' \\u2192 '+l.arr+'\\n\\u2713 recorded (ADS-B) \\u00b7 no matching plan'
           +'\\n'+fmt(l.start)+' \\u2192 '+fmt(l.end);
       } else {
         title=l.fl+'  '+l.dep+' \\u2192 '+l.arr
           +'\\nDep '+fmt(l.dep_t)+' ('+l.dep+')'+(l.arr_t?'\\nArr '+fmt(l.arr_t)+' ('+l.arr+')':'')
           +(dur?'\\nFlight '+dur:'')+'  \\u00b7  '+a.type
-          +(l.prev?'\\nprev: '+l.prev:'')+'\\nlead: +'+l.lead+'d'+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
-        if((st==='tracked'||st==='deviation') && l.act){
+          +(l.prev?'\\nprev: '+l.prev:'')+(l.lead!=null?'\\nlead: +'+l.lead+'d':'')+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
+        if(st==='deviation' && l.act){
+          title+='\\n\\u26a0 planned slot \\u2014 tail actually flew '+l.act.dep+'\\u2192'+l.act.arr;
+        } else if(st==='tracked' && l.act){
           const dm=l.act.delta, ds=(dm>0?'+':'')+dm+'m';
           title+='\\n\\u2713 tracked: '+l.act.dep+'\\u2192'+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')+'  ['+ds+' vs plan]';
         } else if(st==='missing'){ title+='\\n\\u2014 no ADS-B track found yet'; }
       }
-      const lbl = st==='extra' ? (l.dep+'\\u2192'+l.arr) : (l.fl.replace('LH','')+' '+l.dep+'\\u2192'+l.arr);
-      html+='<div class="gantt-flight '+tc+obCls+ghost+'" style="left:'+left+'%;width:'+width+'%"'
-        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+(l.fl||'')+'" data-num="'+(l.num||'')+'" data-fdate="'+(l.fdate||'')+'"'
+      if(l.num && l.fdate) legByKey[l.num+'|'+l.fdate]=l;   // remember for the enriched modal
+      // unplanned "extra" legs have no flight number → carry the actual track on data-* for openActual()
+      const actAttrs = st==='extra'
+        ? ' data-cs="'+(l.fl||'')+'" data-dep="'+l.dep+'" data-arr="'+l.arr+'" data-start="'+l.start+'" data-end="'+l.end+'"'
+        : '';
+      html+='<div class="gantt-flight '+tc+' '+stCls+(l.swap?' is-swap':'')+' clk" style="left:'+left+'%;width:'+width+'%"'
+        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+(l.fl||'')+'" data-num="'+(l.num||'')+'" data-fdate="'+(l.fdate||'')+'"'+actAttrs
         +' title="'+title.replace(/"/g,'&quot;')+'">'
-        +'<span class="lbl">'+lbl+'</span></div>';
-      // deviation: also draw the actual route the tail really flew
+        +(l.swap?'<span class="swapchip">SWAP</span>':'')
+        +'<span class="lbl">'+dsp.arrow+' '+dsp.stn+(flnum?'<span class="fl">'+flnum+'</span>':'')+'</span></div>';
+      // deviation: also draw the ACTUAL route the tail really flew (clickable → actual detail)
       if(st==='deviation' && l.act){
         const as=new Date(l.act.start).getTime(), ae=new Date(l.act.end).getTime();
         const al=Math.max(0,(as-t0)/range*100), ar=Math.min(100,(ae-t0)/range*100);
-        const aw=Math.max(0.5,ar-al);
+        const aw=Math.max(0.5,ar-al), ad=legDisplay(l.act.dep,l.act.arr);
         const at=a.reg+' actually flew\\n'+l.act.dep+' \\u2192 '+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')
           +'\\n'+fmt(l.act.start)+' \\u2192 '+fmt(l.act.end)+'\\n(planned '+l.fl+' '+l.dep+'\\u2192'+l.arr+')';
-        html+='<div class="gantt-flight '+tc+' ob-extra" style="left:'+al+'%;width:'+aw+'%"'
-          +' data-dest="'+l.act.dep+' '+l.act.arr+'" title="'+at.replace(/"/g,'&quot;')+'">'
-          +'<span class="lbl">'+l.act.dep+'\\u2192'+l.act.arr+'</span></div>';
+        html+='<div class="gantt-flight '+tc+' st-actual clk" style="left:'+al+'%;width:'+aw+'%"'
+          +' data-cs="'+(l.act.cs||'')+'" data-dep="'+l.act.dep+'" data-arr="'+l.act.arr+'" data-start="'+l.act.start+'" data-end="'+l.act.end+'"'
+          +' data-planfl="'+(l.fl||'')+'" data-plandep="'+l.dep+'" data-planarr="'+l.arr+'"'
+          +' title="'+at.replace(/"/g,'&quot;')+'">'
+          +'<span class="lbl">'+ad.arrow+' '+ad.stn+'</span></div>';
       }
     });
     html+='</div></div>';
@@ -3952,11 +4035,41 @@ function fmtD(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLoca
 function isoDur(s){ if(!s) return ''; const m=s.match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/); if(!m) return ''; return (m[1]?m[1]+'h':'')+(m[2]?String(m[2]).padStart(2,'0')+'m':''); }
 function closeFl(){ $('fl-modal').classList.remove('show'); }
 function openFlight(num,fdate){
+  const leg=legByKey[num+'|'+fdate]||null;   // already-loaded leg carries the ADS-B actual
   const b=$('fl-modal-body'); b.innerHTML='<div class="empty">Loading\\u2026</div>'; $('fl-modal').classList.add('show');
-  fetch('/api/schedule/flight/LH/'+num+'/'+fdate).then(r=>r.json()).then(renderFlight)
+  fetch('/api/schedule/flight/LH/'+num+'/'+fdate).then(r=>r.json()).then(d=>renderFlight(d,leg))
     .catch(()=>{ b.innerHTML='<button class="close" onclick="closeFl()">\\u00d7</button><div class="empty">Failed to load.</div>'; });
 }
-function renderFlight(d){
+function actualBlock(leg){   // plan-vs-actual section for a leg whose departure is in the past
+  if(!leg || !['tracked','deviation','missing'].includes(leg.status)) return '';
+  let h='<div class="hist-title">Actual track (ADS-B)</div>';
+  if(leg.act){
+    const dm=leg.act.delta, ds=(dm>0?'+':'')+dm+'m', dev=leg.status==='deviation';
+    h+='<div class="det-grid">';
+    h+=row('Flew', leg.act.dep+' \\u2192 '+leg.act.arr+(leg.act.cs?'  \\u00b7  '+leg.act.cs:''));
+    h+=row('Off / On', fmt(leg.act.start)+' \\u2192 '+fmt(leg.act.end));
+    h+=row('vs plan', ds+(dev?'  \\u00b7  \\u26a0 deviation from '+leg.dep+'\\u2192'+leg.arr:'  \\u00b7  on planned route'));
+    h+='</div>';
+  } else { h+='<div class="sub">\\u2014 no ADS-B track found yet for this leg.</div>'; }
+  return h;
+}
+function openActual(ds){   // detail for a recorded (ADS-B) leg with no FIS plan
+  const b=$('fl-modal-body'); $('fl-modal').classList.add('show');
+  let h='<button class="close" onclick="closeFl()">\\u00d7</button>';
+  h+='<h3>'+(ds.cs||'Recorded flight')+(ds.dep?'  \\u00b7  '+ds.dep+'\\u2192'+ds.arr:'')+'</h3>';
+  h+='<div class="sub">'+(ds.planfl?'Deviation \\u2014 the tail flew this instead of its plan':'Unplanned \\u2014 recorded ADS-B track, no matching plan')+'</div>';
+  h+='<div class="det-grid">';
+  if(ds.cs) h+=row('Callsign', ds.cs);
+  h+=row('Route', (ds.dep||'?')+' \\u2192 '+(ds.arr||'?'));
+  h+=row('Off blocks', fmt(ds.start));
+  h+=row('On blocks', fmt(ds.end));
+  const mins=Math.round((new Date(ds.end)-new Date(ds.start))/60000);
+  if(mins>0) h+=row('Duration', Math.floor(mins/60)+'h'+String(mins%60).padStart(2,'0'));
+  if(ds.planfl) h+=row('Planned', ds.planfl+'  '+ds.plandep+'\\u2192'+ds.planarr);
+  h+='</div>';
+  b.innerHTML=h;
+}
+function renderFlight(d,leg){
   const b=$('fl-modal-body');
   let h='<button class="close" onclick="closeFl()">\\u00d7</button>';
   if(d.error){ b.innerHTML=h+'<div class="empty">'+d.error+'</div>'; return; }
@@ -3976,6 +4089,7 @@ function renderFlight(d){
     if(d.prev) h+=row('Previous leg',d.prev+(d.prev_date?' ('+fmtD(d.prev_date)+')':''));
     h+='</div>';
   } else { h+='<div class="sub">No current assignment for this date.</div>'; }
+  h+=actualBlock(leg);
   if(d.history&&d.history.length){
     h+='<div class="hist-title">Assignment history</div>';
     let pr=null;
@@ -3990,7 +4104,9 @@ function renderFlight(d){
   }
   b.innerHTML=h;
 }
-$('gantt').addEventListener('click', e=>{ const f=e.target.closest('.gantt-flight'); if(f&&f.dataset.num) openFlight(f.dataset.num, f.dataset.fdate); });
+$('gantt').addEventListener('click', e=>{ const f=e.target.closest('.gantt-flight'); if(!f) return;
+  if(f.dataset.num) openFlight(f.dataset.num, f.dataset.fdate);
+  else if(f.dataset.dep) openActual(f.dataset); });
 $('fl-modal').addEventListener('click', e=>{ if(e.target.id==='fl-modal') closeFl(); });
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeFl(); });
 
