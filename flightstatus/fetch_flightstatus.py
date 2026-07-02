@@ -5,8 +5,8 @@ Nightly Lufthansa flight-status fetcher.
 Pulls the public lufthansa.com FIS feed
 (`/service/api/fis/byflightnumber?flightNumber=LH716&date=YYYY-MM-DD`) for the
 catalogued B748/A388 flight numbers (see `fis_flight_catalog` — history ∪ ADS-B
-seed ∪ even/odd pairing) across a date window that spans a few days ahead *and*
-the last couple of days, and records the assigned airframe (tail), scheduled
+seed ∪ even/odd pairing) across a date window that spans a few days ahead, today,
+*and* the last couple of days, and records the assigned airframe (tail), scheduled
 route/times, status, and the aircraft's previous flight into
 `flight_status_observations`. Forward dates are the provisional plan; the past
 (backfill) dates return the actually-operated tail (ARRIVED) as ground truth.
@@ -18,7 +18,7 @@ run_nightly.sh). We load the timetable page once to establish the session, then
 issue same-origin `fetch()`es from inside the page.
 
 Run modes:
-  python fetch_flightstatus.py                 # nightly batch (catalog x -BACKFILL..+LOOKAHEAD days)
+  python fetch_flightstatus.py                 # nightly batch (catalog x -BACKFILL..+LOOKAHEAD days, incl. D0)
   python fetch_flightstatus.py --flight LH716 --date 2026-06-25   # ad-hoc single lookup (prints JSON)
   python fetch_flightstatus.py --dry-run       # batch, print candidate set + plan, no browser/DB writes
 
@@ -623,10 +623,14 @@ def run_batch(dry_run: bool = False) -> int:
     today = date.today()
     future = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
     past = [today - timedelta(days=d) for d in range(1, BACKFILL_DAYS + 1)]  # truth pass
-    targets = sorted(past + future)
-    # Chained legs may reference an adjacent day (e.g. the +1 flight's previous
-    # leg is today), so allow chaining to reach today too.
-    window_dates = set(targets) | {today}
+    # Sweep D0 (today) too: same-day tail swaps only show up on today's slice, so
+    # skipping it lets an already-captured assignment go stale. It's a forecast
+    # day (not settled), so it's never truth-skipped and — offset 0 — is queried
+    # first under the priority sort.
+    targets = sorted([today, *past, *future])
+    # Chained legs may reference any day in the swept window; targets now spans
+    # D0, so its set already bounds chain reachability.
+    window_dates = set(targets)
 
     # Truth pass: skip past (number, date) pairs already settled — their tail
     # won't change, so re-querying them wastes lookups.
