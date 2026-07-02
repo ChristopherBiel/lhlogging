@@ -31,6 +31,7 @@ import random
 import re
 import sys
 import time
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 import psycopg
@@ -237,6 +238,93 @@ def existing_truth(conn: psycopg.Connection, start: date, end_exclusive: date) -
             (TERMINAL_STATUSES, start, end_exclusive),
         )
         return {(r[0], r[1]) for r in cur.fetchall()}
+
+
+# --- coverage audit (continuity monitor) ------------------------------------
+def coverage_audit(conn: psycopg.Connection, today: date, horizon_days: int) -> dict:
+    """Reconstruct every fleet tail's forecast rotation and score its coverage.
+
+    For each active A388/B748 tail, take the latest snapshot of each upcoming
+    flight, order by scheduled departure, and check the rotation is physically
+    coherent: each leg's arrival airport is the next leg's departure airport
+    (no *gap* — a missing leg), and no two legs overlap in time (no *overlap* —
+    a stale ghost or FIS double-booking). A tail is `clean` if it has neither.
+    `absent` = active fleet tails with no upcoming leg at all (maintenance, or a
+    coverage hole). Read-only; returns a summary dict and logs a one-line metric.
+    """
+    horizon_end = today + timedelta(days=horizon_days)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (o.flight_date, o.flight_number)
+                btrim(o.registration), o.flight_number,
+                o.dep_airport_iata, o.arr_airport_iata, o.dep_scheduled, o.arr_scheduled
+            FROM flight_status_observations o
+            JOIN aircraft a ON a.registration = o.registration
+            WHERE o.found AND o.dep_scheduled IS NOT NULL AND o.arr_scheduled IS NOT NULL
+              AND o.flight_date >= %s AND o.flight_date <= %s
+              AND a.aircraft_type = ANY(%s)
+            ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+            """,
+            (today, horizon_end, SEED_TYPES),
+        )
+        legrows = cur.fetchall()
+        cur.execute(
+            "SELECT DISTINCT btrim(registration) FROM aircraft "
+            "WHERE aircraft_type = ANY(%s) AND is_active",
+            (SEED_TYPES,),
+        )
+        roster = {r[0] for r in cur.fetchall()}
+
+    bytail: dict[str, list] = defaultdict(list)
+    for reg, fnum, dep, arr, dep_t, arr_t in legrows:
+        bytail[reg].append({"fnum": fnum, "dep": dep, "arr": arr, "dep_t": dep_t, "arr_t": arr_t})
+
+    gaps, overlaps = {}, {}
+    for reg, legs in bytail.items():
+        legs.sort(key=lambda l: l["dep_t"])
+        tail_gaps = [f"{legs[i]['arr']}!={legs[i + 1]['dep']}"
+                     for i in range(len(legs) - 1)
+                     if legs[i]["arr"] != legs[i + 1]["dep"]]
+        tail_overlaps = [f"LH{a['fnum']}xLH{b['fnum']}"
+                         for i, a in enumerate(legs) for b in legs[i + 1:]
+                         if a["dep_t"] < b["arr_t"] and b["dep_t"] < a["arr_t"]]
+        if tail_gaps:
+            gaps[reg] = tail_gaps
+        if tail_overlaps:
+            overlaps[reg] = tail_overlaps
+
+    seen = set(bytail)
+    clean = seen - set(gaps) - set(overlaps)
+    absent = sorted(roster - seen)
+    summary = {
+        "window": [today.isoformat(), horizon_end.isoformat()],
+        "fleet": len(roster), "seen": len(seen), "clean": len(clean),
+        "gaps": gaps, "overlaps": overlaps, "absent": absent,
+    }
+    detail = ""
+    if gaps:
+        detail += f" | GAPS {gaps}"
+    if overlaps:
+        detail += f" | OVERLAPS {overlaps}"
+    if absent:
+        detail += f" | ABSENT {absent}"
+    log(f"coverage[{today}..{horizon_end}]: fleet={len(roster)} seen={len(seen)} "
+        f"clean={len(clean)} gaps={len(gaps)} overlaps={len(overlaps)} absent={len(absent)}{detail}")
+    return summary
+
+
+def store_coverage(conn: psycopg.Connection, run_id: int, summary: dict) -> None:
+    """Persist the coverage summary on the batch_runs row; skip gracefully if the
+    column isn't there yet (migration 008 unapplied)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE batch_runs SET coverage = %s::jsonb WHERE id = %s",
+                        (json.dumps(summary), run_id))
+        conn.commit()
+    except psycopg.errors.UndefinedColumn:
+        conn.rollback()
+        log("coverage column absent (apply migration 008) — summary not stored")
 
 
 def upsert_observation(conn: psycopg.Connection, obs: dict) -> None:
@@ -534,6 +622,7 @@ def run_batch(dry_run: bool = False) -> int:
     run_id = log_batch_start(conn)
     total = ok = err = upserted = chained = resets = 0
     status, detail = "ok", None
+    summary = None
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(
@@ -598,11 +687,18 @@ def run_batch(dry_run: bool = False) -> int:
                 except Exception:
                     pass
             browser.close()
+        # coverage audit (monitor) — read-only; must never fail the run
+        try:
+            summary = coverage_audit(conn, today, LOOKAHEAD_DAYS)
+        except Exception as e:
+            log(f"coverage audit error (non-fatal): {e}")
     except Exception as e:
         status, detail = "error", str(e)
         log(f"batch error: {e}")
     finally:
         log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
+        if summary is not None:
+            store_coverage(conn, run_id, summary)
         conn.close()
     log(f"done: {total} lookups ({chained} via chain, {resets} session recycles), "
         f"{ok} found, {err} blocked/missing, {upserted} rows upserted")
@@ -646,8 +742,18 @@ def main() -> int:
     ap.add_argument("--flight", help="ad-hoc: flight number, e.g. LH716")
     ap.add_argument("--date", help="ad-hoc: target date YYYY-MM-DD")
     ap.add_argument("--dry-run", action="store_true", help="batch: print seed only")
+    ap.add_argument("--audit", action="store_true",
+                    help="print the coverage audit for the current window and exit (no browser)")
     args = ap.parse_args()
 
+    if args.audit:
+        conn = connect()
+        try:
+            summary = coverage_audit(conn, date.today(), LOOKAHEAD_DAYS)
+            print(json.dumps(summary, indent=2, default=str))
+        finally:
+            conn.close()
+        return 0
     if args.flight or args.date:
         if not (args.flight and args.date):
             ap.error("--flight and --date must be given together")
