@@ -4,9 +4,12 @@ Nightly Lufthansa flight-status fetcher.
 
 Pulls the public lufthansa.com FIS feed
 (`/service/api/fis/byflightnumber?flightNumber=LH716&date=YYYY-MM-DD`) for the
-B748 and A388 flight numbers seen in the last couple of days, a few days ahead,
-and records the assigned airframe (tail), scheduled route/times, status, and the
-aircraft's previous flight into `flight_status_observations`.
+catalogued B748/A388 flight numbers (see `fis_flight_catalog` — history ∪ ADS-B
+seed ∪ even/odd pairing) across a date window that spans a few days ahead *and*
+the last couple of days, and records the assigned airframe (tail), scheduled
+route/times, status, and the aircraft's previous flight into
+`flight_status_observations`. Forward dates are the provisional plan; the past
+(backfill) dates return the actually-operated tail (ARRIVED) as ground truth.
 
 The endpoint sits behind Imperva/Distil bot management, which blocks plain HTTP
 clients and headless browsers. The only thing that gets through is a *real*
@@ -15,9 +18,9 @@ run_nightly.sh). We load the timetable page once to establish the session, then
 issue same-origin `fetch()`es from inside the page.
 
 Run modes:
-  python fetch_flightstatus.py                 # nightly batch (seed from DB, +1..+LOOKAHEAD days)
+  python fetch_flightstatus.py                 # nightly batch (catalog x -BACKFILL..+LOOKAHEAD days)
   python fetch_flightstatus.py --flight LH716 --date 2026-06-25   # ad-hoc single lookup (prints JSON)
-  python fetch_flightstatus.py --dry-run       # batch, print seed + would-fetch, no browser/DB writes
+  python fetch_flightstatus.py --dry-run       # batch, print candidate set + plan, no browser/DB writes
 
 Must be run under a display (Xvfb): `xvfb-run -a python fetch_flightstatus.py`.
 """
@@ -43,6 +46,13 @@ DB_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 SEED_TYPES = [t.strip() for t in os.environ.get("FIS_SEED_TYPES", "B748,A388").split(",") if t.strip()]
 SEED_LOOKBACK_DAYS = int(os.environ.get("FIS_SEED_LOOKBACK_DAYS", "2"))
 LOOKAHEAD_DAYS = int(os.environ.get("FIS_LOOKAHEAD_DAYS", "4"))
+# Truth pass: also query the last N days so FIS returns the *actually-operated*
+# tail (overallStatus ARRIVED) as ground truth for calibration. FIS only keeps a
+# rolling few-days window of past flights, so the twice-daily job must catch them
+# soon after operation. Already-settled (ARRIVED/CANCELLED) flights are skipped.
+BACKFILL_DAYS = int(os.environ.get("FIS_BACKFILL_DAYS", "2"))
+# A past flight in one of these states won't change tail again — don't re-query.
+TERMINAL_STATUSES = ["ARRIVED", "CANCELLED"]
 # Distil throttles by request rate: ~2.5s pacing got ~70 lookups in before it
 # started 403ing. This is a nightly job with a full hour to run, so we pace
 # gently (a few hundred lookups still finish in ~15min) and, on a block, wait
@@ -56,7 +66,11 @@ BLOCK_BACKOFF_S = float(os.environ.get("FIS_BLOCK_BACKOFF_S", "45.0"))
 # seed. The FIS `previousFlight` field names them, so after the seed fetch we
 # follow that chain a couple of hops to fill the gaps. Capped to stay gentle.
 CHAIN_HOPS = int(os.environ.get("FIS_CHAIN_HOPS", "2"))
-MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "300"))
+# Catalog sweep (~40 numbers) x (BACKFILL_DAYS + LOOKAHEAD_DAYS) date slices runs
+# a bit larger than the old seed; give headroom so a run isn't truncated. Work is
+# priority-ordered by lead time, so if this cap does bite it drops the
+# least-valuable far-future lookups first.
+MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "400"))
 # Distil caps successful lookups per browser session (~100-115). Recycle the
 # browser context (fresh cf_clearance) every N lookups to stay under it — needed
 # once chain expansion pushes a run past ~120 lookups.
@@ -110,6 +124,119 @@ def seed_flight_numbers(conn: psycopg.Connection) -> list[dict]:
         if num and num not in seen:
             seen[num] = {"flight_number": num, "seed_type": atype}
     return list(seen.values())
+
+
+# --- flight-number catalog (which flights to sweep) -------------------------
+def refresh_catalog(conn: psycopg.Connection, adsb_seed: list[dict], commit: bool = True) -> bool:
+    """Idempotently (re)populate `fis_flight_catalog` from every discovery source.
+
+    Returns True if the catalog table exists and was refreshed; False if it's
+    missing (migration 007 not yet applied) so the caller can fall back to the
+    legacy ADS-B seed — DB migrations are manual, so this must degrade
+    gracefully. When ``commit`` is False the writes are left in the open
+    transaction (visible to reads in the same session) for the --dry-run diff,
+    and the caller rolls back.
+    """
+    try:
+        with conn.cursor() as cur:
+            # Source A — FIS history: numbers ever operated by a known A388/B748
+            # tail. Joining on registration (not the often-empty aircraftType
+            # string) is the robust widebody signal — it catches the tactical
+            # A380 MUC legs too.
+            cur.execute(
+                """
+                INSERT INTO fis_flight_catalog
+                    (airline, flight_number, seed_type, source, last_widebody_date)
+                SELECT o.airline, o.flight_number, MIN(a.aircraft_type), 'fis_history', MAX(o.flight_date)
+                FROM flight_status_observations o
+                JOIN aircraft a ON a.registration = o.registration
+                WHERE o.found AND a.aircraft_type = ANY(%s)
+                GROUP BY o.airline, o.flight_number
+                ON CONFLICT (airline, flight_number) DO UPDATE SET
+                    seed_type          = COALESCE(EXCLUDED.seed_type, fis_flight_catalog.seed_type),
+                    last_widebody_date = GREATEST(fis_flight_catalog.last_widebody_date, EXCLUDED.last_widebody_date),
+                    status             = 'active',
+                    consecutive_misses = 0,
+                    updated_at         = NOW()
+                """,
+                (SEED_TYPES,),
+            )
+            # Source B — legacy ADS-B seed: still first to catch a brand-new
+            # number before FIS history has it.
+            for s in adsb_seed:
+                cur.execute(
+                    """
+                    INSERT INTO fis_flight_catalog (airline, flight_number, seed_type, source)
+                    VALUES ('LH', %s, %s, 'adsb_seed')
+                    ON CONFLICT (airline, flight_number) DO UPDATE SET
+                        seed_type  = COALESCE(fis_flight_catalog.seed_type, EXCLUDED.seed_type),
+                        updated_at = NOW()
+                    """,
+                    (s["flight_number"], s["seed_type"]),
+                )
+            # Source C — pairing: an outbound N implies its return sibling (N+1
+            # for even, N-1 for odd). Only off widebody-confirmed numbers so we
+            # don't pair charter/non-widebody noise. This is what makes skipped
+            # turnaround legs (e.g. LH763) get queried without any chaining.
+            cur.execute(
+                """
+                INSERT INTO fis_flight_catalog
+                    (airline, flight_number, seed_type, paired_number, source)
+                SELECT c.airline,
+                       CASE WHEN c.flight_number::int % 2 = 0
+                            THEN (c.flight_number::int + 1)::text
+                            ELSE (c.flight_number::int - 1)::text END,
+                       c.seed_type, c.flight_number, 'pairing'
+                FROM fis_flight_catalog c
+                WHERE c.flight_number ~ '^[0-9]+$' AND c.last_widebody_date IS NOT NULL
+                ON CONFLICT (airline, flight_number) DO UPDATE SET
+                    paired_number = COALESCE(fis_flight_catalog.paired_number, EXCLUDED.paired_number),
+                    updated_at    = NOW()
+                """
+            )
+            # Backfill paired_number on any rows still missing it.
+            cur.execute(
+                """
+                UPDATE fis_flight_catalog SET paired_number =
+                    CASE WHEN flight_number::int % 2 = 0
+                         THEN (flight_number::int + 1)::text
+                         ELSE (flight_number::int - 1)::text END
+                WHERE flight_number ~ '^[0-9]+$' AND paired_number IS NULL
+                """
+            )
+        if commit:
+            conn.commit()
+        return True
+    except psycopg.errors.UndefinedTable:
+        conn.rollback()
+        return False
+
+
+def catalog_candidates(conn: psycopg.Connection) -> list[dict]:
+    """Active catalog flight numbers to sweep this run."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT flight_number, seed_type FROM fis_flight_catalog
+            WHERE airline = 'LH' AND status = 'active'
+            ORDER BY flight_number::int
+            """
+        )
+        return [{"flight_number": r[0], "seed_type": r[1]} for r in cur.fetchall()]
+
+
+def existing_truth(conn: psycopg.Connection, start: date, end_exclusive: date) -> set:
+    """(flight_number, flight_date) pairs already captured with a terminal status,
+    so the truth pass can skip re-querying flights whose tail is settled."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT flight_number, flight_date FROM flight_status_observations
+            WHERE overall_status = ANY(%s) AND flight_date >= %s AND flight_date < %s
+            """,
+            (TERMINAL_STATUSES, start, end_exclusive),
+        )
+        return {(r[0], r[1]) for r in cur.fetchall()}
 
 
 def upsert_observation(conn: psycopg.Connection, obs: dict) -> None:
@@ -336,41 +463,73 @@ def fetch_one(sess, flight_number: str, target: date, reset_cb):
 def run_batch(dry_run: bool = False) -> int:
     conn = connect()
     try:
-        seed = seed_flight_numbers(conn)
+        adsb_seed = seed_flight_numbers(conn)
     except Exception as e:
         log(f"seed query failed: {e}")
         conn.close()
         return 1
-    if not seed:
-        log("no seed flight numbers (no recent B748/A388 flights?) — nothing to do")
+
+    # The catalog is the primary source; the ADS-B seed folds into it. If the
+    # catalog table isn't there yet (migration 007 unapplied), fall back to the
+    # seed alone so the job keeps running.
+    using_catalog = refresh_catalog(conn, adsb_seed, commit=not dry_run)
+    if using_catalog:
+        candidates = catalog_candidates(conn)
+        source_label = "catalog"
+    else:
+        candidates = adsb_seed
+        source_label = "adsb-seed (catalog table absent)"
+    if not candidates:
+        log("no candidate flight numbers — nothing to do")
         conn.close()
         return 0
 
     today = date.today()
-    targets = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
-    # Chained legs may reference the day before a target (e.g. the +1 flight's
-    # previous leg is today), so allow chaining to reach today too.
+    future = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
+    past = [today - timedelta(days=d) for d in range(1, BACKFILL_DAYS + 1)]  # truth pass
+    targets = sorted(past + future)
+    # Chained legs may reference an adjacent day (e.g. the +1 flight's previous
+    # leg is today), so allow chaining to reach today too.
     window_dates = set(targets) | {today}
-    log(f"seed: {len(seed)} flight numbers x {len(targets)} days = {len(seed) * len(targets)} base lookups "
-        f"(types={SEED_TYPES}, lookahead={LOOKAHEAD_DAYS}, chain_hops={CHAIN_HOPS})")
-    log("flight numbers: " + ", ".join(f"LH{s['flight_number']}({s['seed_type']})" for s in seed))
 
-    if dry_run:
-        log("dry-run: not launching browser or writing to DB")
-        conn.close()
-        return 0
+    # Truth pass: skip past (number, date) pairs already settled — their tail
+    # won't change, so re-querying them wastes lookups.
+    have_truth = existing_truth(conn, min(past), today) if past else set()
+
+    log(f"source={source_label}: {len(candidates)} flight numbers x dates "
+        f"{targets[0]}..{targets[-1]} (backfill={BACKFILL_DAYS}, lookahead={LOOKAHEAD_DAYS}, "
+        f"chain_hops={CHAIN_HOPS})")
+    log("flight numbers: " + ", ".join(f"LH{s['flight_number']}({s['seed_type']})" for s in candidates))
 
     # Work queue of (flight_number, date, seed_type, hop), deduped by (num, date).
-    # Seed entries are hop 0; previousFlight discoveries are enqueued at hop+1.
+    # Base entries are hop 0; previousFlight discoveries are enqueued at hop+1.
     queued = set()
     work = []
-    for s in seed:
+    skipped_truth = 0
+    for s in candidates:
         for t in targets:
             key = (s["flight_number"], t)
-            if key not in queued:
-                queued.add(key)
-                work.append((s["flight_number"], t, s["seed_type"], 0))
-    random.shuffle(work)  # randomise lookup order so the request pattern differs each run
+            if key in queued:
+                continue
+            if t < today and key in have_truth:  # already-settled past flight
+                skipped_truth += 1
+                continue
+            queued.add(key)
+            work.append((s["flight_number"], t, s["seed_type"], 0))
+    # Priority: nearest dates first (small |offset|), shuffled within each lead-
+    # time band so the request pattern still varies. If MAX_LOOKUPS bites, the
+    # drops are then the least-valuable far-future lookups.
+    random.shuffle(work)
+    work.sort(key=lambda w: abs((w[1] - today).days))
+
+    if dry_run:
+        n_truth = sum(1 for w in work if w[1] < today)
+        log(f"dry-run: {len(work)} planned lookups ({n_truth} truth / {len(work) - n_truth} forecast); "
+            f"{skipped_truth} past pairs skipped as already-settled")
+        log("dry-run: not launching browser or writing to DB")
+        conn.rollback()  # discard the uncommitted catalog refresh
+        conn.close()
+        return 0
 
     run_id = log_batch_start(conn)
     total = ok = err = upserted = chained = resets = 0
@@ -426,7 +585,8 @@ def run_batch(dry_run: bool = False) -> int:
                         pn, pd = obs["prev_flight_number"], obs["prev_flight_date"]
                         if (hop < CHAIN_HOPS and obs["prev_airline"] == "LH"
                                 and pn and pn.isdigit() and pd in window_dates
-                                and (pn, pd) not in queued and len(queued) < MAX_LOOKUPS):
+                                and (pn, pd) not in queued and len(queued) < MAX_LOOKUPS
+                                and not (pd < today and (pn, pd) in have_truth)):
                             queued.add((pn, pd))
                             work.append((pn, pd, seed_type, hop + 1))
                             chained += 1
