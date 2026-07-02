@@ -11,6 +11,10 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # needs_review) for recent flights using the flight_routes reference
 20,50 * * * *  root  . /etc/environment && cd /app && python -m lhlogging.route_enrichment >> /var/log/lhlogging/cron.log 2>&1
 
+# Self-loop prune — shortly after enrichment, deletes ground-only dep==arr legs
+# (needs_review noise with no airborne track); keeps real returns/mis-snaps
+25,55 * * * *  root  . /etc/environment && cd /app && python -m tools.prune_self_loops --apply >> /var/log/lhlogging/cron.log 2>&1
+
 # Positions cleanup — daily at 04:00 UTC, deletes snapshots older than retention window
 0 4  * * *  root  . /etc/environment && cd /app && python -m lhlogging.positions_cleanup >> /var/log/lhlogging/cron.log 2>&1
 
