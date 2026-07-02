@@ -76,6 +76,13 @@ MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "400"))
 # browser context (fresh cf_clearance) every N lookups to stay under it — needed
 # once chain expansion pushes a run past ~120 lookups.
 SESSION_LOOKUPS = int(os.environ.get("FIS_SESSION_LOOKUPS", "80"))
+# Catalog lifecycle: a catalogued number swept without returning a widebody
+# accrues misses; at PROBATION it's flagged, at RETIRE it drops out of the sweep
+# (any widebody hit — including one found via chaining — resets it to active).
+# Keeps speculative pairing/seed additions from bloating the sweep forever. At
+# twice-daily runs, RETIRE=8 ≈ 4 days of no widebody.
+CATALOG_PROBATION_MISSES = int(os.environ.get("FIS_CATALOG_PROBATION_MISSES", "4"))
+CATALOG_RETIRE_MISSES = int(os.environ.get("FIS_CATALOG_RETIRE_MISSES", "8"))
 
 BASE = "https://www.lufthansa.com"
 PAGE_URL = f"{BASE}/de/en/timetable-and-flight-status"
@@ -156,9 +163,9 @@ def refresh_catalog(conn: psycopg.Connection, adsb_seed: list[dict], commit: boo
                 ON CONFLICT (airline, flight_number) DO UPDATE SET
                     seed_type          = COALESCE(EXCLUDED.seed_type, fis_flight_catalog.seed_type),
                     last_widebody_date = GREATEST(fis_flight_catalog.last_widebody_date, EXCLUDED.last_widebody_date),
-                    status             = 'active',
-                    consecutive_misses = 0,
                     updated_at         = NOW()
+                -- status/consecutive_misses are owned by prune_catalog (the
+                -- lifecycle pass); discovery must not reactivate a retired number.
                 """,
                 (SEED_TYPES,),
             )
@@ -214,16 +221,57 @@ def refresh_catalog(conn: psycopg.Connection, adsb_seed: list[dict], commit: boo
 
 
 def catalog_candidates(conn: psycopg.Connection) -> list[dict]:
-    """Active catalog flight numbers to sweep this run."""
+    """Catalog flight numbers to sweep this run: everything not retired (active +
+    probation — a probation number is still queried so a widebody hit can revive
+    it). Retired numbers drop out until re-discovered via chaining."""
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT flight_number, seed_type FROM fis_flight_catalog
-            WHERE airline = 'LH' AND status = 'active'
+            WHERE airline = 'LH' AND status <> 'retired'
             ORDER BY flight_number::int
             """
         )
         return [{"flight_number": r[0], "seed_type": r[1]} for r in cur.fetchall()]
+
+
+def prune_catalog(conn: psycopg.Connection) -> None:
+    """Lifecycle pass, run after each sweep. A number with recent widebody
+    evidence (this run or the last, incl. via chaining) resets to active; one
+    without accrues a miss and steps active→probation→retired. Retired numbers
+    stop being swept, so speculative pairing/seed additions can't bloat the
+    sweep forever. Skips gracefully if the catalog table is absent."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH recent_hits AS (
+                    SELECT DISTINCT o.flight_number
+                    FROM flight_status_observations o
+                    JOIN aircraft a ON a.registration = o.registration
+                    WHERE o.found AND a.aircraft_type = ANY(%(types)s)
+                      AND o.observed_date >= CURRENT_DATE - 1
+                )
+                UPDATE fis_flight_catalog c SET
+                    consecutive_misses = CASE WHEN c.flight_number IN (SELECT flight_number FROM recent_hits)
+                                              THEN 0 ELSE c.consecutive_misses + 1 END,
+                    status = CASE
+                        WHEN c.flight_number IN (SELECT flight_number FROM recent_hits) THEN 'active'
+                        WHEN c.consecutive_misses + 1 >= %(retire)s THEN 'retired'
+                        WHEN c.consecutive_misses + 1 >= %(probation)s THEN 'probation'
+                        ELSE c.status END,
+                    updated_at = NOW()
+                WHERE c.status <> 'retired' OR c.flight_number IN (SELECT flight_number FROM recent_hits)
+                """,
+                {"types": SEED_TYPES, "retire": CATALOG_RETIRE_MISSES,
+                 "probation": CATALOG_PROBATION_MISSES},
+            )
+            cur.execute("SELECT status, count(*) FROM fis_flight_catalog GROUP BY status ORDER BY status")
+            dist = {r[0]: r[1] for r in cur.fetchall()}
+        conn.commit()
+        log(f"catalog prune: {dist}")
+    except psycopg.errors.UndefinedTable:
+        conn.rollback()
 
 
 def existing_truth(conn: psycopg.Connection, start: date, end_exclusive: date) -> set:
@@ -687,6 +735,12 @@ def run_batch(dry_run: bool = False) -> int:
                 except Exception:
                     pass
             browser.close()
+        # catalog lifecycle: retire numbers that stopped returning a widebody.
+        if using_catalog:
+            try:
+                prune_catalog(conn)
+            except Exception as e:
+                log(f"catalog prune error (non-fatal): {e}")
         # coverage audit (monitor) — read-only; must never fail the run
         try:
             summary = coverage_audit(conn, today, LOOKAHEAD_DAYS)
