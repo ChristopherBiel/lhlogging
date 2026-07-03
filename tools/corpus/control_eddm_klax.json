@@ -9,6 +9,7 @@
    "KLAX"
   ]
  ],
+ "xfail": false,
  "n_positions": 194,
  "positions": [
   {

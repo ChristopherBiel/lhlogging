@@ -9,6 +9,7 @@
    "EDDM"
   ]
  ],
+ "xfail": false,
  "n_positions": 122,
  "positions": [
   {

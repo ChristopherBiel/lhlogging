@@ -32,9 +32,12 @@ def pt(s):
     return datetime.fromisoformat(s)
 
 
-# (id, icao24, t_start, t_end, category, expected_legs, description)
+# (id, icao24, t_start, t_end, category, expected_legs, description[, xfail])
 # Times bracket the flight; ±90min buffer is added so the windowed replay sees
 # the pre-departure ground samples. Expected legs verified from raw positions.
+# xfail=True marks a fixture whose expected legs encode the DESIRED behaviour
+# for a known-open bug (see tools/EDGE_CASES.md): run_corpus reports it apart
+# and the gate does not fail on it — it starts passing when the fix lands.
 CASES = [
     ("cruise_snap_egte", "3c65a8", "2026-06-29 00:23:00+00", "2026-06-29 07:07:00+00",
      "CRUISE_SNAP", [["KBOS", "EDDM"]],
@@ -57,6 +60,31 @@ CASES = [
     ("control_klax_eddm", "3c65a1", "2026-06-08 00:58:00+00", "2026-06-08 11:27:00+00",
      "CONTROL", [["KLAX", "EDDM"]],
      "D-AIMA DLH453: clean long-haul, single leg. MUST stay single+correct."),
+    # --- 2026-07 edge-case audit additions (tools/EDGE_CASES.md) ---
+    ("diversion_saar_saez", "3c4b33", "2026-06-30 19:30:00+00", "2026-07-01 14:30:00+00",
+     "REAL_STOP", [["EDDF", "SAAR"], ["SAAR", "SAEZ"]],
+     "D-ABYS DLH510: genuine diversion EDDF->SAAR (Santa Rosa) + hop to SAEZ. MUST stay split."),
+    ("diversion_kclt_krdu", "3c6573", "2026-07-01 07:30:00+00", "2026-07-01 21:30:00+00",
+     "REAL_STOP", [["EDDF", "KCLT"], ["KCLT", "KRDU"]],
+     "D-AIKS DLH408: go-around + diversion stop at KCLT (~1h), continuation to KRDU. MUST stay split."),
+    ("c6_callsign_flip_lqsa", "3c65cd", "2026-06-30 07:45:00+00", "2026-06-30 13:30:00+00",
+     "C6_FLIP", [["EDDF", "UNKN"], ["UNKN", "EDDF"]],
+     "D-AINM DLH3MU->DLH6YX: arrival at LQSA lost, return climbs out already on next callsign; "
+     "C6 must keep the honest EDDF->UNKN + ?->EDDF pair (enrichment later mangles it — not the detector's fault). "
+     "Pins that the EDDF landing is never lost."),
+    ("p3_leftover_klax", "3c4b2a", "2026-07-01 09:00:00+00", "2026-07-02 09:00:00+00",
+     "P3_LEFTOVER", [["EDDF", "KLAX"], ["KLAX", "EDDF"]],
+     "D-ABYJ DLH456/457: in prod, a frozen-feed tail fix left after the KLAX close re-opened "
+     "a phantom KLAX leg via P3 (review=false) and C6 then closed it UNKN. The replay does NOT "
+     "reproduce it (needs ingest-lag simulation — see EDGE_CASES.md); kept as a control."),
+    ("p3_approach_snap_edma", "3c4a02", "2026-06-21 14:30:00+00", "2026-06-21 17:30:00+00",
+     "P3_APPROACH", [["UNKN", "EDDM"]],
+     "D-ABPB DLH6EE: first sighting at 2308m FLAT on approach; P3 snaps dep to overflown "
+     "EDMA (Augsburg) with review=false. Desired: honest unknown departure.", True),
+    ("singleton_altglitch_eddf", "3c65d6", "2026-06-30 05:30:00+00", "2026-06-30 09:30:00+00",
+     "SINGLETON", [["EDDF", "ESGG"]],
+     "D-AINV DLH3YY: one corrupt 11894m sample while parked 20min before the real EDDF->ESGG "
+     "departure fabricates a 2-min EDDF==EDDF 'flight'. Desired: only the real leg.", True),
 ]
 
 
@@ -91,7 +119,9 @@ def main():
 
     all_coords = []
     manifest = []
-    for cid, icao, ts, te, cat, expected, desc in CASES:
+    for case in CASES:
+        cid, icao, ts, te, cat, expected, desc = case[:7]
+        xfail = bool(case[7]) if len(case) > 7 else False
         lo, hi = pt(ts) - timedelta(minutes=90), pt(te) + timedelta(minutes=90)
         rows = [r for r in rows_by[icao] if lo <= pt(r["captured_at"]) <= hi]
         positions = [{
@@ -108,10 +138,12 @@ def main():
                 pass
         fixture = {"id": cid, "icao24": icao, "category": cat,
                    "description": desc, "expected_legs": expected,
+                   "xfail": xfail,
                    "n_positions": len(positions), "positions": positions}
         (CORPUS / f"{cid}.json").write_text(json.dumps(fixture, indent=1))
         manifest.append((cid, cat, len(positions), expected))
-        print(f"  {cid:30s} {cat:11s} {len(positions):4d} pos  expect={expected}")
+        mark = "  [xfail]" if xfail else ""
+        print(f"  {cid:30s} {cat:11s} {len(positions):4d} pos  expect={expected}{mark}")
 
     # prune airports to those within 60km of any fixture position (safe superset
     # of any <=50km nearest lookup) -> self-contained + small.

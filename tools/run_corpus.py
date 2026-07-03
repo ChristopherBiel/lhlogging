@@ -69,33 +69,47 @@ def main():
 
     print(f"Config: onground_max_speed={args.onground_max_speed} "
           f"landing_min_consecutive={args.landing_min_consecutive}\n")
-    passed = 0
+    passed = failed = xfailed = xpassed = 0
     tp = fp = fn = 0
     for path in files:
         fx = json.load(open(path))
+        xfail = bool(fx.get("xfail"))
         positions = load_fixture_positions(fx)
         legs = D.replay_aircraft(positions, airports, cfg)
         key = lambda p: (str(p[0]), str(p[1]))
         got = sorted({canon_pair(l.departure_airport_icao, l.arrival_airport_icao) for l in legs}, key=key)
         exp = sorted({canon_pair(d, a) for d, a in fx["expected_legs"]}, key=key)
         ok = got == exp
-        passed += ok
-        # leg-level P/R (multiset by canonical pair)
-        exp_set, got_set = set(exp), set(got)
-        tp += len(exp_set & got_set)
-        fn += len(exp_set - got_set)
-        fp += len(got_set - exp_set)
-        mark = "PASS" if ok else "FAIL"
+        if xfail:
+            # expected legs encode the DESIRED behaviour of a known-open bug;
+            # only gate-relevant once it starts passing (then promote it).
+            xpassed += ok
+            xfailed += not ok
+            mark = "XPASS" if ok else "XFAIL"
+        else:
+            passed += ok
+            failed += not ok
+            mark = "PASS" if ok else "FAIL"
+            # leg-level P/R over the gate fixtures only
+            exp_set, got_set = set(exp), set(got)
+            tp += len(exp_set & got_set)
+            fn += len(exp_set - got_set)
+            fp += len(got_set - exp_set)
         print(f"  [{mark}] {fx['id']:30s} ({fx['category']})")
-        if not ok or args.verbose:
+        if (not ok and not xfail) or args.verbose:
             print(f"         expected: {exp}")
             print(f"         got:      {got}")
 
     prec = tp / (tp + fp) if (tp + fp) else 1.0
     rec = tp / (tp + fn) if (tp + fn) else 1.0
-    print(f"\n  fixtures: {passed}/{len(files)} passed")
+    n_gate = passed + failed
+    print(f"\n  fixtures: {passed}/{n_gate} passed"
+          + (f"   (+{xfailed} known-open xfail, {xpassed} xpass)" if (xfailed or xpassed) else ""))
+    if xpassed:
+        print("  NOTE: xpass fixtures now meet their desired behaviour — "
+              "remove their xfail flag to add them to the gate.")
     print(f"  legs: precision={prec:.2f} recall={rec:.2f}  (TP={tp} FP={fp} FN={fn})")
-    return 0 if passed == len(files) else 1
+    return 0 if passed == n_gate else 1
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@
    "LFBO"
   ]
  ],
+ "xfail": false,
  "n_positions": 54,
  "positions": [
   {

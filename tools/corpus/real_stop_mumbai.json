@@ -13,6 +13,7 @@
    "VIDP"
   ]
  ],
+ "xfail": false,
  "n_positions": 219,
  "positions": [
   {

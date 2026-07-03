@@ -1,0 +1,1990 @@
+{
+ "id": "diversion_kclt_krdu",
+ "icao24": "3c6573",
+ "category": "REAL_STOP",
+ "description": "D-AIKS DLH408: go-around + diversion stop at KCLT (~1h), continuation to KRDU. MUST stay split.",
+ "expected_legs": [
+  [
+   "EDDF",
+   "KCLT"
+  ],
+  [
+   "KCLT",
+   "KRDU"
+  ]
+ ],
+ "xfail": false,
+ "n_positions": 197,
+ "positions": [
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:39:59+00",
+   "latitude": "50.0423",
+   "longitude": "8.5593",
+   "altitude_m": "",
+   "velocity_ms": "6.69",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:41:57+00",
+   "latitude": "50.0421",
+   "longitude": "8.5664",
+   "altitude_m": "",
+   "velocity_ms": "4.37",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:43:58+00",
+   "latitude": "50.0445",
+   "longitude": "8.5763",
+   "altitude_m": "",
+   "velocity_ms": "7.46",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:46:00+00",
+   "latitude": "50.0452",
+   "longitude": "8.5793",
+   "altitude_m": "",
+   "velocity_ms": "0",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:48:00+00",
+   "latitude": "50.0461",
+   "longitude": "8.583",
+   "altitude_m": "",
+   "velocity_ms": "0",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:49:58+00",
+   "latitude": "50.0462",
+   "longitude": "8.5834",
+   "altitude_m": "",
+   "velocity_ms": "1.29",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:52:00+00",
+   "latitude": "50.0464",
+   "longitude": "8.5844",
+   "altitude_m": "",
+   "velocity_ms": "0",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:53:59+00",
+   "latitude": "50.0459",
+   "longitude": "8.5859",
+   "altitude_m": "",
+   "velocity_ms": "0.06",
+   "on_ground": "t"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:56:00+00",
+   "latitude": "50.0313",
+   "longitude": "8.5295",
+   "altitude_m": "266.7",
+   "velocity_ms": "90.2",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:58:01+00",
+   "latitude": "50.0191",
+   "longitude": "8.3477",
+   "altitude_m": "929.64",
+   "velocity_ms": "132.98",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 08:59:57+00",
+   "latitude": "50.0531",
+   "longitude": "8.1406",
+   "altitude_m": "1348.74",
+   "velocity_ms": "134.45",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:01:56+00",
+   "latitude": "50.1425",
+   "longitude": "7.9588",
+   "altitude_m": "2606.04",
+   "velocity_ms": "138.35",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:04:00+00",
+   "latitude": "50.2485",
+   "longitude": "7.7556",
+   "altitude_m": "3375.66",
+   "velocity_ms": "173.11",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:05:59+00",
+   "latitude": "50.4246",
+   "longitude": "7.6077",
+   "altitude_m": "4297.68",
+   "velocity_ms": "191.25",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:08:01+00",
+   "latitude": "50.6151",
+   "longitude": "7.4481",
+   "altitude_m": "5189.22",
+   "velocity_ms": "202.54",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:09:58+00",
+   "latitude": "50.785",
+   "longitude": "7.2495",
+   "altitude_m": "6080.76",
+   "velocity_ms": "205.08",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:11:57+00",
+   "latitude": "50.914",
+   "longitude": "6.9589",
+   "altitude_m": "6812.28",
+   "velocity_ms": "215.66",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:14:00+00",
+   "latitude": "51.0524",
+   "longitude": "6.6445",
+   "altitude_m": "7566.66",
+   "velocity_ms": "220.21",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:15:56+00",
+   "latitude": "51.2175",
+   "longitude": "6.3802",
+   "altitude_m": "8054.34",
+   "velocity_ms": "228.86",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:17:57+00",
+   "latitude": "51.3977",
+   "longitude": "6.1023",
+   "altitude_m": "8580.12",
+   "velocity_ms": "232.11",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:19:59+00",
+   "latitude": "51.5797",
+   "longitude": "5.8183",
+   "altitude_m": "9105.9",
+   "velocity_ms": "230.65",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:22:00+00",
+   "latitude": "51.7532",
+   "longitude": "5.5443",
+   "altitude_m": "9745.98",
+   "velocity_ms": "221.9",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:23:59+00",
+   "latitude": "51.9212",
+   "longitude": "5.276",
+   "altitude_m": "10134.6",
+   "velocity_ms": "221.9",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:26:00+00",
+   "latitude": "52.0927",
+   "longitude": "4.9993",
+   "altitude_m": "10363.2",
+   "velocity_ms": "225.17",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:27:56+00",
+   "latitude": "52.2553",
+   "longitude": "4.7335",
+   "altitude_m": "10447.02",
+   "velocity_ms": "220.08",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:30:00+00",
+   "latitude": "52.4289",
+   "longitude": "4.4468",
+   "altitude_m": "10850.88",
+   "velocity_ms": "221.9",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:32:02+00",
+   "latitude": "52.5962",
+   "longitude": "4.1674",
+   "altitude_m": "10972.8",
+   "velocity_ms": "217.18",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:33:58+00",
+   "latitude": "52.7542",
+   "longitude": "3.9005",
+   "altitude_m": "10972.8",
+   "velocity_ms": "217.19",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:35:59+00",
+   "latitude": "52.9172",
+   "longitude": "3.6219",
+   "altitude_m": "10972.8",
+   "velocity_ms": "216.48",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:38:00+00",
+   "latitude": "53.0739",
+   "longitude": "3.3354",
+   "altitude_m": "10972.8",
+   "velocity_ms": "216.17",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:39:59+00",
+   "latitude": "53.1506",
+   "longitude": "2.9734",
+   "altitude_m": "10972.8",
+   "velocity_ms": "215.98",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:41:59+00",
+   "latitude": "53.206",
+   "longitude": "2.6001",
+   "altitude_m": "10972.8",
+   "velocity_ms": "213.48",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:44:00+00",
+   "latitude": "53.2601",
+   "longitude": "2.227",
+   "altitude_m": "10972.8",
+   "velocity_ms": "212.12",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:45:59+00",
+   "latitude": "53.3121",
+   "longitude": "1.8593",
+   "altitude_m": "10972.8",
+   "velocity_ms": "211.27",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:48:00+00",
+   "latitude": "53.3634",
+   "longitude": "1.4873",
+   "altitude_m": "10972.8",
+   "velocity_ms": "210.03",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:50:01+00",
+   "latitude": "53.4136",
+   "longitude": "1.1141",
+   "altitude_m": "10972.8",
+   "velocity_ms": "210.81",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:51:59+00",
+   "latitude": "53.4613",
+   "longitude": "0.751",
+   "altitude_m": "10972.8",
+   "velocity_ms": "209.98",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:54:00+00",
+   "latitude": "53.509",
+   "longitude": "0.3773",
+   "altitude_m": "10972.8",
+   "velocity_ms": "209.37",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:56:00+00",
+   "latitude": "53.5548",
+   "longitude": "0.01",
+   "altitude_m": "10972.8",
+   "velocity_ms": "206.93",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:58:01+00",
+   "latitude": "53.5995",
+   "longitude": "-0.3603",
+   "altitude_m": "10972.8",
+   "velocity_ms": "207.73",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 09:59:59+00",
+   "latitude": "53.6423",
+   "longitude": "-0.7227",
+   "altitude_m": "10972.8",
+   "velocity_ms": "207.63",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:01:58+00",
+   "latitude": "53.684",
+   "longitude": "-1.0872",
+   "altitude_m": "10972.8",
+   "velocity_ms": "205.83",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:04:00+00",
+   "latitude": "53.7257",
+   "longitude": "-1.4617",
+   "altitude_m": "10972.8",
+   "velocity_ms": "205.13",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:05:58+00",
+   "latitude": "53.7641",
+   "longitude": "-1.8173",
+   "altitude_m": "10972.8",
+   "velocity_ms": "201.22",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:07:57+00",
+   "latitude": "53.8011",
+   "longitude": "-2.1713",
+   "altitude_m": "10972.8",
+   "velocity_ms": "198.42",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:10:01+00",
+   "latitude": "53.8385",
+   "longitude": "-2.5379",
+   "altitude_m": "10972.8",
+   "velocity_ms": "197.73",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:11:56+00",
+   "latitude": "53.8718",
+   "longitude": "-2.8768",
+   "altitude_m": "10972.8",
+   "velocity_ms": "196.55",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:14:01+00",
+   "latitude": "53.9336",
+   "longitude": "-3.2266",
+   "altitude_m": "10972.8",
+   "velocity_ms": "190.97",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:16:00+00",
+   "latitude": "54.0147",
+   "longitude": "-3.5417",
+   "altitude_m": "10972.8",
+   "velocity_ms": "191.24",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:18:00+00",
+   "latitude": "54.0967",
+   "longitude": "-3.8649",
+   "altitude_m": "10972.8",
+   "velocity_ms": "192.92",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:19:59+00",
+   "latitude": "54.1776",
+   "longitude": "-4.1884",
+   "altitude_m": "10972.8",
+   "velocity_ms": "193.2",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:21:58+00",
+   "latitude": "54.2573",
+   "longitude": "-4.5119",
+   "altitude_m": "10972.8",
+   "velocity_ms": "192.8",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:24:01+00",
+   "latitude": "54.3392",
+   "longitude": "-4.8491",
+   "altitude_m": "10972.8",
+   "velocity_ms": "194.22",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:26:01+00",
+   "latitude": "54.4189",
+   "longitude": "-5.1824",
+   "altitude_m": "10972.8",
+   "velocity_ms": "197.56",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:27:57+00",
+   "latitude": "54.4961",
+   "longitude": "-5.5106",
+   "altitude_m": "10972.8",
+   "velocity_ms": "197.84",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:29:59+00",
+   "latitude": "54.5759",
+   "longitude": "-5.8548",
+   "altitude_m": "10972.8",
+   "velocity_ms": "196.98",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:31:59+00",
+   "latitude": "54.6532",
+   "longitude": "-6.1939",
+   "altitude_m": "10972.8",
+   "velocity_ms": "196.13",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:34:01+00",
+   "latitude": "54.7351",
+   "longitude": "-6.5356",
+   "altitude_m": "10972.8",
+   "velocity_ms": "196.04",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:35:59+00",
+   "latitude": "54.8147",
+   "longitude": "-6.8701",
+   "altitude_m": "10972.8",
+   "velocity_ms": "197.95",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:37:59+00",
+   "latitude": "54.8945",
+   "longitude": "-7.2116",
+   "altitude_m": "10972.8",
+   "velocity_ms": "198.51",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:39:57+00",
+   "latitude": "54.9725",
+   "longitude": "-7.5504",
+   "altitude_m": "10972.8",
+   "velocity_ms": "198.13",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:42:01+00",
+   "latitude": "55.0534",
+   "longitude": "-7.9071",
+   "altitude_m": "10972.8",
+   "velocity_ms": "198.9",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:43:59+00",
+   "latitude": "55.1294",
+   "longitude": "-8.2484",
+   "altitude_m": "10972.8",
+   "velocity_ms": "198.05",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:45:56+00",
+   "latitude": "55.2037",
+   "longitude": "-8.5874",
+   "altitude_m": "10972.8",
+   "velocity_ms": "198.16",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:47:58+00",
+   "latitude": "55.2806",
+   "longitude": "-8.9441",
+   "altitude_m": "10972.8",
+   "velocity_ms": "199.9",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:50:00+00",
+   "latitude": "55.3565",
+   "longitude": "-9.3028",
+   "altitude_m": "10972.8",
+   "velocity_ms": "200.03",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:51:59+00",
+   "latitude": "55.4539",
+   "longitude": "-9.6359",
+   "altitude_m": "11277.6",
+   "velocity_ms": "200.87",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:53:56+00",
+   "latitude": "55.5575",
+   "longitude": "-9.9596",
+   "altitude_m": "11582.4",
+   "velocity_ms": "201.07",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:55:58+00",
+   "latitude": "55.6635",
+   "longitude": "-10.2951",
+   "altitude_m": "11582.4",
+   "velocity_ms": "198.97",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:57:57+00",
+   "latitude": "55.7666",
+   "longitude": "-10.6259",
+   "altitude_m": "11582.4",
+   "velocity_ms": "200.07",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 10:59:59+00",
+   "latitude": "55.8606",
+   "longitude": "-10.9317",
+   "altitude_m": "11582.4",
+   "velocity_ms": "198.43",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 11:01:58+00",
+   "latitude": "55.9713",
+   "longitude": "-11.2971",
+   "altitude_m": "11582.4",
+   "velocity_ms": "197.94",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 11:03:56+00",
+   "latitude": "55.981",
+   "longitude": "-11.3294",
+   "altitude_m": "11582.4",
+   "velocity_ms": "197.94",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 11:05:58+00",
+   "latitude": "56.1706",
+   "longitude": "-11.9696",
+   "altitude_m": "11582.4",
+   "velocity_ms": "198.58",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 11:08:00+00",
+   "latitude": "56.2709",
+   "longitude": "-12.3153",
+   "altitude_m": "11582.4",
+   "velocity_ms": "200.64",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 11:09:58+00",
+   "latitude": "56.2709",
+   "longitude": "-12.3153",
+   "altitude_m": "11582.4",
+   "velocity_ms": "200.64",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 11:11:59+00",
+   "latitude": "56.2709",
+   "longitude": "-12.3153",
+   "altitude_m": "11582.4",
+   "velocity_ms": "200.64",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:17:56+00",
+   "latitude": "49.751",
+   "longitude": "-62.6044",
+   "altitude_m": "12192",
+   "velocity_ms": "232.31",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:19:56+00",
+   "latitude": "49.5837",
+   "longitude": "-62.8849",
+   "altitude_m": "12192",
+   "velocity_ms": "231.17",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:21:56+00",
+   "latitude": "49.4715",
+   "longitude": "-63.0712",
+   "altitude_m": "12192",
+   "velocity_ms": "228.96",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:23:59+00",
+   "latitude": "49.2438",
+   "longitude": "-63.4455",
+   "altitude_m": "12192",
+   "velocity_ms": "229.66",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:25:59+00",
+   "latitude": "49.0744",
+   "longitude": "-63.7203",
+   "altitude_m": "12192",
+   "velocity_ms": "229.27",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:27:57+00",
+   "latitude": "48.9055",
+   "longitude": "-63.9916",
+   "altitude_m": "12192",
+   "velocity_ms": "230.7",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:30:00+00",
+   "latitude": "48.7336",
+   "longitude": "-64.2647",
+   "altitude_m": "12192",
+   "velocity_ms": "228.87",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:32:01+00",
+   "latitude": "48.5824",
+   "longitude": "-64.5025",
+   "altitude_m": "12192",
+   "velocity_ms": "229.94",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:34:01+00",
+   "latitude": "48.3864",
+   "longitude": "-64.8076",
+   "altitude_m": "12192",
+   "velocity_ms": "232.48",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:36:00+00",
+   "latitude": "48.2497",
+   "longitude": "-65.0184",
+   "altitude_m": "12192",
+   "velocity_ms": "233.2",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:37:58+00",
+   "latitude": "48.2497",
+   "longitude": "-65.0184",
+   "altitude_m": "7680.96",
+   "velocity_ms": "233.2",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:39:58+00",
+   "latitude": "48.2497",
+   "longitude": "-65.0184",
+   "altitude_m": "7680.96",
+   "velocity_ms": "233.2",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:46:01+00",
+   "latitude": "47.346",
+   "longitude": "-66.3692",
+   "altitude_m": "12192",
+   "velocity_ms": "231.72",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:47:57+00",
+   "latitude": "47.1645",
+   "longitude": "-66.6321",
+   "altitude_m": "12192",
+   "velocity_ms": "230.27",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:50:01+00",
+   "latitude": "46.9828",
+   "longitude": "-66.8927",
+   "altitude_m": "12192",
+   "velocity_ms": "229.19",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:51:58+00",
+   "latitude": "46.8552",
+   "longitude": "-67.0691",
+   "altitude_m": "12192",
+   "velocity_ms": "234.53",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:53:56+00",
+   "latitude": "46.6429",
+   "longitude": "-67.3088",
+   "altitude_m": "12192",
+   "velocity_ms": "234.71",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:55:57+00",
+   "latitude": "46.3953",
+   "longitude": "-67.5856",
+   "altitude_m": "12192",
+   "velocity_ms": "236.25",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:58:00+00",
+   "latitude": "46.1871",
+   "longitude": "-67.8157",
+   "altitude_m": "12192",
+   "velocity_ms": "236.75",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 15:59:57+00",
+   "latitude": "45.9894",
+   "longitude": "-68.0321",
+   "altitude_m": "12192",
+   "velocity_ms": "234.59",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:01:59+00",
+   "latitude": "45.7887",
+   "longitude": "-68.2498",
+   "altitude_m": "12192",
+   "velocity_ms": "235.41",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:04:00+00",
+   "latitude": "45.5799",
+   "longitude": "-68.4741",
+   "altitude_m": "12192",
+   "velocity_ms": "237.36",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:06:01+00",
+   "latitude": "45.3743",
+   "longitude": "-68.693",
+   "altitude_m": "12192",
+   "velocity_ms": "238.19",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:07:58+00",
+   "latitude": "45.1725",
+   "longitude": "-68.9059",
+   "altitude_m": "12192",
+   "velocity_ms": "237.16",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:09:56+00",
+   "latitude": "44.9719",
+   "longitude": "-69.1154",
+   "altitude_m": "12192",
+   "velocity_ms": "237.27",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:12:01+00",
+   "latitude": "44.7562",
+   "longitude": "-69.3389",
+   "altitude_m": "12192",
+   "velocity_ms": "239.65",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:13:58+00",
+   "latitude": "44.5514",
+   "longitude": "-69.549",
+   "altitude_m": "12192",
+   "velocity_ms": "242.63",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:15:58+00",
+   "latitude": "44.3395",
+   "longitude": "-69.7643",
+   "altitude_m": "12192",
+   "velocity_ms": "243.05",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:18:01+00",
+   "latitude": "44.1224",
+   "longitude": "-69.983",
+   "altitude_m": "12192",
+   "velocity_ms": "242.44",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:19:58+00",
+   "latitude": "43.9159",
+   "longitude": "-70.1892",
+   "altitude_m": "12192",
+   "velocity_ms": "241.43",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:22:00+00",
+   "latitude": "43.7003",
+   "longitude": "-70.4026",
+   "altitude_m": "12192",
+   "velocity_ms": "241.54",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:23:59+00",
+   "latitude": "43.5094",
+   "longitude": "-70.5898",
+   "altitude_m": "12192",
+   "velocity_ms": "238.67",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:26:00+00",
+   "latitude": "43.2744",
+   "longitude": "-70.8038",
+   "altitude_m": "12192",
+   "velocity_ms": "241.2",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:27:57+00",
+   "latitude": "43.054",
+   "longitude": "-70.9729",
+   "altitude_m": "12192",
+   "velocity_ms": "240.25",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:30:00+00",
+   "latitude": "42.8282",
+   "longitude": "-71.1597",
+   "altitude_m": "12192",
+   "velocity_ms": "238.14",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:31:58+00",
+   "latitude": "42.6174",
+   "longitude": "-71.3468",
+   "altitude_m": "12192",
+   "velocity_ms": "239",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:33:58+00",
+   "latitude": "42.4008",
+   "longitude": "-71.5373",
+   "altitude_m": "12192",
+   "velocity_ms": "239.15",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:35:56+00",
+   "latitude": "42.1885",
+   "longitude": "-71.7227",
+   "altitude_m": "12192",
+   "velocity_ms": "238.01",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:38:00+00",
+   "latitude": "41.9665",
+   "longitude": "-71.9151",
+   "altitude_m": "12192",
+   "velocity_ms": "241.16",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:39:57+00",
+   "latitude": "41.7504",
+   "longitude": "-72.1006",
+   "altitude_m": "12192",
+   "velocity_ms": "240.88",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:41:56+00",
+   "latitude": "41.5336",
+   "longitude": "-72.2852",
+   "altitude_m": "12192",
+   "velocity_ms": "240.76",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:43:56+00",
+   "latitude": "41.3142",
+   "longitude": "-72.4705",
+   "altitude_m": "12192",
+   "velocity_ms": "241.2",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:45:56+00",
+   "latitude": "41.096",
+   "longitude": "-72.6534",
+   "altitude_m": "12192",
+   "velocity_ms": "239.78",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:47:55+00",
+   "latitude": "40.8789",
+   "longitude": "-72.8338",
+   "altitude_m": "12192",
+   "velocity_ms": "238.08",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:49:57+00",
+   "latitude": "40.6573",
+   "longitude": "-73.0165",
+   "altitude_m": "12192",
+   "velocity_ms": "239.66",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:51:56+00",
+   "latitude": "40.4398",
+   "longitude": "-73.1945",
+   "altitude_m": "11742.42",
+   "velocity_ms": "238.95",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:53:56+00",
+   "latitude": "40.2199",
+   "longitude": "-73.3729",
+   "altitude_m": "11132.82",
+   "velocity_ms": "238.41",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:55:58+00",
+   "latitude": "39.9943",
+   "longitude": "-73.5547",
+   "altitude_m": "10523.22",
+   "velocity_ms": "249.7",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:57:58+00",
+   "latitude": "39.7676",
+   "longitude": "-73.7358",
+   "altitude_m": "10363.2",
+   "velocity_ms": "248.29",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 16:59:58+00",
+   "latitude": "39.5413",
+   "longitude": "-73.9152",
+   "altitude_m": "10233.66",
+   "velocity_ms": "248.45",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:02:00+00",
+   "latitude": "39.3211",
+   "longitude": "-74.1168",
+   "altitude_m": "9753.6",
+   "velocity_ms": "238.38",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:04:00+00",
+   "latitude": "39.1236",
+   "longitude": "-74.3313",
+   "altitude_m": "9753.6",
+   "velocity_ms": "237.66",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:05:59+00",
+   "latitude": "38.929",
+   "longitude": "-74.5422",
+   "altitude_m": "9753.6",
+   "velocity_ms": "237.81",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:07:58+00",
+   "latitude": "38.7431",
+   "longitude": "-74.7615",
+   "altitude_m": "9753.6",
+   "velocity_ms": "235.44",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:10:01+00",
+   "latitude": "38.5528",
+   "longitude": "-74.99",
+   "altitude_m": "9753.6",
+   "velocity_ms": "236.56",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:11:57+00",
+   "latitude": "38.3736",
+   "longitude": "-75.2033",
+   "altitude_m": "9753.6",
+   "velocity_ms": "234.4",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:13:59+00",
+   "latitude": "38.185",
+   "longitude": "-75.4263",
+   "altitude_m": "9753.6",
+   "velocity_ms": "233.7",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:16:01+00",
+   "latitude": "37.9986",
+   "longitude": "-75.6453",
+   "altitude_m": "9753.6",
+   "velocity_ms": "234.81",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:18:01+00",
+   "latitude": "37.8102",
+   "longitude": "-75.8648",
+   "altitude_m": "9753.6",
+   "velocity_ms": "234.84",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:19:57+00",
+   "latitude": "37.6313",
+   "longitude": "-76.0718",
+   "altitude_m": "9121.14",
+   "velocity_ms": "235.21",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:22:00+00",
+   "latitude": "37.4375",
+   "longitude": "-76.2945",
+   "altitude_m": "8069.58",
+   "velocity_ms": "233.07",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:23:57+00",
+   "latitude": "37.2646",
+   "longitude": "-76.4936",
+   "altitude_m": "7315.2",
+   "velocity_ms": "215.38",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:26:00+00",
+   "latitude": "37.1131",
+   "longitude": "-76.7267",
+   "altitude_m": "7071.36",
+   "velocity_ms": "218.05",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:27:59+00",
+   "latitude": "36.972",
+   "longitude": "-76.9453",
+   "altitude_m": "7010.4",
+   "velocity_ms": "204.48",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:29:56+00",
+   "latitude": "36.8352",
+   "longitude": "-77.1553",
+   "altitude_m": "6637.02",
+   "velocity_ms": "208.42",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:31:57+00",
+   "latitude": "36.6955",
+   "longitude": "-77.3651",
+   "altitude_m": "5730.24",
+   "velocity_ms": "196.09",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:33:56+00",
+   "latitude": "36.5645",
+   "longitude": "-77.5592",
+   "altitude_m": "4846.32",
+   "velocity_ms": "186.6",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:35:58+00",
+   "latitude": "36.4331",
+   "longitude": "-77.7528",
+   "altitude_m": "3970.02",
+   "velocity_ms": "184.76",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:37:59+00",
+   "latitude": "36.3034",
+   "longitude": "-77.9427",
+   "altitude_m": "3855.72",
+   "velocity_ms": "183.97",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:39:59+00",
+   "latitude": "36.1988",
+   "longitude": "-78.1386",
+   "altitude_m": "3093.72",
+   "velocity_ms": "172.82",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:42:00+00",
+   "latitude": "36.1425",
+   "longitude": "-78.3268",
+   "altitude_m": "2766.06",
+   "velocity_ms": "133.09",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:43:59+00",
+   "latitude": "36.1433",
+   "longitude": "-78.4946",
+   "altitude_m": "2194.56",
+   "velocity_ms": "127.18",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:46:01+00",
+   "latitude": "36.0721",
+   "longitude": "-78.5641",
+   "altitude_m": "1516.38",
+   "velocity_ms": "110.62",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:47:57+00",
+   "latitude": "36.0227",
+   "longitude": "-78.6329",
+   "altitude_m": "1173.48",
+   "velocity_ms": "95.19",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:50:00+00",
+   "latitude": "36.1065",
+   "longitude": "-78.6647",
+   "altitude_m": "1173.48",
+   "velocity_ms": "119.64",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:51:57+00",
+   "latitude": "36.058",
+   "longitude": "-78.5822",
+   "altitude_m": "1173.48",
+   "velocity_ms": "119.47",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:53:56+00",
+   "latitude": "35.9668",
+   "longitude": "-78.6011",
+   "altitude_m": "1173.48",
+   "velocity_ms": "119.35",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:55:59+00",
+   "latitude": "36.0376",
+   "longitude": "-78.6067",
+   "altitude_m": "1173.48",
+   "velocity_ms": "118.44",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:58:00+00",
+   "latitude": "36.0001",
+   "longitude": "-78.7865",
+   "altitude_m": "2606.04",
+   "velocity_ms": "154.76",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 17:59:59+00",
+   "latitude": "35.9541",
+   "longitude": "-78.9934",
+   "altitude_m": "4152.9",
+   "velocity_ms": "166.79",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:01:56+00",
+   "latitude": "35.936",
+   "longitude": "-79.2115",
+   "altitude_m": "4221.48",
+   "velocity_ms": "168.51",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:03:57+00",
+   "latitude": "35.9177",
+   "longitude": "-79.4365",
+   "altitude_m": "4221.48",
+   "velocity_ms": "168.57",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:05:57+00",
+   "latitude": "35.8992",
+   "longitude": "-79.6572",
+   "altitude_m": "4221.48",
+   "velocity_ms": "168.62",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:08:00+00",
+   "latitude": "35.8795",
+   "longitude": "-79.8871",
+   "altitude_m": "4221.48",
+   "velocity_ms": "168.62",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:09:59+00",
+   "latitude": "35.8521",
+   "longitude": "-80.1231",
+   "altitude_m": "4076.7",
+   "velocity_ms": "193.1",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:11:59+00",
+   "latitude": "35.7851",
+   "longitude": "-80.3659",
+   "altitude_m": "3901.44",
+   "velocity_ms": "187.41",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:13:58+00",
+   "latitude": "35.7014",
+   "longitude": "-80.5647",
+   "altitude_m": "3550.92",
+   "velocity_ms": "165.99",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:16:01+00",
+   "latitude": "35.5836",
+   "longitude": "-80.727",
+   "altitude_m": "2766.06",
+   "velocity_ms": "160.1",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:17:59+00",
+   "latitude": "35.4655",
+   "longitude": "-80.8648",
+   "altitude_m": "1417.32",
+   "velocity_ms": "143",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:19:56+00",
+   "latitude": "35.3579",
+   "longitude": "-80.952",
+   "altitude_m": "853.44",
+   "velocity_ms": "123.61",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:21:59+00",
+   "latitude": "35.2555",
+   "longitude": "-80.9391",
+   "altitude_m": "373.38",
+   "velocity_ms": "74.89",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:23:57+00",
+   "latitude": "35.1849",
+   "longitude": "-80.8951",
+   "altitude_m": "807.72",
+   "velocity_ms": "110.75",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:25:59+00",
+   "latitude": "35.2538",
+   "longitude": "-80.8155",
+   "altitude_m": "1165.86",
+   "velocity_ms": "116.64",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:27:58+00",
+   "latitude": "35.3774",
+   "longitude": "-80.8359",
+   "altitude_m": "1158.24",
+   "velocity_ms": "117.86",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:30:01+00",
+   "latitude": "35.5046",
+   "longitude": "-80.8573",
+   "altitude_m": "1158.24",
+   "velocity_ms": "118.59",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:32:02+00",
+   "latitude": "35.5022",
+   "longitude": "-80.9574",
+   "altitude_m": "1158.24",
+   "velocity_ms": "103.38",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:33:57+00",
+   "latitude": "35.4012",
+   "longitude": "-80.9515",
+   "altitude_m": "1165.86",
+   "velocity_ms": "96.37",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:36:01+00",
+   "latitude": "35.296",
+   "longitude": "-80.9423",
+   "altitude_m": "579.12",
+   "velocity_ms": "86.65",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:37:59+00",
+   "latitude": "35.2665",
+   "longitude": "-80.9397",
+   "altitude_m": "419.1",
+   "velocity_ms": "75.22",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 18:39:57+00",
+   "latitude": "35.2665",
+   "longitude": "-80.9397",
+   "altitude_m": "419.1",
+   "velocity_ms": "75.22",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:04:01+00",
+   "latitude": "35.1609",
+   "longitude": "-80.9348",
+   "altitude_m": "640.08",
+   "velocity_ms": "100.42",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:06:00+00",
+   "latitude": "35.1015",
+   "longitude": "-80.7844",
+   "altitude_m": "1676.4",
+   "velocity_ms": "141.96",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:07:57+00",
+   "latitude": "35.0703",
+   "longitude": "-80.6038",
+   "altitude_m": "3101.34",
+   "velocity_ms": "146.7",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:09:59+00",
+   "latitude": "35.0325",
+   "longitude": "-80.3883",
+   "altitude_m": "3916.68",
+   "velocity_ms": "173.65",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:11:59+00",
+   "latitude": "34.9931",
+   "longitude": "-80.166",
+   "altitude_m": "3924.3",
+   "velocity_ms": "172.14",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:13:58+00",
+   "latitude": "34.9413",
+   "longitude": "-79.952",
+   "altitude_m": "3924.3",
+   "velocity_ms": "172.65",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:16:00+00",
+   "latitude": "35.011",
+   "longitude": "-79.7447",
+   "altitude_m": "3924.3",
+   "velocity_ms": "169.1",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:18:00+00",
+   "latitude": "35.1353",
+   "longitude": "-79.5867",
+   "altitude_m": "3924.3",
+   "velocity_ms": "179.48",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:19:58+00",
+   "latitude": "35.3069",
+   "longitude": "-79.4851",
+   "altitude_m": "3924.3",
+   "velocity_ms": "179.69",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:21:56+00",
+   "latitude": "35.4614",
+   "longitude": "-79.3485",
+   "altitude_m": "3916.68",
+   "velocity_ms": "180.15",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:23:56+00",
+   "latitude": "35.6027",
+   "longitude": "-79.2056",
+   "altitude_m": "3329.94",
+   "velocity_ms": "160.39",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:25:57+00",
+   "latitude": "35.7086",
+   "longitude": "-79.0483",
+   "altitude_m": "2956.56",
+   "velocity_ms": "144.98",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:27:58+00",
+   "latitude": "35.8072",
+   "longitude": "-78.9044",
+   "altitude_m": "2377.44",
+   "velocity_ms": "128.37",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:29:59+00",
+   "latitude": "35.9389",
+   "longitude": "-78.8628",
+   "altitude_m": "1889.76",
+   "velocity_ms": "127.38",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:31:59+00",
+   "latitude": "36.0362",
+   "longitude": "-78.7479",
+   "altitude_m": "1257.3",
+   "velocity_ms": "123.32",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:34:00+00",
+   "latitude": "35.9979",
+   "longitude": "-78.6535",
+   "altitude_m": "868.68",
+   "velocity_ms": "105.14",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:35:57+00",
+   "latitude": "35.9265",
+   "longitude": "-78.7376",
+   "altitude_m": "358.14",
+   "velocity_ms": "80.39",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:37:57+00",
+   "latitude": "35.8959",
+   "longitude": "-78.7756",
+   "altitude_m": "114.3",
+   "velocity_ms": "78.21",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:40:00+00",
+   "latitude": "35.8959",
+   "longitude": "-78.7756",
+   "altitude_m": "114.3",
+   "velocity_ms": "78.21",
+   "on_ground": "f"
+  },
+  {
+   "icao24": "3c6573",
+   "callsign": "DLH408",
+   "captured_at": "2026-07-01 20:41:58+00",
+   "latitude": "35.8959",
+   "longitude": "-78.7756",
+   "altitude_m": "114.3",
+   "velocity_ms": "78.21",
+   "on_ground": "f"
+  }
+ ]
+}
