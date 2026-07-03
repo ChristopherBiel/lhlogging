@@ -9,6 +9,16 @@ scheduled routes that never get a clean detection — e.g. Johannesburg
 (DLH572/573), whose arrival is almost always lost to poor ADS-B coverage and
 stored as EDDF→UNKN.
 
+Freshness rules (2026-07, see tools/EDGE_CASES.md — stale consensus made
+route_enrichment backfill retired routes):
+  * If a callsign has enough RECENT support (--recent-days, default 60), the
+    recent window decides — a seasonally re-pointed callsign follows its new
+    route instead of being outvoted by history.
+  * A CONTESTED callsign (runner-up >= half of the winner within the deciding
+    window) is dropped entirely — no fill is better than a coin-flip fill.
+  * Consensus rows for callsigns that no longer resolve are DELETED (curated
+    rows are never deleted), so enrichment stops using them.
+
 The flight detector and the dashboard use this table to recover routes that
 position-based detection could not resolve.
 
@@ -19,12 +29,17 @@ Usage:
 import argparse
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 
 from lhlogging import db
 from lhlogging.utils import setup_logging
 
 # Minimum number of clean observations before a consensus pairing is trusted.
 MIN_SUPPORT = 3
+
+# A pairing is contested when the runner-up has at least this share of the
+# winner's support (within the window that decides) — then we trust nothing.
+CONTESTED_RATIO = 0.5
 
 # Frankfurt-Egelsbach (GA field ~7 km from EDDF) — airliners that snap here
 # are really at the Frankfurt hub.
@@ -48,6 +63,8 @@ def _norm(code: str | None) -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed the flight_routes reference table")
     parser.add_argument("--apply", action="store_true", help="Write to the DB (default is dry-run)")
+    parser.add_argument("--recent-days", type=int, default=60,
+                        help="Recency window that outvotes all-time history (default 60)")
     args = parser.parse_args()
 
     logger = setup_logging("seed_flight_routes")
@@ -63,25 +80,50 @@ def main() -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT TRIM(callsign), departure_airport_icao, arrival_airport_icao
+            SELECT TRIM(callsign), departure_airport_icao, arrival_airport_icao, first_seen
             FROM flights
             WHERE callsign IS NOT NULL AND TRIM(callsign) <> ''
             """
         )
         rows = cur.fetchall()
 
-    # Tally clean (dep, arr) pairings per callsign.
+    # Tally clean (dep, arr) pairings per callsign — all-time and recent.
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(days=args.recent_days)
     tally: dict[str, Counter] = defaultdict(Counter)
-    for cs, dep, arr in rows:
+    recent: dict[str, Counter] = defaultdict(Counter)
+    for cs, dep, arr, first_seen in rows:
         dep, arr = _norm(dep), _norm(arr)
         if dep and arr and dep != arr:
             tally[cs][(dep, arr)] += 1
+            if first_seen is not None and first_seen >= recent_cutoff:
+                recent[cs][(dep, arr)] += 1
 
     routes: dict[str, dict] = {}
+    contested: list[str] = []
+    corrected: list[str] = []
     for cs, counter in tally.items():
-        (dep, arr), support = counter.most_common(1)[0]
-        if support >= MIN_SUPPORT:
-            routes[cs] = {"dep": dep, "arr": arr, "source": "consensus", "support": support}
+        # the recent window decides when it has enough support on its own
+        deciding = recent[cs] if recent[cs].most_common(1) and \
+            recent[cs].most_common(1)[0][1] >= MIN_SUPPORT else counter
+        top = deciding.most_common(2)
+        (dep, arr), support = top[0]
+        if support < MIN_SUPPORT:
+            continue
+        if len(top) > 1 and top[1][1] >= CONTESTED_RATIO * support:
+            contested.append(f"{cs} {dep}→{arr} x{support} vs "
+                             f"{top[1][0][0]}→{top[1][0][1]} x{top[1][1]}")
+            continue
+        if deciding is not counter and counter.most_common(1)[0][0] != (dep, arr):
+            corrected.append(f"{cs}: all-time {counter.most_common(1)[0][0]} "
+                             f"→ recent {dep}→{arr} (x{support})")
+        routes[cs] = {"dep": dep, "arr": arr, "source": "consensus", "support": support}
+
+    for line in corrected:
+        logger.info(f"  recency correction: {line}")
+    if contested:
+        logger.info(f"  skipped {len(contested)} contested callsigns "
+                    f"(runner-up >= {CONTESTED_RATIO:.0%} of winner): "
+                    + "; ".join(contested[:8]))
 
     # Curated overrides win (and record their observed support if any).
     for cs, (dep, arr) in CURATED.items():
@@ -96,6 +138,17 @@ def main() -> int:
     for cs in sorted(CURATED):
         r = routes[cs]
         logger.info(f"  curated {cs}: {r['dep']}→{r['arr']} (clean support={r['support']})")
+
+    # Existing consensus rows that no longer resolve (retired route, went
+    # contested, or support evaporated) get DELETED so enrichment stops
+    # filling from them. Curated rows are never deleted.
+    with conn.cursor() as cur:
+        cur.execute("SELECT callsign FROM flight_routes WHERE source = 'consensus'")
+        stale = sorted({r[0] for r in cur.fetchall()} - set(routes))
+    if stale:
+        logger.info(f"  {'would retire' if dry_run else 'retiring'} {len(stale)} "
+                    f"stale consensus rows: {', '.join(stale[:10])}"
+                    + (" …" if len(stale) > 10 else ""))
 
     if not dry_run:
         with conn.cursor() as cur:
@@ -113,6 +166,11 @@ def main() -> int:
                         updated_at             = NOW()
                     """,
                     (cs, r["dep"], r["arr"], r["source"], r["support"]),
+                )
+            if stale:
+                cur.execute(
+                    "DELETE FROM flight_routes WHERE source = 'consensus' AND callsign = ANY(%s)",
+                    (stale,),
                 )
         conn.commit()
 
