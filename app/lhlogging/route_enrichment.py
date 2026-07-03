@@ -8,7 +8,10 @@ see earlier changes):
      airliner is never really at Egelsbach).
   2. Fill a missing/UNKN departure or arrival from flight_routes, keyed on
      callsign. Robust for long-haul legs whose arrival was lost to sparse
-     ADS-B coverage and stored as EDDF→UNKN.
+     ADS-B coverage and stored as EDDF→UNKN. Refuses any fill that would set
+     dep == arr (see tools/EDGE_CASES.md — the reference route is not always
+     the leg actually flown, and a fabricated self-loop is unrecoverable
+     while an UNKN stays healable).
   3. Clear needs_review on flights that now match their reference route
      exactly (both airports known, dep ≠ arr) — high-confidence resolutions.
 
@@ -69,11 +72,17 @@ def enrich(conn, apply: bool, since=None) -> dict:
         #    means the flight is still in progress and the detector owns it;
         #    filling it here would "land" an airborne aircraft and block the
         #    detector's close (which matches arrival IS NULL).
+        #    Never fill an endpoint that would equal the OTHER endpoint: a
+        #    backfill must not manufacture a dep==arr self-loop (the reference
+        #    route may not be the leg actually flown — e.g. a C6-opened return
+        #    leg carrying the NEXT flight's callsign). Better to leave the
+        #    endpoint unresolved than to fabricate a wrong-but-confident row.
         cur.execute(
             "UPDATE flights AS f SET departure_airport_icao = fr.departure_airport_icao "
             "FROM flight_routes fr "
             "WHERE fr.callsign = btrim(f.callsign) "
             "  AND f.arrival_airport_icao IS NOT NULL "
+            "  AND btrim(fr.departure_airport_icao) IS DISTINCT FROM btrim(f.arrival_airport_icao) "
             "  AND (f.departure_airport_icao IS NULL "
             "       OR btrim(f.departure_airport_icao) = ANY(%s))" + sc,
             [list(_BAD)] + sp,
@@ -84,7 +93,8 @@ def enrich(conn, apply: bool, since=None) -> dict:
             "FROM flight_routes fr "
             "WHERE fr.callsign = btrim(f.callsign) "
             "  AND f.arrival_airport_icao IS NOT NULL "
-            "  AND btrim(f.arrival_airport_icao) = ANY(%s)" + sc,
+            "  AND btrim(f.arrival_airport_icao) = ANY(%s) "
+            "  AND btrim(fr.arrival_airport_icao) IS DISTINCT FROM btrim(f.departure_airport_icao)" + sc,
             [list(_BAD)] + sp,
         )
         stats["backfill_arrival"] = cur.rowcount
