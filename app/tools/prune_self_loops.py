@@ -17,6 +17,16 @@ physics, not string equality or duration:
   GROUND  (0 airborne samples in the leg window)  -> delete (or --clear the flag)
   KEEP    (>=1 airborne sample)                   -> leave flagged for a human
 
+With --handover, one more class is deleted: the C6 phantom (tools/EDGE_CASES.md).
+A leftover fix after a close re-opens a leg at the same airport; the mid-air
+callsign change (C6) then closes it at the NEXT flight's first fix — so the
+phantom's last_seen EQUALS its successor leg's first_seen, and that shared
+boundary fix is its ONLY airborne sample (it belongs to the successor's
+departure, not to this leg). Signature:
+
+  HANDOVER (successor.first_seen == last_seen AND 0 airborne samples
+            strictly before last_seen)          -> delete
+
 Validated 2026-07-02 against all recent self-loops: of ~235, 103 were pure
 ground (0 airborne) and 132 had a real airborne track (72 of them reached cruise
 — mis-snapped real flights). See [[review-queue-triage]].
@@ -28,6 +38,7 @@ Usage:
     python -m tools.prune_self_loops                 # dry-run (recent)
     python -m tools.prune_self_loops --apply         # delete ground-only self-loops
     python -m tools.prune_self_loops --clear --apply  # just clear the flag, keep the row
+    python -m tools.prune_self_loops --handover       # dry-run incl. C6 phantoms
 """
 import argparse
 import sys
@@ -63,8 +74,17 @@ def _candidates(conn, cutoff, alt_floor, vel_floor):
                        WHERE p.on_ground IS DISTINCT FROM TRUE
                          AND (p.altitude_m > %s OR p.velocity_ms > %s)
                    ) AS airborne,
+                   count(p.*) FILTER (
+                       WHERE p.on_ground IS DISTINCT FROM TRUE
+                         AND (p.altitude_m > %s OR p.velocity_ms > %s)
+                         AND p.captured_at < f.last_seen
+                   ) AS airborne_excl,
                    coalesce(round(max(p.altitude_m)), 0) AS max_alt,
-                   count(p.*) AS n_pos
+                   count(p.*) AS n_pos,
+                   EXISTS (SELECT 1 FROM flights g
+                           WHERE g.icao24 = f.icao24
+                             AND g.first_seen = f.last_seen
+                             AND g.first_seen <> f.first_seen) AS handover
             FROM flights f
             LEFT JOIN positions p
               ON p.icao24 = f.icao24
@@ -78,16 +98,18 @@ def _candidates(conn, cutoff, alt_floor, vel_floor):
                      f.arrival_airport_icao, f.first_seen, f.last_seen, f.duration_minutes
             ORDER BY f.first_seen
             """,
-            (alt_floor, vel_floor, cutoff),
+            (alt_floor, vel_floor, alt_floor, vel_floor, cutoff),
         )
         rows = cur.fetchall()
     out = []
-    for icao, cs, dep, arr, first_seen, last_seen, dur, airborne, max_alt, n_pos in rows:
+    for (icao, cs, dep, arr, first_seen, last_seen, dur,
+         airborne, airborne_excl, max_alt, n_pos, handover) in rows:
         if _norm(dep) is None or _norm(dep) != _norm(arr):
             continue  # not a self-loop
         out.append(dict(icao24=icao, cs=cs, ap=dep, first_seen=first_seen,
                         last_seen=last_seen, dur=dur, airborne=airborne,
-                        max_alt=int(max_alt), n_pos=n_pos))
+                        airborne_excl=airborne_excl, max_alt=int(max_alt),
+                        n_pos=n_pos, handover=handover))
     return out
 
 
@@ -113,6 +135,9 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="Write changes (default: dry-run)")
     ap.add_argument("--clear", action="store_true",
                     help="Clear needs_review instead of deleting the row")
+    ap.add_argument("--handover", action="store_true",
+                    help="Also remove C6 phantoms: self-loops whose only airborne "
+                         "sample is the boundary fix shared with the successor leg")
     ap.add_argument("--window-days", type=int, default=config.POSITIONS_RETENTION_DAYS,
                     help="Only consider self-loops this recent (positions retained)")
     ap.add_argument("--alt-floor", type=float, default=config.LANDING_ALTITUDE_THRESHOLD_M,
@@ -138,12 +163,19 @@ def main() -> int:
     legs = _candidates(conn, cutoff, args.alt_floor, args.vel_floor)
 
     ground = [l for l in legs if l["airborne"] == 0]
-    kept = [l for l in legs if l["airborne"] > 0]
+    phantom = [l for l in legs if args.handover and l["airborne"] > 0
+               and l["handover"] and l["airborne_excl"] == 0]
+    kept = [l for l in legs if l["airborne"] > 0 and l not in phantom]
     cruise = [l for l in kept if l["max_alt"] >= args.cruise_alt]
 
     for l in ground:
         logger.info(f"  {action.upper()} {l['icao24']} {l['cs'] or '-':8} {l['ap']}→{l['ap']} "
                     f"@ {l['first_seen']:%m-%d %H:%M} dur={l['dur']} n_pos={l['n_pos']} (ground)")
+        _remove(conn, l, args.clear, args.apply)
+    for l in phantom:
+        logger.info(f"  {action.upper()} {l['icao24']} {l['cs'] or '-':8} {l['ap']}→{l['ap']} "
+                    f"@ {l['first_seen']:%m-%d %H:%M} dur={l['dur']} n_pos={l['n_pos']} "
+                    f"max_alt={l['max_alt']} (handover phantom)")
         _remove(conn, l, args.clear, args.apply)
 
     if args.apply:
@@ -152,8 +184,9 @@ def main() -> int:
         conn.rollback()
 
     logger.info(f"self-loops examined: {len(legs)}  |  "
-                f"{'removed' if args.apply else 'would remove'} (ground-only): {len(ground)}  |  "
-                f"kept (has airborne track): {len(kept)}")
+                f"{'removed' if args.apply else 'would remove'} (ground-only): {len(ground)}"
+                + (f" + handover phantoms: {len(phantom)}" if args.handover else "")
+                + f"  |  kept (has airborne track): {len(kept)}")
     if cruise:
         logger.warning(f"{len(cruise)} kept self-loops reached >= {args.cruise_alt:g} m — "
                        f"likely REAL flights with a mis-snapped arrival (NOT pruned; "
