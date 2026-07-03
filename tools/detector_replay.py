@@ -146,7 +146,8 @@ class FlightStore:
         for l in self.legs:
             if l.first_seen == first_seen:
                 l.callsign, l.arrival_airport_icao = callsign, arr
-                l.last_seen, l.needs_review = last_seen, needs_review
+                # sticky review flag — mirrors db.upsert_flight
+                l.last_seen, l.needs_review = last_seen, l.needs_review or needs_review
                 return self._handle(l)
         l = Leg(self.icao24, callsign, dep, arr, first_seen, last_seen, needs_review, origin)
         self.legs.append(l)
@@ -156,7 +157,9 @@ class FlightStore:
         for l in self.legs:
             if l.first_seen == first_seen and l.arrival_airport_icao is None:
                 if arr:
-                    l.arrival_airport_icao, l.needs_review = arr, needs_review
+                    # sticky review flag — mirrors db.update_open_flight
+                    l.arrival_airport_icao = arr
+                    l.needs_review = l.needs_review or needs_review
                 l.last_seen = last_seen
                 if callsign is not None:
                     l.callsign = callsign

@@ -82,7 +82,9 @@ def upsert_flight(conn: psycopg.Connection, flight: dict) -> None:
                 callsign               = EXCLUDED.callsign,
                 arrival_airport_icao   = EXCLUDED.arrival_airport_icao,
                 last_seen              = EXCLUDED.last_seen,
-                needs_review           = EXCLUDED.needs_review
+                -- sticky: a flag set at open (C2/C6) must survive re-upserts;
+                -- only route_enrichment clears it, after verifying the route
+                needs_review           = flights.needs_review OR EXCLUDED.needs_review
             """,
             flight,
         )
@@ -248,7 +250,7 @@ def update_open_flight(
                     arrival_airport_icao = %s,
                     last_seen = %s,
                     callsign = COALESCE(%s, callsign),
-                    needs_review = %s
+                    needs_review = needs_review OR %s
                 WHERE icao24 = %s AND first_seen = %s
                     AND arrival_airport_icao IS NULL
                 """,
