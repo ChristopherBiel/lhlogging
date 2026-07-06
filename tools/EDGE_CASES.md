@@ -153,6 +153,60 @@ future pulls (or model a lag distribution) and add it to `replay_aircraft`.
 6. Harness ingest-lag simulation (above), then re-derive E3b/E7 rates.
 7. Leave `MIN_TURNAROUND_MIN` off (re-confirmed non-lever).
 
+## Post-Wave-1 measurement (2026-07-05, read-only)
+
+Fresh pulls 2026-07-05 ~22:04Z (flights 117,438 · positions 2,188,549 ·
+FIS 2,121 obs). "Post-fix" = `first_seen ≥ 2026-07-03T12:30Z` (after Wave 1
+~08:06Z + handover pruning ~12:15Z; sliced from the audit CSVs — the script's
+`DEPLOY` constant is still the 06-29 boundary). Post-fix window: **2.4 days**.
+
+| Criterion (baseline) | Post-fix result | Verdict |
+|---|---|---|
+| Enrichment-fabricated self-loops (`RETURN_LEG_FAB_DEP` ~4/day silent; cruise-far `ARR_SNAP_WRONG`) | **0 silent**; 1 flagged FAB_DEP traced to a ghost fix × dep-inheritance (below), **not** an enrichment fill; 0 cruise-far ARR_SNAP (1 LOW approach fragment 9 km off, flagged) | **PASS** |
+| Silent (review=f) dep==arr created post-fix (0) | **1** — D-AILN DLH837 07-05, via the **pass-1 EDFE→EDDF rewrite guard gap** (below) | **FAIL (marginal)** |
+| Handover phantoms older than ~1h (0) | **0** flagged rows match the prune fingerprint (zero airborne before close) — cron works. 44 timestamp-matches persist *with* real airborne fixes = the physics-conservative keeps; **7 pre-fix silent** zero-airborne phantoms are invisible to prune (it only scans `needs_review=t`) | **PASS** (+ cleanup note) |
+| C6 events ~57/day, successors end review=f only via verified-clear | 172 events/2.4 d ≈ 72/day (unchanged, expected). **All 172** still-NULL successors are review=t; **0 silently-NULL** (was 211 pre-fix) — sticky review holds | **PASS** |
+| E9 self-loop bucket ≈ 96 leftover | Pre-fix bucket exactly **96** (unchanged); +29 new flagged in 2.4 d (~12/day LOW approach-fragment inflow — pre-existing P3/C6 behavior, all honest flags) | **PASS** (inflow noted) |
+| E12 consensus ~0 stale after seed | `flight_routes` verified in prod: all 6 e12-listed callsigns corrected to recent modal (DLH01Y→EDDF-LFKB, DLH8PF→EDDM-LIEO, DLH6RK, DLH6RW) or retired (DLH29Y, DLH9JV). The e12 readout still says "6" because it compares all-time vs 14d modal from the *export history* — a proxy that can't reach 0 until history ages. Contested count unchanged at 15 | **PASS** |
+| FIS MATCH ≥ 84% | **89%** (336/377). 2 new post-fix MISSING_HAS_DATA, both non-detector: D-AIMA LH415 07-04 = FIS-side tail churn (ADS-B shows the tail flying KLAX→EDDM→KATL, incompatible); D-AIHZ LH419 07-04 = E13 upstream gap (3 parked IAD fixes, zero airborne fixes for the whole return — the `n_pos≥5` heuristic counted the predecessor's fixes). MISSING_NO_ADSB: 4 (E13, uncounted upstream) | **PASS** |
+
+**New S1 found — enrichment pass 1 (EDFE→EDDF) has no dep≠arr guard.**
+Wave 1 guarded the pass-2 backfills only. Trace (D-AILN DLH837 07-05): real
+EKBI→EDDF leg closed clean 09:43; a corrupt fix 09:45 (`on_ground=t`,
+vel=102 m/s, **25 km NE of EDDF**) plus one real taxi fix formed a leftover
+session; dep snapped to **EDFE** — nearest field by 300 m (24.4 vs 24.7 km) —
+review=f *correctly* (EDFE≠EDDF at close); pass 1 then rewrote dep→EDDF →
+silent EDDF==EDDF, invisible to prune (review=f). Frequency: needs an EDFE
+mis-snap adjacent to an EDDF endpoint — rare, but the fix is a one-line
+`WHERE` guard mirroring pass 2.
+
+**Traced flagged FAB_DEP (not a guard breach):** D-AIUW OCN3RH 07-03. After a
+clean OCN7MP EDDM→LEIB landing (15:15), a **ghost cruise fix** (duplicate of
+the 14:20 mid-route position, 668 km away, alt 11,285 m) arrived at 15:37 and
+re-opened a leg; dep inherited from `last_completed.arr`
+(detector_core.py:283–288, gap ≤ max_gap_h, review=False), reappear-close at
+LEIB parked set arr=LEIB and the dep==arr recompute flagged it honestly.
+Ghost/corrupt single fixes: 2 events in 2.4 d (vs "1 in 30 d" pre-deploy) —
+both would die in the reconciler's corrupt-fix prefilter.
+
+**Queue dynamics (consequence of sticky flags, not a regression):** queue 383
+→ **1,000**; post-fix inflow ≈ **232/day** (UNKN 91 + dep-NULL 75 + resolved
+54 + self-loop 12). The "resolved" bucket (4 → 140) is filled routes that
+pass 3 refuses to clear because the callsign's reference was retired in the
+07-03 seed or the observed route differs from it (e.g. 3× DLH8PF EDDM→EDDF vs
+reference EDDM→LIEO) — honest, but only reconciliation (or a filtered review
+export) keeps the queue usable at this rate.
+
+**Verdict: Wave 1 + handover pruning hold.** Recommendation: proceed to
+**reconciliation R0** (docs/reconciliation.md) rather than interim Wave-2 P3
+patches — the remaining post-fix damage is (a) honest flagged inflow the
+reconciler dissolves by construction (C6 UNKN class, approach fragments,
+ghost fixes), (b) the 7 silent pre-fix zero-airborne handover phantoms + ~25
+pre-Wave-1 cruise fabrications awaiting the settled-zone repair, and (c) the
+one-line pass-1 guard, which is Wave-1-family and worth shipping immediately.
+P3 patches would only shave the ~12/day *flagged* fragment inflow — no longer
+where the risk is.
+
 ## Corpus fixtures added (tools/build_corpus.py)
 
 `diversion_saar_saez`, `diversion_kclt_krdu` (keep-split controls),
