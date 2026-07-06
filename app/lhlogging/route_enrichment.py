@@ -53,16 +53,22 @@ def enrich(conn, apply: bool, since=None) -> dict:
     # EDFE passes operate on the bare table, alias still works for the clause.
 
     with conn.cursor() as cur:
-        # 1. EDFE → EDDF (departure, then arrival).
+        # 1. EDFE → EDDF (departure, then arrival). Same dep≠arr discipline as
+        #    pass 2: skip the rewrite when the other endpoint is already EDDF —
+        #    normalizing it would manufacture a silent EDDF==EDDF self-loop
+        #    (an EDFE mis-snap beside a real EDDF endpoint is a detector
+        #    artifact; leave it visible instead of folding it away).
         cur.execute(
             "UPDATE flights AS f SET departure_airport_icao = 'EDDF' "
-            "WHERE btrim(f.departure_airport_icao) = 'EDFE'" + sc,
+            "WHERE btrim(f.departure_airport_icao) = 'EDFE' "
+            "  AND btrim(f.arrival_airport_icao) IS DISTINCT FROM 'EDDF'" + sc,
             sp,
         )
         stats["edfe_departure"] = cur.rowcount
         cur.execute(
             "UPDATE flights AS f SET arrival_airport_icao = 'EDDF' "
-            "WHERE btrim(f.arrival_airport_icao) = 'EDFE'" + sc,
+            "WHERE btrim(f.arrival_airport_icao) = 'EDFE' "
+            "  AND btrim(f.departure_airport_icao) IS DISTINCT FROM 'EDDF'" + sc,
             sp,
         )
         stats["edfe_arrival"] = cur.rowcount
