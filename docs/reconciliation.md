@@ -1,4 +1,29 @@
-# Reconciliation pass — design (2026-07-03, not yet implemented)
+# Reconciliation pass — design (2026-07-03; R0 built 2026-07-06)
+
+> **Status 2026-07-06 — R0 shipped** (`app/lhlogging/reconciler.py` +
+> `tools/reconcile_shadow.py`; no schema, no writes, no cron):
+> - Dual corpus gate green: `run_corpus.py --reconciler` **13/13** (both
+>   xfail fixtures flip to pass via `expected_legs_reconciler`); online mode
+>   unchanged (11/11 + 2 xfail).
+> - Case regressions pass: D-ABYJ true rotation (no KLAX phantom, DLH457
+>   attributed right), D-AIXM honest `DLH520 EDDM→UNKN + DLH521 ?→EDDM`
+>   (modal-cruise callsign kills the DLH768 mis-attribution), D-AIML no
+>   folding around the invisible DEN rotation.
+> - 30-day offline shadow (338 aircraft, 37k legs): **87% CONFIRM**,
+>   corrections 94/day, missed-leg inserts 57/day, phantom deletes 3.6/day.
+>   Reconciled self-loops **11.1/day (all review-flagged)** vs the write-gate
+>   target ≈0 — the residual is dark-outstation folding (zero-coverage
+>   turnarounds at LIMF/LIEO-class stations and long-haul rotations, edges
+>   at cruise). FIS cross-check **81%** vs 89% provisional baseline, gap
+>   fully explained by that same folding + E13 upstream capture gaps.
+> - Segmentation grew five physics rules beyond the original design, all
+>   forced by real data: feed-staleness slack in the teleport test,
+>   spatial-outlier + frozen-ghost prefilters, evidence-paired weak-stop
+>   promotion, unflyable-gap splits (speed floor + endurance bound + one-
+>   sided V), and boundary coalescing around dark turnarounds.
+> - **Not write-ready** (by design at R0): proceed to R1 (migration 009 +
+>   report-only cron) and iterate the dark-outstation classes against the
+>   live shadow until the R2 thresholds hold.
 
 ## Why
 

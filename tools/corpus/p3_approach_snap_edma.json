@@ -9,6 +9,20 @@
    "EDDM"
   ]
  ],
+ "expected_legs_reconciler": [
+  [
+   "UNKN",
+   "EDDF"
+  ],
+  [
+   "EDDF",
+   "EDDM"
+  ],
+  [
+   "EDDM",
+   "EDDF"
+  ]
+ ],
  "xfail": true,
  "n_positions": 62,
  "positions": [

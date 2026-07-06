@@ -9,6 +9,20 @@
    "ESGG"
   ]
  ],
+ "expected_legs_reconciler": [
+  [
+   "UNKN",
+   "EDDF"
+  ],
+  [
+   "EDDF",
+   "ESGG"
+  ],
+  [
+   "ESGG",
+   "EDDF"
+  ]
+ ],
  "xfail": true,
  "n_positions": 141,
  "positions": [

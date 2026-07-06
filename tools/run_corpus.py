@@ -12,6 +12,13 @@ Compare configs to measure a proposed change:
 
   python3 tools/run_corpus.py                          # current behaviour (baseline)
   python3 tools/run_corpus.py --onground-max-speed 80  # candidate fix
+
+--reconciler drives the fixtures through the HINDSIGHT segmenter
+(app/lhlogging/reconciler.py, docs/reconciliation.md R0) instead of the
+windowed cron simulation. In that mode a fixture's `expected_legs_reconciler`
+key (full physically-true leg set) overrides `expected_legs`, and such
+fixtures gate even when marked xfail — xfail describes open bugs of the
+ONLINE detector, which the reconciler is required to not have.
 """
 import argparse
 import glob
@@ -53,6 +60,9 @@ def main():
     ap.add_argument("--missed-departure-snap", action="store_true")
     ap.add_argument("--scan-arrival-max-km", type=float, default=0.0)
     ap.add_argument("--min-turnaround", type=int, default=0)
+    ap.add_argument("--reconciler", action="store_true",
+                    help="segment with hindsight (lhlogging.reconciler) instead "
+                         "of the windowed replay")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
     cfg = D.Config(onground_max_speed_ms=args.onground_max_speed,
@@ -67,18 +77,27 @@ def main():
     if not files:
         raise SystemExit("No fixtures — run tools/build_corpus.py first.")
 
-    print(f"Config: onground_max_speed={args.onground_max_speed} "
-          f"landing_min_consecutive={args.landing_min_consecutive}\n")
+    if args.reconciler:
+        from lhlogging.reconciler import reconcile_track  # noqa: E402 (path set by detector_replay)
+        print("Mode: RECONCILER (hindsight segmentation)\n")
+    else:
+        print(f"Config: onground_max_speed={args.onground_max_speed} "
+              f"landing_min_consecutive={args.landing_min_consecutive}\n")
     passed = failed = xfailed = xpassed = 0
     tp = fp = fn = 0
     for path in files:
         fx = json.load(open(path))
-        xfail = bool(fx.get("xfail"))
+        has_rec_exp = args.reconciler and "expected_legs_reconciler" in fx
+        xfail = bool(fx.get("xfail")) and not has_rec_exp
         positions = load_fixture_positions(fx)
-        legs = D.replay_aircraft(positions, airports, cfg)
+        if args.reconciler:
+            legs = reconcile_track(positions, airports.nearest)
+        else:
+            legs = D.replay_aircraft(positions, airports, cfg)
         key = lambda p: (str(p[0]), str(p[1]))
         got = sorted({canon_pair(l.departure_airport_icao, l.arrival_airport_icao) for l in legs}, key=key)
-        exp = sorted({canon_pair(d, a) for d, a in fx["expected_legs"]}, key=key)
+        exp_legs = fx["expected_legs_reconciler"] if has_rec_exp else fx["expected_legs"]
+        exp = sorted({canon_pair(d, a) for d, a in exp_legs}, key=key)
         ok = got == exp
         if xfail:
             # expected legs encode the DESIRED behaviour of a known-open bug;
