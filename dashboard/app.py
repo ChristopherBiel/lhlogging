@@ -82,6 +82,12 @@ _FACEPLATE_CSS = r"""/*! Faceplate v1.0 — Christopher Biel's portable design s
     /* data visualization (categorical) */
     --fp-dv-1:#5E7A50; --fp-dv-2:#BB6240; --fp-dv-3:#D6A23C;
     --fp-dv-4:#2C7A78; --fp-dv-5:#8A6A53; --fp-dv-6:#9BA0A4;
+    /* dv-7: project extension (not in Faceplate v1.0 upstream). A 7th series
+       hue was needed once terra (dv-2) and ochre (dv-3) became status-reserved
+       on the schedule page and dv-6 proved too light to carry white bar labels.
+       Steel blue, muted to the Faceplate register; CVD-validated against its
+       display neighbours dv-4/dv-5 (worst adjacent deutan dE 14.3). */
+    --fp-dv-7:#4E6E8E;
 
     /* typography */
     --fp-font-sans:"Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -2950,11 +2956,15 @@ loadAircraft();
 # ── Upcoming schedule (Lufthansa FIS observations) ─────────────────
 
 # Canonical fleet types (from the aircraft table) → short Gantt labels.
-_CANON_SHORT = {"B748": "748", "A388": "388"}
-# Only these airframe types are shown on the schedule.
-_SCHEDULE_TYPES = ("B748", "A388")
+_CANON_SHORT = {"B748": "748", "A388": "388", "B788": "788", "B789": "789",
+                "B78X": "78X", "A359": "359", "A35K": "35K"}
+# Only these airframe types are shown on the schedule. Mirrors the fetcher's
+# FIS_SEED_TYPES, incl. the not-yet-delivered variants (B788/B78X/A35K) so they
+# appear the day the collector first sees one.
+_SCHEDULE_TYPES = ("B748", "A388", "B788", "B789", "B78X", "A359", "A35K")
 # Tails the user is most interested in — pinned to the top and highlighted.
-_WATCH_TAILS = ("D-ABYN", "D-AIMH")
+# A watched tail stays visible even when its type is hidden via the checkboxes.
+_WATCH_TAILS = ("D-ABYN", "D-AIMH", "D-AIXL", "D-ABPU")
 # German hub airports (all share the Frankfurt timezone) used to anchor each
 # leg onto a single Frankfurt-local clock.
 _DE_HUBS = {"FRA", "MUC", "DUS", "BER", "HAM", "STR", "CGN", "NUE", "LEJ", "TXL"}
@@ -3348,7 +3358,7 @@ def api_schedule():
 
     # win_start is now-24h (set above); window runs through the last planned arrival.
     win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    type_order = {"748": 0, "388": 1}
+    type_order = {"748": 0, "388": 1, "788": 2, "789": 3, "78X": 4, "359": 5, "35K": 6}
     airframes = [
         {"reg": reg, "type": types[reg], "watch": reg in _WATCH_TAILS,
          "icao24": icao24_by_reg.get(reg),
@@ -3707,21 +3717,35 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .grid-line { position:absolute; top:0; bottom:0; width:1px; background:var(--line); opacity:.7; }
 .gantt-row { display:flex; align-items:center; margin-bottom:6px; height:24px; }
 .gantt-row.dim { opacity:.22; }
+.gantt-row.typehide { display:none; }   /* type unchecked (watched rows are exempt) */
 .gantt-row.watch { background:var(--amber-dim); border-radius:0; }
 .gantt-row.watch .gantt-label { color:var(--text-bright); }
 .gantt-label .star { color:var(--amber); font-size:10px; margin-right:1px; }
 .gantt-label { width:104px; flex-shrink:0; font-family:var(--mono); font-size:11px; font-weight:700;
   color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; text-decoration:none; }
 a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; }
-.tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; border-radius:0; color:var(--text-bright); }
+.tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; border-radius:0; color:#fff; }
 .t748 .tbadge, .tbadge.t748 { background:var(--accent); }
 .t388 .tbadge, .tbadge.t388 { background:var(--green); }
+.t789 .tbadge, .tbadge.t789 { background:var(--fp-dv-7); }
 .t359 .tbadge, .tbadge.t359 { background:var(--purple); }
 .tbadge.tother { background:var(--surface2); color:var(--muted); }
+/* type checkboxes — double as the type legend; watched tails ignore hiding */
+.tchk { display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-family:var(--mono);
+  font-size:10px; font-weight:700; color:var(--text); text-transform:uppercase; user-select:none; }
+.tchk input { accent-color:var(--fp-ink); width:13px; height:13px; margin:0; cursor:pointer; }
+.tchk .sw { width:12px; height:12px; }
+.tchk .sw.t748 { background:var(--accent); } .tchk .sw.t388 { background:var(--green); }
+.tchk .sw.t789 { background:var(--fp-dv-7); } .tchk .sw.t359 { background:var(--purple); }
+.tchk .sw.tother { background:var(--fp-gray); }
+.tchk.off { color:var(--muted); }
+.tchk.off .sw { opacity:.3; }
 .gantt-track { flex:1; position:relative; height:22px; background:color-mix(in srgb,var(--fp-gray) 26%,#fff); border-radius:0; overflow:visible; }
-/* per-type colour tokens — saturated hue / light tint / deep text (white text on hue, deep on tint) */
+/* per-type colour tokens — saturated hue / light tint / deep text (white text on hue, deep on tint).
+   One hue per family: 787 variants share t789, A350 variants share t359; the badge names the variant. */
 .gantt-flight.t748, .tie.t748 { --_s:var(--fp-sage); --_t:var(--fp-sage-tint); --_d:color-mix(in srgb,var(--fp-sage) 72%,#000); }
 .gantt-flight.t388, .tie.t388 { --_s:var(--fp-dv-4);  --_t:color-mix(in srgb,var(--fp-dv-4) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-4) 74%,#000); }
+.gantt-flight.t789, .tie.t789 { --_s:var(--fp-dv-7);  --_t:color-mix(in srgb,var(--fp-dv-7) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-7) 74%,#000); }
 .gantt-flight.t359, .tie.t359 { --_s:var(--fp-dv-5);  --_t:color-mix(in srgb,var(--fp-dv-5) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-5) 74%,#000); }
 .gantt-flight.tother, .tie.tother { --_s:var(--fp-gray); --_t:color-mix(in srgb,var(--fp-gray) 34%,#fff); --_d:var(--fp-body); }
 
@@ -3833,8 +3857,7 @@ footer a:hover { color:var(--text); }
   <div class="controls">
     <input id="filter" type="text" placeholder="Filter: tail, airport or flight (e.g. HND, D-ABYN, 716)">
     <div class="legend">
-      <span><span class="sw" style="background:var(--accent)"></span>747-8</span>
-      <span><span class="sw" style="background:var(--green)"></span>A380</span>
+      <span id="typechk" style="display:contents"></span>
       <span><span class="star" style="color:var(--amber)">&#9733;</span>watched</span>
       <span style="opacity:0.4">|</span>
       <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
@@ -3856,7 +3879,11 @@ footer a:hover { color:var(--text); }
 const $ = id => document.getElementById(id);
 function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
   return d.toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
-function tcls(t){ return ['748','388','359'].includes(t) ? 't'+t : 'tother'; }
+// hue per family (variants share it; the badge text names the exact variant)
+const TFAM={'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'};
+function tcls(t){ return TFAM[t] || 'tother'; }
+const TYPE_ORDER=['748','388','788','789','78X','359','35K'];   // fixed checkbox/legend order
+const HIDE_KEY='sched.hiddenTypes';
 const HUBS=['FRA','MUC'];                       // German bases these widebodies rotate from
 function legDisplay(dep,arr){                   // destination-led label: arrow + the non-hub endpoint
   const dh=HUBS.includes(dep), ah=HUBS.includes(arr);
@@ -3904,7 +3931,7 @@ async function init(){
   d.airframes.forEach(a=>{
     const tc=tcls(a.type);
     const lblInner=(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span>';
-    html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
+    html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-type="'+a.type+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
     html+= a.icao24
       ? '<a class="gantt-label" href="/fleet/'+a.icao24+'" title="Open '+a.reg+' in Fleet DB">'+lblInner+'</a>'
       : '<div class="gantt-label">'+lblInner+'</div>';
@@ -3985,6 +4012,31 @@ async function init(){
   const sw=d.swaps?(' \\u00b7 '+d.swaps+' reassignment'+(d.swaps>1?'s':'')):'';
   $('meta').textContent=d.airframes.length+' airframes \\u00b7 last 24h + plan \\u00b7 updated '
     +new Date(d.generated).toLocaleString('en-GB',{timeZone:'UTC',hour12:false})+' UTC'+sw;
+
+  // type checkboxes — the type legend and the visibility control in one.
+  // Hiding a type hides its rows EXCEPT watched (starred) tails; persisted.
+  const present=[...new Set(d.airframes.map(a=>a.type))];
+  const types=TYPE_ORDER.filter(t=>present.includes(t))
+    .concat(present.filter(t=>!TYPE_ORDER.includes(t)).sort());
+  let hidden;
+  try { hidden=new Set(JSON.parse(localStorage.getItem(HIDE_KEY)||'[]')); } catch(e){ hidden=new Set(); }
+  $('typechk').innerHTML=types.map(t=>
+    '<label class="tchk'+(hidden.has(t)?' off':'')+'" title="Show/hide '+t+' rows (watched tails stay visible)">'
+    +'<input type="checkbox" data-t="'+t+'"'+(hidden.has(t)?'':' checked')+'>'
+    +'<span class="sw '+tcls(t)+'"></span>'+t+'</label>').join('');
+  const applyTypes=()=>{
+    document.querySelectorAll('.gantt-row[data-type]').forEach(r=>{
+      r.classList.toggle('typehide', hidden.has(r.dataset.type) && !r.classList.contains('watch'));
+    });
+  };
+  $('typechk').addEventListener('change', e=>{
+    const t=e.target.dataset.t; if(!t) return;
+    if(e.target.checked) hidden.delete(t); else hidden.add(t);
+    e.target.closest('.tchk').classList.toggle('off', !e.target.checked);
+    try { localStorage.setItem(HIDE_KEY, JSON.stringify([...hidden])); } catch(err){}
+    applyTypes();
+  });
+  applyTypes();
 }
 
 $('filter').addEventListener('input', e=>{
@@ -4166,8 +4218,9 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .fcard .route .sub { font-family:var(--sans); font-size:11px; color:var(--muted); margin-top:1px; }
 .fcard .tail { font-family:var(--mono); font-weight:700; font-size:13px; color:var(--text-bright); display:flex; align-items:center; gap:5px; min-width:90px; }
 .fcard .tail .star { color:var(--amber); }
-.tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; color:var(--text-bright); }
+.tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; color:#fff; }
 .tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--green); }
+.tbadge.t789 { background:var(--fp-dv-7); }
 .tbadge.t359 { background:var(--purple); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
 .miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--fp-ink); flex-shrink:0; }
 .miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
@@ -4254,7 +4307,7 @@ function setMode(m){
 }
 function fmtDay(iso){ if(!iso) return '?'; return new Date(iso).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}); }
 function fmtClock(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
-function tcls(t){ return ['748','388','359'].includes(t) ? 't'+t : 'tother'; }
+function tcls(t){ return ({'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'})[t] || 'tother'; }
 
 function miniChip(hold){
   if(!hold) return '<div class="miniconf"><span class="p" style="color:var(--muted)">&mdash;</span><span class="cn">no data</span></div>';
