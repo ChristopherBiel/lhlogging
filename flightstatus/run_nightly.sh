@@ -1,22 +1,35 @@
 #!/usr/bin/env bash
 #
-# Nightly entrypoint for the Lufthansa FIS fetcher.
+# Cron entrypoint for the Lufthansa FIS fetcher (sweeps and watch passes — see
+# crontab for the daily slot plan).
 #
-# Cron fires this at 22:00 (container TZ = Europe/Berlin). We then sleep a random
-# 0..59m59s so the actual hit on lufthansa.com lands somewhere in 22:00–23:00
-# rather than at the same instant every night. Set NIGHTLY_JITTER=0 to skip the
-# jitter (manual / test runs).
+# Each slot first sleeps a random jitter (NIGHTLY_JITTER_MAX_S, default 2h;
+# the crontab uses 30 min for sweeps and 15 min for watches) so the actual hit
+# on lufthansa.com never lands at a fixed instant. Set NIGHTLY_JITTER=0 to skip
+# the jitter (manual / test runs).
 #
 # Chromium must run headed to clear Distil, so everything runs under Xvfb.
 set -euo pipefail
 
 if [ "${NIGHTLY_JITTER:-1}" = "1" ]; then
-  # Random start delay (default up to 2h) so the two daily runs land at
-  # unpredictable, spread-out times rather than a fixed instant.
   MAX_JITTER="${NIGHTLY_JITTER_MAX_S:-7200}"
   SLEEP=$(( RANDOM % MAX_JITTER ))
   echo "$(date -u +%FT%TZ) jitter: sleeping ${SLEEP}s before run"
   sleep "$SLEEP"
+fi
+
+# One fetcher at a time: an overrunning sweep colliding with the next watch
+# slot would mean two browsers fetching in parallel — double the request rate
+# we've tuned to stay under Distil's threshold. Skip the slot instead. Ad-hoc
+# --flight lookups (tools/fis_lookup.sh) are exempt: a single debug request is
+# fine alongside a running sweep.
+if [[ " $* " != *" --flight "* ]]; then
+  LOCK=/var/lock/lhlogging-flightstatus.lock
+  exec 9>"$LOCK"
+  if ! flock -n 9; then
+    echo "$(date -u +%FT%TZ) another fetcher run holds $LOCK — skipping this slot"
+    exit 0
+  fi
 fi
 
 cd /app
