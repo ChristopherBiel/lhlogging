@@ -4,7 +4,7 @@ Nightly Lufthansa flight-status fetcher.
 
 Pulls the public lufthansa.com FIS feed
 (`/service/api/fis/byflightnumber?flightNumber=LH716&date=YYYY-MM-DD`) for the
-catalogued B748/A388 flight numbers (see `fis_flight_catalog` — history ∪ ADS-B
+catalogued widebody flight numbers (see `fis_flight_catalog` — history ∪ ADS-B
 seed ∪ even/odd pairing) across a date window that spans a few days ahead, today,
 *and* the last couple of days, and records the assigned airframe (tail), scheduled
 route/times, status, and the aircraft's previous flight into
@@ -18,9 +18,10 @@ run_nightly.sh). We load the timetable page once to establish the session, then
 issue same-origin `fetch()`es from inside the page.
 
 Run modes:
-  python fetch_flightstatus.py                 # nightly batch (catalog x -BACKFILL..+LOOKAHEAD days, incl. D0)
+  python fetch_flightstatus.py                 # sweep (catalog x -BACKFILL..+LOOKAHEAD days, incl. D0)
+  python fetch_flightstatus.py --watch 4.5     # watch pass: re-check flights departing in the next 4.5h
   python fetch_flightstatus.py --flight LH716 --date 2026-06-25   # ad-hoc single lookup (prints JSON)
-  python fetch_flightstatus.py --dry-run       # batch, print candidate set + plan, no browser/DB writes
+  python fetch_flightstatus.py --dry-run       # sweep/watch, print candidate set + plan, no browser/DB writes
 
 Must be run under a display (Xvfb): `xvfb-run -a python fetch_flightstatus.py`.
 """
@@ -44,7 +45,11 @@ DB_NAME = os.environ.get("DB_NAME", "lhlogging")
 DB_USER = os.environ["POSTGRES_USER"]
 DB_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 
-SEED_TYPES = [t.strip() for t in os.environ.get("FIS_SEED_TYPES", "B748,A388").split(",") if t.strip()]
+# Widebody scope: current fleet (B748/A388/B789/A359) plus the ICAO codes of
+# variants on order (B788/B78X/A35K), so a new delivery is swept from its first
+# ADS-B-logged flight without a config change. Unknown codes cost nothing.
+SEED_TYPES = [t.strip() for t in os.environ.get(
+    "FIS_SEED_TYPES", "B748,A388,B788,B789,B78X,A359,A35K").split(",") if t.strip()]
 SEED_LOOKBACK_DAYS = int(os.environ.get("FIS_SEED_LOOKBACK_DAYS", "2"))
 LOOKAHEAD_DAYS = int(os.environ.get("FIS_LOOKAHEAD_DAYS", "4"))
 # Truth pass: also query the last N days so FIS returns the *actually-operated*
@@ -54,6 +59,9 @@ LOOKAHEAD_DAYS = int(os.environ.get("FIS_LOOKAHEAD_DAYS", "4"))
 BACKFILL_DAYS = int(os.environ.get("FIS_BACKFILL_DAYS", "2"))
 # A past flight in one of these states won't change tail again — don't re-query.
 TERMINAL_STATUSES = ["ARRIVED", "CANCELLED"]
+# A watch pass only re-checks flights that can still change tail — skip anything
+# the latest snapshot already shows as airborne or done.
+WATCH_SKIP_STATUSES = set(TERMINAL_STATUSES) | {"DEPARTED", "FLYING", "LANDED"}
 # Distil throttles by request rate: ~2.5s pacing got ~70 lookups in before it
 # started 403ing. This is a nightly job with a full hour to run, so we pace
 # gently (a few hundred lookups still finish in ~15min) and, on a block, wait
@@ -67,11 +75,11 @@ BLOCK_BACKOFF_S = float(os.environ.get("FIS_BLOCK_BACKOFF_S", "45.0"))
 # seed. The FIS `previousFlight` field names them, so after the seed fetch we
 # follow that chain a couple of hops to fill the gaps. Capped to stay gentle.
 CHAIN_HOPS = int(os.environ.get("FIS_CHAIN_HOPS", "2"))
-# Catalog sweep (~40 numbers) x (BACKFILL_DAYS + LOOKAHEAD_DAYS) date slices runs
-# a bit larger than the old seed; give headroom so a run isn't truncated. Work is
-# priority-ordered by lead time, so if this cap does bite it drops the
-# least-valuable far-future lookups first.
-MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "400"))
+# Catalog sweep (~105 numbers with the 787/A350 types) x (BACKFILL_DAYS +
+# LOOKAHEAD_DAYS) date slices ≈ 580 steady-state; give headroom so a run isn't
+# truncated. Work is priority-ordered by lead time, so if this cap does bite it
+# drops the least-valuable far-future lookups first.
+MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "700"))
 # Distil caps successful lookups per browser session (~100-115). Recycle the
 # browser context (fresh cf_clearance) every N lookups to stay under it — needed
 # once chain expansion pushes a run past ~120 lookups.
@@ -642,6 +650,14 @@ def fetch_one(sess, flight_number: str, target: date, reset_cb):
                 except json.JSONDecodeError:
                     log(f"  {fn} {target}: 200 but bad JSON")
                     return None
+            if status == 404 and "json" in ct:
+                # A JSON 404 is FIS answering authoritatively "no such flight"
+                # (charter/ferry numbers like LH9910 that entered the catalog via
+                # the ADS-B seed). Not a block: record a not-found so the catalog
+                # lifecycle retires the number, and don't burn retries/backoffs
+                # on it (3 numbers x 7 slices was costing ~24 min per sweep).
+                log(f"  {fn} {target}: 404 — not a FIS flight, recording not-found")
+                return {}
             log(f"  {fn} {target}: HTTP {status} ({ct[:40]}) attempt {attempt}/{MAX_FETCH_RETRIES}")
         except Exception as e:
             # in-page fetch rejected / evaluate threw (context destroyed, renderer
@@ -824,6 +840,125 @@ def run_batch(dry_run: bool = False) -> int:
     return 0 if status == "ok" else 1
 
 
+def watch_candidates(conn: psycopg.Connection, horizon_hours: float) -> list[dict]:
+    """Flights that could still change tail before pushback: the latest found
+    snapshot per (flight_date, flight_number) whose scheduled departure lies in
+    [now - 45min, now + horizon), soonest first. The small lookback keeps a
+    delayed flight in scope; anything the latest snapshot already shows as
+    airborne or done is dropped. Watch passes only re-check known flights —
+    discovery of new numbers stays with the sweeps."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM (
+                SELECT DISTINCT ON (o.flight_date, o.airline, o.flight_number)
+                    o.flight_number, o.flight_date, o.seed_type,
+                    o.dep_scheduled, o.overall_status
+                FROM flight_status_observations o
+                WHERE o.found
+                  AND o.airline = 'LH'
+                  AND o.dep_scheduled >= NOW() - INTERVAL '45 minutes'
+                  AND o.dep_scheduled <  NOW() + make_interval(mins => %s)
+                ORDER BY o.flight_date, o.airline, o.flight_number, o.observed_at DESC
+            ) latest
+            ORDER BY dep_scheduled
+            """,
+            (int(horizon_hours * 60),),
+        )
+        rows = cur.fetchall()
+    return [
+        {"flight_number": r[0], "flight_date": r[1], "seed_type": r[2], "dep": r[3]}
+        for r in rows
+        if (r[4] or "").upper() not in WATCH_SKIP_STATUSES
+    ]
+
+
+def run_watch(horizon_hours: float, dry_run: bool = False) -> int:
+    """Light same-day pass: re-check only the flights departing within the next
+    few hours, so a late tail swap is caught while catching it still has value.
+    No catalog refresh/prune, no coverage audit, no chain expansion — those
+    belong to the sweeps; this stays cheap enough to run around each departure
+    bank (typically 15-45 lookups, one Distil session)."""
+    conn = connect()
+    try:
+        work = watch_candidates(conn, horizon_hours)
+    except Exception as e:
+        log(f"watch candidate query failed: {e}")
+        conn.close()
+        return 1
+    if not work:
+        log(f"watch[{horizon_hours}h]: no re-checkable departures in window — nothing to do")
+        conn.close()
+        return 0
+    log(f"watch[{horizon_hours}h]: {len(work)} departures: "
+        + ", ".join(f"LH{w['flight_number']}@{w['dep']:%H:%M}Z" for w in work))
+    if dry_run:
+        log("dry-run: not launching browser or writing to DB")
+        conn.close()
+        return 0
+
+    per_pass = per_pass_schema(conn)
+    run_id = log_batch_start(conn)
+    obs_run_id = run_id if per_pass else None  # None -> legacy daily upsert
+    total = ok = err = upserted = resets = 0
+    status, detail = "ok", None
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=False,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            sess = {}
+
+            def open_session():
+                old = sess.get("ctx")
+                if old:
+                    try:
+                        old.close()
+                    except Exception:
+                        pass
+                sess["ctx"], sess["page"] = _open_session(browser)
+                sess["n"] = 0
+
+            open_session()
+            for w in work[:MAX_LOOKUPS]:
+                if sess["n"] >= SESSION_LOOKUPS:
+                    log(f"  recycling session after {sess['n']} lookups")
+                    resets += 1
+                    open_session()
+                total += 1
+                payload = fetch_one(sess, w["flight_number"], w["flight_date"], open_session)
+                sess["n"] += 1
+                obs = parse_flight(payload or {}, w["flight_number"], w["flight_date"], w["seed_type"])
+                upsert_observation(conn, obs, obs_run_id)
+                conn.commit()
+                if payload is None:
+                    err += 1
+                else:
+                    upserted += 1
+                    if obs["found"]:
+                        ok += 1
+                        log(f"  LH{w['flight_number']} {w['flight_date']}: {obs['registration']} "
+                            f"{obs['dep_airport_iata']}->{obs['arr_airport_iata']} {obs['overall_status']}")
+                time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
+
+            if sess.get("ctx"):
+                try:
+                    sess["ctx"].close()
+                except Exception:
+                    pass
+            browser.close()
+    except Exception as e:
+        status, detail = "error", str(e)
+        log(f"watch error: {e}")
+    finally:
+        log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
+        conn.close()
+    log(f"watch done: {total} lookups ({resets} session recycles), "
+        f"{ok} found, {err} blocked/missing, {upserted} rows upserted")
+    return 0 if status == "ok" else 1
+
+
 def run_single(flight: str, target: str) -> int:
     """Ad-hoc single lookup; prints the parsed observation + raw payload as JSON."""
     fn = re.sub(r"^LH", "", flight.strip().upper())
@@ -860,11 +995,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Lufthansa FIS flight-status fetcher")
     ap.add_argument("--flight", help="ad-hoc: flight number, e.g. LH716")
     ap.add_argument("--date", help="ad-hoc: target date YYYY-MM-DD")
-    ap.add_argument("--dry-run", action="store_true", help="batch: print seed only")
+    ap.add_argument("--watch", type=float, metavar="HOURS",
+                    help="watch pass: re-check flights departing within the next HOURS "
+                         "(no catalog refresh/prune, no chaining)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="sweep/watch: print the planned lookups only, no browser/DB writes")
     ap.add_argument("--audit", action="store_true",
                     help="print the coverage audit for the current window and exit (no browser)")
     args = ap.parse_args()
 
+    if args.watch is not None:
+        if args.flight or args.date:
+            ap.error("--watch cannot be combined with --flight/--date")
+        if args.watch <= 0:
+            ap.error("--watch requires a positive number of hours")
+        return run_watch(args.watch, dry_run=args.dry_run)
     if args.audit:
         conn = connect()
         try:
