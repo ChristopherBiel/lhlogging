@@ -3103,8 +3103,11 @@ def _reassignment_stability(conn):
         FROM flight_status_observations o
         LEFT JOIN aircraft a ON a.registration = o.registration
         WHERE o.found AND o.registration IS NOT NULL
+        ORDER BY o.observed_at
     """)
     groups = defaultdict(dict)  # (fdate, airline, fnum) -> {lead: snap}
+    # Rows come ordered by observed_at, so with several passes per day
+    # (migration 009) the last write per lead below is the day's latest view.
     for fdate, airline, fnum, obs, reg, atype, dep, arr in rows:
         lead = (fdate - obs).days
         if lead < 0:
@@ -3187,7 +3190,7 @@ def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
             FROM flight_status_observations o
             LEFT JOIN aircraft a ON a.registration = o.registration
             WHERE {" AND ".join(inner)}
-            ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+            ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
         )
         SELECT fdate, airline, fnum, reg, atype, dep, arr,
                dep_scheduled, arr_scheduled, overall_status
@@ -3228,7 +3231,7 @@ def api_schedule():
             WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
               AND o.flight_date >= CURRENT_DATE - 1
               AND a.aircraft_type = ANY(%s)
-            ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+            ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
         """, (list(_SCHEDULE_TYPES),))
         swap_rows = _q(conn, """
             SELECT flight_date, flight_number
@@ -3392,25 +3395,31 @@ def api_schedule_flight(airline, number, fdate):
             FROM flight_status_observations o
             LEFT JOIN aircraft a ON a.registration = o.registration
             WHERE o.flight_date=%s AND o.airline=%s AND o.flight_number=%s AND o.found
-            ORDER BY o.observed_date DESC LIMIT 1
+            ORDER BY o.observed_at DESC LIMIT 1
         """, (fdate_d, airline, number))
         hist = _q(conn, """
             SELECT o.observed_date, o.registration, a.aircraft_type, o.overall_status, o.found
             FROM flight_status_observations o
             LEFT JOIN aircraft a ON a.registration = o.registration
             WHERE o.flight_date=%s AND o.airline=%s AND o.flight_number=%s
-            ORDER BY o.observed_date
+            ORDER BY o.observed_at
         """, (fdate_d, airline, number))
         stab = _reassignment_stability(conn)
     finally:
         conn.close()
 
-    history = [
-        {"observed": d.isoformat(), "reg": reg,
-         "type": _CANON_SHORT.get(at, at) if at else None,
-         "status": st, "found": found}
-        for (d, reg, at, st, found) in hist
-    ]
+    # With per-pass rows (migration 009) a day holds several snapshots; collapse
+    # runs of identical assignment state so the history reads as changes (each
+    # row = the pass that first saw that state), not one row per pass.
+    history = []
+    for (d, reg, at, st, found) in hist:
+        if history and history[-1]["reg"] == reg and history[-1]["found"] == found:
+            continue
+        history.append({
+            "observed": d.isoformat(), "reg": reg,
+            "type": _CANON_SHORT.get(at, at) if at else None,
+            "status": st, "found": found,
+        })
     regs_seq = [h["reg"] for h in history if h["reg"]]
     out = {
         "flight": f"{airline}{number}", "flight_date": fdate,
@@ -3581,7 +3590,7 @@ def api_insights():
                 FROM flight_status_observations o
                 JOIN aircraft a ON a.registration = o.registration
                 WHERE o.found AND a.aircraft_type = %s
-                ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+                ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
             )
             SELECT COALESCE(overall_status, 'UNKNOWN'), COUNT(*)
             FROM latest GROUP BY 1 ORDER BY 2 DESC
@@ -3595,7 +3604,7 @@ def api_insights():
                 SELECT o.observed_date, btrim(o.registration) AS reg,
                        LAG(btrim(o.registration)) OVER (
                            PARTITION BY o.flight_date, o.airline, o.flight_number
-                           ORDER BY o.observed_date) AS prev_reg
+                           ORDER BY o.observed_at) AS prev_reg
                 FROM flight_status_observations o
                 JOIN aircraft a ON a.registration = o.registration
                 WHERE o.found AND o.registration IS NOT NULL AND a.aircraft_type = %s

@@ -312,7 +312,9 @@ def coverage_audit(conn: psycopg.Connection, today: date, horizon_days: int) -> 
             WHERE o.found AND o.dep_scheduled IS NOT NULL AND o.arr_scheduled IS NOT NULL
               AND o.flight_date >= %s AND o.flight_date <= %s
               AND a.aircraft_type = ANY(%s)
-            ORDER BY o.flight_date, o.flight_number, o.observed_date DESC
+            -- observed_at, not observed_date: with per-pass rows (009) a day
+            -- holds several snapshots and "latest" must break intra-day ties.
+            ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
             """,
             (today, horizon_end, SEED_TYPES),
         )
@@ -375,7 +377,64 @@ def store_coverage(conn: psycopg.Connection, run_id: int, summary: dict) -> None
         log("coverage column absent (apply migration 008) — summary not stored")
 
 
-def upsert_observation(conn: psycopg.Connection, obs: dict) -> None:
+def per_pass_schema(conn: psycopg.Connection) -> bool:
+    """True once migration 009 (run_id column, per-run unique key) is applied.
+
+    Migrations are applied manually after deploys, so the fetcher must work
+    against both shapes: per-run append rows when it can, the legacy
+    one-row-per-day upsert otherwise.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'flight_status_observations' AND column_name = 'run_id'
+            """
+        )
+        return cur.fetchone() is not None
+
+
+def upsert_observation(conn: psycopg.Connection, obs: dict, run_id: int | None = None) -> None:
+    """Record one observation. With migration 009 applied (run_id given), each
+    run appends its own row so intra-day passes preserve swap history; before
+    it, fall back to the legacy one-row-per-observed_date upsert."""
+    if run_id is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO flight_status_observations
+                    (run_id, observed_date, flight_date, airline, flight_number, seed_type, found,
+                     registration, aircraft_type, aircraft_subtype,
+                     dep_airport_iata, arr_airport_iata, dep_scheduled, arr_scheduled,
+                     overall_status, prev_airline, prev_flight_number, prev_flight_date, raw)
+                VALUES
+                    (%(run_id)s, CURRENT_DATE, %(flight_date)s, %(airline)s, %(flight_number)s,
+                     %(seed_type)s, %(found)s,
+                     %(registration)s, %(aircraft_type)s, %(aircraft_subtype)s,
+                     %(dep_airport_iata)s, %(arr_airport_iata)s, %(dep_scheduled)s, %(arr_scheduled)s,
+                     %(overall_status)s, %(prev_airline)s, %(prev_flight_number)s, %(prev_flight_date)s,
+                     %(raw)s)
+                ON CONFLICT (run_id, flight_date, airline, flight_number) DO UPDATE SET
+                    observed_at        = NOW(),
+                    seed_type          = EXCLUDED.seed_type,
+                    found              = EXCLUDED.found,
+                    registration       = EXCLUDED.registration,
+                    aircraft_type      = EXCLUDED.aircraft_type,
+                    aircraft_subtype   = EXCLUDED.aircraft_subtype,
+                    dep_airport_iata   = EXCLUDED.dep_airport_iata,
+                    arr_airport_iata   = EXCLUDED.arr_airport_iata,
+                    dep_scheduled      = EXCLUDED.dep_scheduled,
+                    arr_scheduled      = EXCLUDED.arr_scheduled,
+                    overall_status     = EXCLUDED.overall_status,
+                    prev_airline       = EXCLUDED.prev_airline,
+                    prev_flight_number = EXCLUDED.prev_flight_number,
+                    prev_flight_date   = EXCLUDED.prev_flight_date,
+                    raw                = EXCLUDED.raw
+                WHERE EXCLUDED.found OR NOT flight_status_observations.found
+                """,
+                {**obs, "run_id": run_id},
+            )
+        return
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -406,10 +465,10 @@ def upsert_observation(conn: psycopg.Connection, obs: dict) -> None:
                 prev_flight_number = EXCLUDED.prev_flight_number,
                 prev_flight_date   = EXCLUDED.prev_flight_date,
                 raw                = EXCLUDED.raw
-            -- With twice-daily runs, don't let a blocked/not-found second run of
-            -- the same day clobber a good assignment the first run already
-            -- captured: only overwrite when the new row found a flight, or the
-            -- existing row hadn't found one either.
+            -- Legacy (pre-009) shape: one row per day. Don't let a blocked/
+            -- not-found later run of the same day clobber a good assignment an
+            -- earlier run already captured: only overwrite when the new row
+            -- found a flight, or the existing row hadn't found one either.
             WHERE EXCLUDED.found OR NOT flight_status_observations.found
             """,
             obs,
@@ -671,7 +730,9 @@ def run_batch(dry_run: bool = False) -> int:
         conn.close()
         return 0
 
+    per_pass = per_pass_schema(conn)
     run_id = log_batch_start(conn)
+    obs_run_id = run_id if per_pass else None  # None -> legacy daily upsert
     total = ok = err = upserted = chained = resets = 0
     status, detail = "ok", None
     summary = None
@@ -708,11 +769,11 @@ def run_batch(dry_run: bool = False) -> int:
                 if payload is None:
                     err += 1
                     obs = parse_flight({}, flight_number, target, seed_type)
-                    upsert_observation(conn, obs)
+                    upsert_observation(conn, obs, obs_run_id)
                     conn.commit()
                 else:
                     obs = parse_flight(payload, flight_number, target, seed_type)
-                    upsert_observation(conn, obs)
+                    upsert_observation(conn, obs, obs_run_id)
                     conn.commit()
                     upserted += 1
                     if obs["found"]:
