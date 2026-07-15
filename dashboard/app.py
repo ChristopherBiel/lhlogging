@@ -2959,14 +2959,6 @@ _WATCH_TAILS = ("D-ABYN", "D-AIMH")
 # leg onto a single Frankfurt-local clock.
 _DE_HUBS = {"FRA", "MUC", "DUS", "BER", "HAM", "STR", "CGN", "NUE", "LEJ", "TXL"}
 
-# Airports where an LH widebody arrival usually signals a diversion/positioning
-# (i.e. not the FRA/MUC bases). Used to mark likely incidents on the
-# reschedulings timeline — a heuristic, so the hover always shows the real route.
-_DIVERSION_AIRPORTS = frozenset({
-    "EDDK", "EDLW", "EDDP", "EDDV", "EDDN", "EDSB", "ELLX",
-    "EDDH", "EDDB", "EDDL", "EDDS", "EDDR", "EDFH",
-})
-
 
 def _iso_dur_min(s):
     """Parse an ISO-8601 duration like 'PT12H40M' / 'PT2H' / 'PT55M' to minutes."""
@@ -3613,28 +3605,6 @@ def api_insights():
                    COUNT(*) FILTER (WHERE prev_reg IS NOT NULL AND reg <> prev_reg) AS changes
             FROM snaps GROUP BY observed_date ORDER BY observed_date
         """, [atype])
-
-        # Likely incidents to overlay: widebody arrivals at non-base fields.
-        diversions = _q(conn, """
-            SELECT btrim(a.registration), f.flight_date, btrim(f.callsign),
-                   f.departure_airport_icao, f.arrival_airport_icao
-            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = %s AND NOT f.needs_review
-              AND f.arrival_airport_icao = ANY(%s)
-              AND f.flight_date >= CURRENT_DATE - 21
-              AND NOT EXISTS (
-                  -- exclude interior phantoms / continued stops: the same
-                  -- callsign departs this same airport again shortly after,
-                  -- so it wasn't a terminal incident.
-                  SELECT 1 FROM flights f2
-                  WHERE f2.icao24 = f.icao24
-                    AND btrim(f2.callsign) = btrim(f.callsign)
-                    AND btrim(f2.departure_airport_icao) = btrim(f.arrival_airport_icao)
-                    AND f2.first_seen > f.first_seen
-                    AND f2.first_seen < f.last_seen + INTERVAL '6 hours'
-              )
-            ORDER BY f.first_seen
-        """, [atype, list(_DIVERSION_AIRPORTS)])
     finally:
         conn.close()
 
@@ -3663,8 +3633,6 @@ def api_insights():
                       for r in airframes],
         "rotation": [{"from": r[0], "to": r[1], "n": r[2]} for r in rotation],
         "reliability": reliability,
-        "diversions": [{"reg": r[0], "date": r[1].isoformat(), "callsign": r[2],
-                        "dep": r[3], "arr": r[4]} for r in diversions],
         "generated": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -4483,8 +4451,6 @@ tr:last-child td { border-bottom:none; }
 .rs-n { font-family:var(--mono); font-size:11px; font-weight:700; color:var(--text-bright); margin-bottom:4px; }
 .rs-barwrap { height:150px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; }
 .rs-bar { width:62%; max-width:46px; background:var(--fp-dv-1); min-height:2px; }
-.rs-incident .rs-bar { background:var(--fp-dv-2); }
-.rs-mark { color:var(--red); font-size:11px; margin-bottom:2px; }
 .rs-date { font-family:var(--mono); font-size:9px; color:var(--muted); margin-top:6px; white-space:nowrap; }
 .rs-base .rs-bar { background:var(--fp-dv-6); }
 .legend { font-family:var(--sans); font-size:10px; color:var(--muted); margin-top:10px; display:flex; gap:14px; flex-wrap:wrap; }
@@ -4561,30 +4527,23 @@ function airframesTable(af){
   });
   return h+'</table>';
 }
-function reschedChart(rel, diversions){
+function reschedChart(rel){
   const data = (rel && rel.reschedulings) || [];
   if(!data.length) return '<div class="empty">No schedule data collected for this type yet.</div>';
-  const byDate = {};
-  (diversions||[]).forEach(d=>{ (byDate[d.date]=byDate[d.date]||[]).push(d); });
   const max = Math.max(1, ...data.map(d=>d.n));
   let bars='';
   data.forEach((d,i)=>{
     const px = Math.round(d.n/max*148);
-    const divs = byDate[d.date]||[];
-    const isDiv = divs.length>0;
     const isBase = i===0 && d.n===0;
     const tip = shortDate(d.date)+': '+d.n+' reschedulings'
-      + (isDiv ? '  \\u00b7  '+divs.map(x=>x.reg+' '+x.dep+'\\u2192'+x.arr).join(', ') : '')
       + (isBase ? '  (collection start)' : '');
-    bars += '<div class="rs-col'+(isDiv?' rs-incident':'')+(isBase?' rs-base':'')+'" title="'+esc(tip)+'">'
+    bars += '<div class="rs-col'+(isBase?' rs-base':'')+'" title="'+esc(tip)+'">'
       + '<div class="rs-n">'+d.n+'</div>'
-      + '<div class="rs-barwrap">'+(isDiv?'<div class="rs-mark">&#9670;</div>':'')
-      + '<div class="rs-bar" style="height:'+Math.max(2,px)+'px"></div></div>'
+      + '<div class="rs-barwrap"><div class="rs-bar" style="height:'+Math.max(2,px)+'px"></div></div>'
       + '<div class="rs-date">'+shortDate(d.date)+'</div></div>';
   });
   return '<div class="rs-chart">'+bars+'</div>'
-    + '<div class="legend"><span><span class="sw" style="background:var(--accent)"></span>reschedulings/day</span>'
-    + '<span><span class="sw" style="background:var(--red)"></span>&#9670; likely incident (diversion)</span></div>';
+    + '<div class="legend"><span><span class="sw" style="background:var(--accent)"></span>reschedulings/day</span></div>';
 }
 function ontimeBar(rel){
   const ot = (rel && rel.ontime) || [];
@@ -4621,9 +4580,9 @@ async function init(){
   $('meta').innerHTML = '<b>'+(d.type||'')+'</b>'+(REG?' &middot; '+REG:'')+' &middot; <b>'+(m.flights||0)+'</b> flights &middot; <b>'+(m.tails||0)+'</b> tails &middot; '+shortDate(m.first)+' &ndash; '+shortDate(m.last);
 
   let html = '';
-  html += module('Schedule reliability', 'reschedulings &amp; incidents',
-      '<div class="rs-note">Bars = tails reassigned each day vs the night before. Diamonds mark likely incidents (widebody at a non-base field) &mdash; watch for a spike <i>after</i> one. Correlation, not proof; early days are thin.</div>'
-      + reschedChart(d.reliability, d.diversions)
+  html += module('Schedule reliability', 'reschedulings',
+      '<div class="rs-note">Bars = tails reassigned each day vs the night before. Early days are thin.</div>'
+      + reschedChart(d.reliability)
       + '<div style="margin-top:18px">' + ontimeBar(d.reliability) + holdTable(d.reliability) + '</div>');
   html += module('Routes &amp; rotation', 'where this '+(REG||d.type)+' flies',
       '<div class="cols"><div><div class="subhead">Top routes</div>'+routesTable(d.routes)+'</div>'
