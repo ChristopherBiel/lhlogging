@@ -3116,6 +3116,44 @@ def _allegris_tails(conn):
     return _allegris_cache["tails"]
 
 
+# ── Cabin configuration ────────────────────────────────────────────────
+# FIS also reports aircraftInfo.seatConfig per observation (kept in `raw`),
+# e.g. "F8C80E32M244" = First 8 / Business (C) 80 / Premium Eco (E) 32 /
+# Economy (M) 244; absent cabins are simply omitted. The cabin belongs to the
+# airframe, so we keep the latest string per tail — same read-time / TTL
+# pattern as the Allegris set, and retrofits show up on their own.
+_SEAT_RE = re.compile(r"([FCEM])(\d+)")
+_CABIN_TTL_S = 600
+_cabin_cache = {"ts": 0.0, "map": {}}
+
+
+def _parse_seat_config(s):
+    """'F8C80E32M244' -> {'F':8,'C':80,'E':32,'M':244}; None when unknown."""
+    cabins = {k: int(v) for k, v in _SEAT_RE.findall(s or "")}
+    return cabins or None
+
+
+def _cabin_configs(conn):
+    """Registration -> latest seatConfig string per recent FIS payloads."""
+    nowts = datetime.now(timezone.utc).timestamp()
+    if nowts - _cabin_cache["ts"] < _CABIN_TTL_S:
+        return _cabin_cache["map"]
+    try:
+        rows = _q(conn, """
+            SELECT DISTINCT ON (btrim(registration))
+                   btrim(registration), raw->'aircraftInfo'->>'seatConfig'
+            FROM flight_status_observations
+            WHERE found AND registration IS NOT NULL
+              AND raw->'aircraftInfo'->>'seatConfig' IS NOT NULL
+              AND observed_at >= NOW() - INTERVAL '45 days'
+            ORDER BY btrim(registration), observed_at DESC
+        """)
+    except Exception:
+        return _cabin_cache["map"]  # stale beats a 500 mid-request
+    _cabin_cache.update(ts=nowts, map={r[0]: r[1] for r in rows})
+    return _cabin_cache["map"]
+
+
 def _merge_hold(cells):
     """n-weighted combination of several {lead: {p,n}} stability dicts — used
     when an insights tab spans a type family. None/empty members are skipped."""
@@ -3489,6 +3527,7 @@ def api_schedule_flight(airline, number, fdate):
         out.update({
             "current_reg": reg, "current_type": _CANON_SHORT.get(at, at) if at else None,
             "allegris": bool(ac.get("allegris")),  # this flight's payload, not the tail-set
+            "cabin": _parse_seat_config(ac.get("seatConfig")),
             "dep_iata": dep, "arr_iata": arr,
             "dep_name": depj.get("departureAirportName"), "arr_name": arrj.get("arrivalAirportName"),
             "dep_sched": dep_t.isoformat() if dep_t else None,
@@ -3527,8 +3566,8 @@ def _codes_param(s):
 def api_book():
     """Upcoming flights for booking — tail-first (?reg=) or route-first
     (?dep=&arr=, each a comma-separated list of alternative airports) — each
-    with the current published assignment and a measured hold-probability
-    (how often that tail holds to departure)."""
+    with the current published assignment, its cabin configuration, and a
+    measured hold-probability (how often that tail holds to departure)."""
     reg = (request.args.get("reg") or "").strip().upper() or None
     dep = _codes_param(request.args.get("dep"))
     arr = _codes_param(request.args.get("arr"))
@@ -3544,6 +3583,7 @@ def api_book():
         swapped = {(r[0], r[1]) for r in _q(conn, _BOOK_SWAP_SQL)}
         stab = _reassignment_stability(conn)
         alleg = _allegris_tails(conn)
+        cabins = _cabin_configs(conn)
     finally:
         conn.close()
 
@@ -3559,6 +3599,7 @@ def api_book():
             "arr_sched": arr_t.isoformat() if arr_t else None,
             "reg": r_reg, "type": short, "watch": r_reg in _WATCH_TAILS,
             "allegris": (r_reg or "").strip() in alleg,
+            "cabin": _parse_seat_config(cabins.get((r_reg or "").strip())),
             "lead": lead, "status": status,
             "reassigned": (fdate, fnum) in swapped,
             "hold": _hold_probability(stab, lead, f"{d or '?'}-{a or '?'}", short),
@@ -4263,6 +4304,11 @@ function renderFlight(d,leg){
     const dur=isoDur(d.duration);
     h+='<div class="det-grid">';
     h+=row('Aircraft',(d.current_reg||'?')+(d.current_type?' \\u00b7 '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
+    if(d.cabin){
+      const cb=[]; if(d.cabin.F)cb.push('<b>First '+d.cabin.F+'</b>'); if(d.cabin.C)cb.push('Business '+d.cabin.C);
+      if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
+      h+=row('Cabin',cb.join(' \\u00b7 '));
+    }
     h+=row('Departure',fmt(d.dep_sched)+(d.dep_term?' \\u00b7 T'+d.dep_term:'')+(d.dep_gate?' \\u00b7 Gate '+d.dep_gate:''));
     h+=row('Arrival',fmt(d.arr_sched)+(d.arr_term?' \\u00b7 T'+d.arr_term:'')+(d.arr_gate?' \\u00b7 Gate '+d.arr_gate:''));
     if(dur) h+=row('Flight time',dur);
@@ -4383,7 +4429,7 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .fcard .route { flex:1; min-width:0; }
 .fcard .route .pair { font-size:15px; font-weight:700; color:var(--text-bright); }
 .fcard .route .sub { font-family:var(--sans); font-size:11px; color:var(--muted); margin-top:1px; }
-.fcard .tail { font-family:var(--mono); font-weight:700; font-size:13px; color:var(--text-bright); display:flex; align-items:center; gap:5px; min-width:90px; }
+.fcard .tail { font-family:var(--mono); font-weight:700; font-size:13px; color:var(--text-bright); display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-width:90px; }
 .fcard .tail .star { color:var(--amber); }
 .tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; color:#fff; }
 .tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--green); }
@@ -4391,6 +4437,10 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .tbadge.t359 { background:var(--purple); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
 .abadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px;
   background:var(--fp-ink); color:#fff; letter-spacing:.4px; }   /* Allegris cabin */
+/* cabin-config badges: F<n> = First (amber, the catch), C<n> = Business */
+.cbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px; letter-spacing:.4px;
+  border:1.5px solid var(--line); color:var(--text); background:var(--surface); }
+.cbadge.cf { border-color:var(--amber); background:var(--amber-dim); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
 .miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--fp-ink); flex-shrink:0; }
 .miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
 .miniconf .cn { font-family:var(--sans); font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:3px; }
@@ -4463,7 +4513,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
     </div>
     <button class="fp-btn fp-btn--solid" onclick="search()">Search</button>
   </div>
-  <div class="hint" id="hint">Tip: route mode takes <b>several airports per side</b> &mdash; type a code or city for suggestions, Enter or comma adds it. Watched airframes are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin (follows the assigned tail, so mind the hold %). Confidence is grey when there isn't enough history yet.</div>
+  <div class="hint" id="hint">Tip: route mode takes <b>several airports per side</b> &mdash; type a code or city for suggestions, Enter or comma adds it. Watched airframes are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin; <span class="cbadge cf">F8</span> <span class="cbadge">C80</span> = First / Business seat count (cabin follows the assigned tail, so mind the hold %).</div>
   <div class="results" id="results"><div class="empty">Search a tail (e.g. D-ABYN) or a route (e.g. FRA &rarr; HND).</div></div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
@@ -4570,6 +4620,20 @@ function miniChip(hold){
     +'<span class="p">'+p+'%</span><span class="cn">holds</span></div>';
 }
 
+/* cabin config {F,C,E,M} — F/C badges on the card, full breakdown as tooltip */
+function cabinText(c){
+  const t = [];
+  if(c.F) t.push('First '+c.F); if(c.C) t.push('Business '+c.C);
+  if(c.E) t.push('Prem Eco '+c.E); if(c.M) t.push('Economy '+c.M);
+  return t.join(' \\u00b7 ');
+}
+function cabinBadges(c){
+  if(!c) return '';
+  const full = 'Cabin: '+cabinText(c);
+  return (c.F ? '<span class="cbadge cf" title="'+full+'">F'+c.F+'</span>' : '')
+       + (c.C ? '<span class="cbadge" title="'+full+'">C'+c.C+'</span>' : '');
+}
+
 function renderResults(d){
   const R = $('results');
   if(d.error){ R.innerHTML = '<div class="empty">'+d.error+'</div>'; return; }
@@ -4585,7 +4649,8 @@ function renderResults(d){
       + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
       + '<div class="tail">'+(f.watch?'<span class="star">&#9733;</span>':'')+(f.reg||'?')
       + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span>'
-      + (f.allegris?'<span class="abadge" title="Allegris cabin">ALLEGRIS</span>':'')+'</div>'
+      + (f.allegris?'<span class="abadge" title="Allegris cabin">ALLEGRIS</span>':'')
+      + cabinBadges(f.cabin)+'</div>'
       + miniChip(f.hold) + '</div>';
   });
   R.innerHTML = h;
@@ -4645,6 +4710,12 @@ function renderFlight(d){
     const dur = isoDur(d.duration);
     h += '<div class="det-grid">';
     h += row('Aircraft',(d.current_reg||'?')+(d.current_type?' &middot; '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
+    if(d.cabin){
+      const cb=[]; if(d.cabin.F)cb.push('<b>First '+d.cabin.F+'</b>'); if(d.cabin.C)cb.push('Business '+d.cabin.C);
+      if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
+      const tot = (d.cabin.F||0)+(d.cabin.C||0)+(d.cabin.E||0)+(d.cabin.M||0);
+      h += row('Cabin',cb.join(' &middot; ')+' &middot; '+tot+' seats');
+    }
     h += row('Departure',fmt(d.dep_sched)+(d.dep_term?' &middot; T'+d.dep_term:'')+(d.dep_gate?' &middot; Gate '+d.dep_gate:''));
     h += row('Arrival',fmt(d.arr_sched)+(d.arr_term?' &middot; T'+d.arr_term:'')+(d.arr_gate?' &middot; Gate '+d.arr_gate:''));
     if(dur) h += row('Flight time',dur);
