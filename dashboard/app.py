@@ -3086,6 +3086,17 @@ def _stab_rates2(bucket):
     return dict(out)
 
 
+def _merge_hold(cells):
+    """n-weighted combination of several {lead: {p,n}} stability dicts — used
+    when an insights tab spans a type family. None/empty members are skipped."""
+    acc = defaultdict(lambda: [0.0, 0])
+    for cell in cells:
+        for lead, v in (cell or {}).items():
+            acc[lead][0] += v["p"] * v["n"]
+            acc[lead][1] += v["n"]
+    return {lead: {"p": s / n, "n": n} for lead, (s, n) in acc.items() if n}
+
+
 def _reassignment_stability(conn):
     """{'overall': {lead:{p,n}}, 'type'|'route'|'tail': {key:{lead:{p,n}}}}.
 
@@ -3512,18 +3523,28 @@ def api_book():
     })
 
 
+# Insights tab → member aircraft types. Family tabs aggregate every variant,
+# incl. the not-yet-delivered ones (same rationale as _SCHEDULE_TYPES): they
+# show up the day the collector first sees one. Single ICAO codes still work.
+_INSIGHT_FAMILIES = {
+    "B787": ("B788", "B789", "B78X"),
+    "A350": ("A359", "A35K"),
+}
+
+
 @app.route("/api/insights")
 def api_insights():
-    """Descriptive fleet analytics for one aircraft type (optionally one tail):
-    route frequency, rotation transitions, per-airframe profiles, and — for types
-    we collect schedule data on — reliability. Purely backward-looking; no
-    prediction. Drives the parameterised /insights page."""
+    """Descriptive fleet analytics for one aircraft type or family (optionally
+    one tail): route frequency, rotation transitions, per-airframe profiles,
+    and — for types we collect schedule data on — reliability. Purely
+    backward-looking; no prediction. Drives the parameterised /insights page."""
     atype = (request.args.get("type") or "B748").strip().upper()
     reg = (request.args.get("reg") or "").strip().upper() or None
+    members = list(_INSIGHT_FAMILIES.get(atype, (atype,)))
     short = _CANON_SHORT.get(atype, atype)
 
-    scope = "a.aircraft_type = %s AND NOT f.needs_review"
-    sp = [atype]
+    scope = "a.aircraft_type = ANY(%s) AND NOT f.needs_review"
+    sp = [members]
     if reg:
         scope += " AND btrim(a.registration) = %s"
         sp.append(reg)
@@ -3556,7 +3577,7 @@ def api_insights():
         airframes = _q(conn, f"""
             SELECT btrim(a.registration), COUNT(*),
                    ROUND(SUM(f.duration_minutes) / 60.0, 1),
-                   MIN(f.flight_date), MAX(f.flight_date)
+                   MIN(f.flight_date), MAX(f.flight_date), MIN(a.aircraft_type)
             FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
             WHERE {scope}
             GROUP BY 1 ORDER BY 2 DESC
@@ -3591,12 +3612,12 @@ def api_insights():
                 SELECT DISTINCT ON (o.flight_date, o.flight_number) o.overall_status
                 FROM flight_status_observations o
                 JOIN aircraft a ON a.registration = o.registration
-                WHERE o.found AND a.aircraft_type = %s
+                WHERE o.found AND a.aircraft_type = ANY(%s)
                 ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
             )
             SELECT COALESCE(overall_status, 'UNKNOWN'), COUNT(*)
             FROM latest GROUP BY 1 ORDER BY 2 DESC
-        """, [atype])
+        """, [members])
         stab = _reassignment_stability(conn)
 
         # Reschedulings over time: per observed_date, how many flights had their
@@ -3609,28 +3630,29 @@ def api_insights():
                            ORDER BY o.observed_at) AS prev_reg
                 FROM flight_status_observations o
                 JOIN aircraft a ON a.registration = o.registration
-                WHERE o.found AND o.registration IS NOT NULL AND a.aircraft_type = %s
+                WHERE o.found AND o.registration IS NOT NULL AND a.aircraft_type = ANY(%s)
             )
             SELECT observed_date,
                    COUNT(*) FILTER (WHERE prev_reg IS NOT NULL AND reg <> prev_reg) AS changes
             FROM snaps GROUP BY observed_date ORDER BY observed_date
-        """, [atype])
+        """, [members])
     finally:
         conn.close()
 
     ground = {r[0]: r[1] for r in grounding}
     resched = [{"date": r[0].isoformat(), "n": r[1]} for r in reschedulings]
+    hold = _merge_hold(stab["type"].get(_CANON_SHORT.get(t, t)) for t in members)
     reliability = None
-    if ontime or stab["type"].get(short) or resched:
+    if ontime or hold or resched:
         reliability = {
             "ontime": [{"status": s, "n": n} for s, n in ontime],
-            "hold_by_lead": stab["type"].get(short) or stab["overall"],
+            "hold_by_lead": hold or stab["overall"],
             "churn_by_route": stab["route"],
             "reschedulings": resched,
         }
 
     return jsonify({
-        "type": atype, "short": short, "reg": reg,
+        "type": atype, "short": short, "reg": reg, "members": members,
         "meta": {"flights": meta[0], "tails": meta[1],
                  "first": meta[2].isoformat() if meta[2] else None,
                  "last": meta[3].isoformat() if meta[3] else None},
@@ -3639,6 +3661,7 @@ def api_insights():
         "airframes": [{"reg": r[0], "legs": r[1], "hours": float(r[2]) if r[2] is not None else 0.0,
                        "first": r[3].isoformat() if r[3] else None,
                        "last": r[4].isoformat() if r[4] else None,
+                       "type": _CANON_SHORT.get(r[5], r[5]),
                        "watch": r[0] in _WATCH_TAILS, "max_ground_days": ground.get(r[0])}
                       for r in airframes],
         "rotation": [{"from": r[0], "to": r[1], "n": r[2]} for r in rotation],
@@ -4538,6 +4561,8 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
     <div class="fp-seg">
       <a href="/insights?type=B748" id="seg-B748">747-8</a>
       <a href="/insights?type=A388" id="seg-A388">A380</a>
+      <a href="/insights?type=B787" id="seg-B787">787</a>
+      <a href="/insights?type=A350" id="seg-A350">A350</a>
     </div>
     <input id="tail-in" type="text" placeholder="filter one tail, e.g. D-ABYN">
   </div>
@@ -4571,9 +4596,11 @@ function rotationList(rot){
 }
 function airframesTable(af){
   if(!af.length) return '<div class="empty">No airframes.</div>';
-  let h='<table><tr><th>Tail</th><th class="r">Legs</th><th class="r">Hours</th><th class="r">Longest gap</th><th class="r">Last seen</th></tr>';
+  const mixed = new Set(af.map(a=>a.type)).size > 1;  // family tab with >1 variant
+  let h='<table><tr><th>Tail</th>'+(mixed?'<th>Type</th>':'')+'<th class="r">Legs</th><th class="r">Hours</th><th class="r">Longest gap</th><th class="r">Last seen</th></tr>';
   af.forEach(a=>{
     h+='<tr><td class="tail-reg">'+(a.watch?'<span class="star">&#9733;</span>':'')+a.reg+'</td>'
+      +(mixed?'<td>'+(a.type||'')+'</td>':'')
       +'<td class="r">'+a.legs+'</td><td class="r">'+a.hours+'h</td>'
       +'<td class="r">'+(a.max_ground_days!=null?a.max_ground_days+'d':'—')+'</td>'
       +'<td class="r">'+shortDate(a.last)+'</td></tr>';
