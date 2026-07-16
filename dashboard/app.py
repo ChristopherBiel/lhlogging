@@ -4,6 +4,7 @@ Serves a single-page HTML dashboard and a /api/stats JSON endpoint.
 """
 import os
 import random
+import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -3202,9 +3203,10 @@ def _hold_probability(stab, lead, route, short_type, min_n=_STAB_MIN_N):
 def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
                         date_from=None, date_to=None, types=_SCHEDULE_TYPES):
     """Latest nightly snapshot per upcoming flight, optionally filtered to a tail
-    (its *current* assignment) or a route. The DISTINCT ON collapses to the newest
-    snapshot first, then reg/route filter on that — so a flight reassigned away
-    from a tail no longer shows under it. Ordered by scheduled departure."""
+    (its *current* assignment) or a route — dep/arr take a single IATA code or a
+    list of alternatives. The DISTINCT ON collapses to the newest snapshot first,
+    then reg/route filter on that — so a flight reassigned away from a tail no
+    longer shows under it. Ordered by scheduled departure."""
     inner = ["o.found", "o.registration IS NOT NULL", "o.dep_scheduled IS NOT NULL",
              "o.flight_date >= CURRENT_DATE"]
     params = []
@@ -3218,9 +3220,9 @@ def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
     if reg:
         outer.append("reg = %s"); params.append(reg)
     if dep:
-        outer.append("dep = %s"); params.append(dep)
+        outer.append("dep = ANY(%s)"); params.append([dep] if isinstance(dep, str) else list(dep))
     if arr:
-        outer.append("arr = %s"); params.append(arr)
+        outer.append("arr = ANY(%s)"); params.append([arr] if isinstance(arr, str) else list(arr))
     outer_sql = (" WHERE " + " AND ".join(outer)) if outer else ""
     sql = f"""
         WITH latest AS (
@@ -3512,16 +3514,27 @@ _BOOK_SWAP_SQL = """
 """
 
 
+def _codes_param(s):
+    """'fra, muc' -> ['FRA','MUC'] — unique IATA-shaped codes, capped, or None."""
+    codes = []
+    for c in re.split(r"[,\s]+", (s or "").strip().upper()):
+        if re.fullmatch(r"[A-Z0-9]{3}", c) and c not in codes:
+            codes.append(c)
+    return codes[:8] or None
+
+
 @app.route("/api/book")
 def api_book():
     """Upcoming flights for booking — tail-first (?reg=) or route-first
-    (?dep=&arr=) — each with the current published assignment and a measured
-    hold-probability (how often that tail holds to departure)."""
+    (?dep=&arr=, each a comma-separated list of alternative airports) — each
+    with the current published assignment and a measured hold-probability
+    (how often that tail holds to departure)."""
     reg = (request.args.get("reg") or "").strip().upper() or None
-    dep = (request.args.get("dep") or "").strip().upper() or None
-    arr = (request.args.get("arr") or "").strip().upper() or None
+    dep = _codes_param(request.args.get("dep"))
+    arr = _codes_param(request.args.get("arr"))
     if not reg and not dep and not arr:
-        return jsonify({"error": "provide ?reg= (tail) or ?dep=&arr= (route)"}), 400
+        return jsonify({"error": "provide ?reg= (tail) or ?dep=&arr= (route, "
+                                 "comma-separated for several airports)"}), 400
     try:
         conn = _db()
     except Exception as e:
@@ -3557,6 +3570,65 @@ def api_book():
         "horizon": flights[-1]["flight_date"] if flights else None,
         "generated": datetime.now(timezone.utc).isoformat(),
     })
+
+
+# Airport pickers on /book suggest from this: every dep/arr airport seen in
+# recent FIS payloads, with the city name FIS itself publishes (ICN → "Seoul").
+# Derived at read time from raw, so the list tracks the collected network
+# exactly — no airports-table change, no migration. `n` (observation count)
+# lets the client rank busier airports first.
+_BOOK_AIRPORTS_TTL_S = 3600
+_book_airports_cache = {"ts": 0.0, "data": []}
+
+
+def _book_airports(conn):
+    nowts = datetime.now(timezone.utc).timestamp()
+    if nowts - _book_airports_cache["ts"] < _BOOK_AIRPORTS_TTL_S:
+        return _book_airports_cache["data"]
+    try:
+        rows = _q(conn, """
+            WITH ends AS (
+                SELECT raw->'legs'->0->'departure'->>'departureAirport' AS code,
+                       raw->'legs'->0->'departure'->>'departureAirportName' AS name
+                FROM flight_status_observations
+                WHERE found AND raw IS NOT NULL
+                  AND observed_at >= NOW() - INTERVAL '120 days'
+                UNION ALL
+                SELECT raw->'legs'->0->'arrival'->>'arrivalAirport',
+                       raw->'legs'->0->'arrival'->>'arrivalAirportName'
+                FROM flight_status_observations
+                WHERE found AND raw IS NOT NULL
+                  AND observed_at >= NOW() - INTERVAL '120 days'
+            )
+            SELECT code, name, n FROM (
+                SELECT code, name,
+                       SUM(COUNT(*)) OVER (PARTITION BY code) AS n,
+                       ROW_NUMBER() OVER (PARTITION BY code
+                                          ORDER BY COUNT(*) DESC) AS rk
+                FROM ends WHERE code IS NOT NULL
+                GROUP BY code, name
+            ) t WHERE rk = 1 ORDER BY code
+        """)
+    except Exception:
+        return _book_airports_cache["data"]  # stale beats a 500 mid-request
+    data = [{"code": c, "name": nm, "n": int(n)} for c, nm, n in rows]
+    _book_airports_cache.update(ts=nowts, data=data)
+    return _book_airports_cache["data"]
+
+
+@app.route("/api/book/airports")
+def api_book_airports():
+    """Searchable airports for the /book route pickers (see _book_airports)."""
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        data = _book_airports(conn)
+    finally:
+        conn.close()
+    return jsonify({"airports": data,
+                    "generated": datetime.now(timezone.utc).isoformat()})
 
 
 # Insights tab → member aircraft types. Family tabs aggregate every variant,
@@ -4277,11 +4349,31 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .fp-seg { margin-bottom:12px; }
 .fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
 .fp-seg > .active { background:var(--fp-ink); color:#fff; }
-.searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
-.searchbar input { background:var(--surface); border:1.5px solid var(--fp-ink); padding:9px 14px; font-size:14px; font-family:var(--sans); color:var(--text-bright); width:200px; text-transform:uppercase; }
-.searchbar input::placeholder { color:var(--muted); text-transform:none; }
-.searchbar input:focus { outline:none; border-color:var(--accent); }
+.searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; align-items:flex-start; }
+.searchbar > input { background:var(--surface); border:1.5px solid var(--fp-ink); padding:9px 14px; font-size:14px; font-family:var(--sans); color:var(--text-bright); width:200px; text-transform:uppercase; }
+.searchbar > input::placeholder { color:var(--muted); text-transform:none; }
+.searchbar > input:focus { outline:none; border-color:var(--accent); }
 .fp-btn:hover { opacity:.88; }  /* search button uses .fp-btn--solid */
+/* multi-airport token inputs (route mode) — chips + inline input + suggestions */
+.tokbox { display:flex; align-items:center; flex-wrap:wrap; gap:5px; background:var(--surface);
+  border:1.5px solid var(--fp-ink); padding:5px 8px; width:280px; position:relative; cursor:text; }
+.tokbox:focus-within { border-color:var(--accent); }
+.tokbox .boxlbl { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-right:2px; }
+.tok { display:inline-flex; align-items:center; gap:5px; background:var(--fp-ink); color:#fff;
+  font-family:var(--mono); font-size:11px; font-weight:700; padding:3px 7px; }
+.tok button { border:none; background:none; color:rgba(255,255,255,.7); cursor:pointer; font-size:13px; line-height:1; padding:0; }
+.tok button:hover { color:#fff; }
+.tokbox input { flex:1; min-width:76px; border:none; background:none; padding:4px 2px; font-size:14px;
+  font-family:var(--sans); color:var(--text-bright); text-transform:uppercase; }
+.tokbox input:focus { outline:none; }
+.tokbox input::placeholder { color:var(--muted); text-transform:none; }
+.sugg { display:none; position:absolute; top:calc(100% + 1.5px); left:-1.5px; right:-1.5px; z-index:60;
+  background:var(--surface); border:1.5px solid var(--fp-ink); max-height:264px; overflow-y:auto; }
+.sugg.show { display:block; }
+.sugg .sitem { display:flex; align-items:baseline; gap:9px; padding:7px 11px; cursor:pointer; }
+.sugg .sitem .code { font-family:var(--mono); font-weight:700; font-size:12px; color:var(--text-bright); }
+.sugg .sitem .nm { font-size:11px; color:var(--muted); }
+.sugg .sitem:hover, .sugg .sitem.active { background:var(--surface2); }
 .hint { font-family:var(--sans); font-size:11px; color:var(--muted); margin-bottom:18px; }
 .results { display:flex; flex-direction:column; gap:8px; }
 .fcard { display:flex; align-items:center; gap:14px; border:1.5px solid var(--fp-ink); background:var(--surface); padding:12px 14px; cursor:pointer; transition:border-color .12s; }
@@ -4359,11 +4451,19 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
   </div>
   <div class="searchbar">
     <input id="tail-in" type="text" placeholder="registration, e.g. D-ABYN">
-    <input id="dep-in" type="text" placeholder="from, e.g. FRA" style="display:none">
-    <input id="arr-in" type="text" placeholder="to, e.g. HND" style="display:none">
+    <div class="tokbox" id="dep-box" style="display:none">
+      <span class="boxlbl">from</span>
+      <input id="dep-in" type="text" placeholder="add airport, e.g. FRA" autocomplete="off">
+      <div class="sugg" id="dep-sugg"></div>
+    </div>
+    <div class="tokbox" id="arr-box" style="display:none">
+      <span class="boxlbl">to</span>
+      <input id="arr-in" type="text" placeholder="add airport, e.g. HND" autocomplete="off">
+      <div class="sugg" id="arr-sugg"></div>
+    </div>
     <button class="fp-btn fp-btn--solid" onclick="search()">Search</button>
   </div>
-  <div class="hint" id="hint">Tip: watched airframes are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin (follows the assigned tail, so mind the hold %). Confidence is grey when there isn't enough history yet.</div>
+  <div class="hint" id="hint">Tip: route mode takes <b>several airports per side</b> &mdash; type a code or city for suggestions, Enter or comma adds it. Watched airframes are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin (follows the assigned tail, so mind the hold %). Confidence is grey when there isn't enough history yet.</div>
   <div class="results" id="results"><div class="empty">Search a tail (e.g. D-ABYN) or a route (e.g. FRA &rarr; HND).</div></div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
@@ -4378,10 +4478,86 @@ function setMode(m){
   $('m-tail').classList.toggle('active', m==='tail');
   $('m-route').classList.toggle('active', m==='route');
   $('tail-in').style.display = m==='tail' ? '' : 'none';
-  $('dep-in').style.display = m==='route' ? '' : 'none';
-  $('arr-in').style.display = m==='route' ? '' : 'none';
-  ($(m==='tail'?'tail-in':'dep-in')).focus();
+  $('dep-box').style.display = m==='route' ? '' : 'none';
+  $('arr-box').style.display = m==='route' ? '' : 'none';
+  (m==='tail' ? $('tail-in') : $('dep-in')).focus();
 }
+
+/* ── Multi-airport token inputs with suggestions ─────────────────
+   The suggestion list is the collected FIS network (code + city name),
+   so everything offered is actually searchable. Filtering is local. */
+let AIRPORTS = [];
+fetch('/api/book/airports').then(r=>r.json()).then(d=>{ AIRPORTS = d.airports||[]; }).catch(()=>{});
+
+function makeTok(boxId){
+  const box = $(boxId), input = box.querySelector('input'), sugg = box.querySelector('.sugg');
+  const codes = [];
+  let items = [], act = -1;
+  function renderChips(){
+    box.querySelectorAll('.tok').forEach(t=>t.remove());
+    codes.forEach(c=>{
+      const el = document.createElement('span');
+      el.className = 'tok';
+      el.innerHTML = c + '<button type="button" aria-label="remove '+c+'">&times;</button>';
+      el.querySelector('button').addEventListener('click', ev=>{
+        ev.stopPropagation(); codes.splice(codes.indexOf(c),1); renderChips(); });
+      box.insertBefore(el, input);
+    });
+  }
+  function add(c){
+    c = (c||'').trim().toUpperCase();
+    if(/^[A-Z0-9]{3}$/.test(c) && !codes.includes(c)){ codes.push(c); renderChips(); }
+    input.value = ''; hide();
+  }
+  function matches(q){
+    q = q.trim().toUpperCase(); if(!q) return [];
+    const ql = q.toLowerCase();
+    return AIRPORTS
+      .filter(a => !codes.includes(a.code) && (a.code.startsWith(q) || (a.name||'').toLowerCase().includes(ql)))
+      .sort((a,b) => (b.code.startsWith(q) - a.code.startsWith(q)) || (b.n - a.n))
+      .slice(0,8);
+  }
+  function show(){
+    items = matches(input.value); act = -1;
+    if(!items.length){ hide(); return; }
+    sugg.innerHTML = items.map((a,i)=>'<div class="sitem" data-i="'+i+'"><span class="code">'+a.code+'</span><span class="nm">'+(a.name||'')+'</span></div>').join('');
+    sugg.classList.add('show');
+    sugg.querySelectorAll('.sitem').forEach(el=>{
+      el.addEventListener('mousedown', ev=>{ ev.preventDefault(); add(items[+el.dataset.i].code); });
+    });
+  }
+  function hide(){ sugg.classList.remove('show'); items = []; act = -1; }
+  function mark(){ sugg.querySelectorAll('.sitem').forEach((el,i)=>el.classList.toggle('active', i===act)); }
+  function commit(){   // turn whatever is typed into a chip (best match wins)
+    const v = input.value.trim().toUpperCase();
+    if(!v) return;
+    if(/^[A-Z0-9]{3}$/.test(v)) add(v);
+    else { const m = matches(v); if(m.length) add(m[0].code); else input.value=''; }
+  }
+  input.addEventListener('input', show);
+  input.addEventListener('keydown', e=>{
+    if(e.key==='ArrowDown' && items.length){ act = (act+1)%items.length; mark(); e.preventDefault(); }
+    else if(e.key==='ArrowUp' && items.length){ act = (act-1+items.length)%items.length; mark(); e.preventDefault(); }
+    else if(e.key===','){ e.preventDefault(); commit(); }
+    else if(e.key==='Enter'){
+      e.preventDefault();
+      if(act>=0) add(items[act].code);
+      else if(input.value.trim()) commit();
+      else search();
+    }
+    else if(e.key==='Escape' && items.length){ hide(); e.stopPropagation(); }
+    else if(e.key==='Backspace' && !input.value && codes.length){ codes.pop(); renderChips(); }
+  });
+  input.addEventListener('blur', ()=>{ commit(); hide(); });
+  box.addEventListener('click', e=>{ if(e.target===box) input.focus(); });
+  return {
+    codes: ()=>codes.slice(),
+    set(list){ codes.length = 0; input.value=''; (list||[]).forEach(c=>{
+      c = (c||'').trim().toUpperCase();
+      if(/^[A-Z0-9]{3}$/.test(c) && !codes.includes(c)) codes.push(c); }); renderChips(); },
+  };
+}
+const tokDep = makeTok('dep-box'), tokArr = makeTok('arr-box');
 function fmtDay(iso){ if(!iso) return '?'; return new Date(iso).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}); }
 function fmtClock(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
 function tcls(t){ return ({'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'})[t] || 'tother'; }
@@ -4422,8 +4598,7 @@ function search(){
     if(!r){ return; }
     url = '/api/book?reg=' + encodeURIComponent(r);
   } else {
-    const dp = $('dep-in').value.trim().toUpperCase();
-    const ar = $('arr-in').value.trim().toUpperCase();
+    const dp = tokDep.codes().join(','), ar = tokArr.codes().join(',');
     if(!dp && !ar){ return; }
     url = '/api/book?dep=' + encodeURIComponent(dp) + '&arr=' + encodeURIComponent(ar);
   }
@@ -4432,8 +4607,8 @@ function search(){
     .catch(()=>{ $('results').innerHTML = '<div class="empty">Search failed.</div>'; });
 }
 
-document.querySelectorAll('.searchbar input').forEach(el =>
-  el.addEventListener('keydown', e => { if(e.key==='Enter') search(); }));
+// route-mode inputs handle Enter themselves (suggestion pick vs. search)
+$('tail-in').addEventListener('keydown', e => { if(e.key==='Enter') search(); });
 
 /* ── Flight detail modal (shared shape with /schedule) ─────────── */
 function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
@@ -4496,11 +4671,13 @@ $('results').addEventListener('click', e => { const c=e.target.closest('.fcard')
 $('fl-modal').addEventListener('click', e => { if(e.target.id==='fl-modal') closeFl(); });
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeFl(); });
 
-/* Prefill + auto-search from URL (?reg= or ?dep=&arr=) so links land on results */
+/* Prefill + auto-search from URL (?reg= or ?dep=&arr=, comma lists) so links land on results */
 (function(){
   const p = new URLSearchParams(location.search);
   if(p.get('reg')){ setMode('tail'); $('tail-in').value = p.get('reg'); search(); }
-  else if(p.get('dep') || p.get('arr')){ setMode('route'); $('dep-in').value = p.get('dep')||''; $('arr-in').value = p.get('arr')||''; search(); }
+  else if(p.get('dep') || p.get('arr')){ setMode('route');
+    tokDep.set((p.get('dep')||'').split(/[,\\s]+/));
+    tokArr.set((p.get('arr')||'').split(/[,\\s]+/)); search(); }
 })();
 </script>
 </body>
