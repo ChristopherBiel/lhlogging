@@ -3086,6 +3086,35 @@ def _stab_rates2(bucket):
     return dict(out)
 
 
+# ── Allegris cabin detection ───────────────────────────────────────────
+# FIS reports aircraftInfo.allegris per observation (kept in `raw`). A tail
+# counts as Allegris if any recent observation says so: retrofits only ever
+# add the cabin, and the rare one-off false (a glitchy short-haul leg) is
+# ignored. Derived at read time from raw — no migration, and it backfills
+# from the start of collection. TTL cache keeps the per-request cost flat.
+_ALLEGRIS_TTL_S = 600
+_allegris_cache = {"ts": 0.0, "tails": frozenset()}
+
+
+def _allegris_tails(conn):
+    """Registrations whose cabin is Allegris per recent FIS payloads."""
+    nowts = datetime.now(timezone.utc).timestamp()
+    if nowts - _allegris_cache["ts"] < _ALLEGRIS_TTL_S:
+        return _allegris_cache["tails"]
+    try:
+        rows = _q(conn, """
+            SELECT DISTINCT btrim(registration)
+            FROM flight_status_observations
+            WHERE found AND registration IS NOT NULL
+              AND (raw->'aircraftInfo'->>'allegris')::boolean
+              AND observed_at >= NOW() - INTERVAL '45 days'
+        """)
+    except Exception:
+        return _allegris_cache["tails"]  # stale beats a 500 mid-request
+    _allegris_cache.update(ts=nowts, tails=frozenset(r[0] for r in rows))
+    return _allegris_cache["tails"]
+
+
 def _merge_hold(cells):
     """n-weighted combination of several {lead: {p,n}} stability dicts — used
     when an insights tab spans a type family. None/empty members are skipped."""
@@ -3264,6 +3293,7 @@ def api_schedule():
             ORDER BY a.registration, f.first_seen
         """, (list(_SCHEDULE_TYPES),))
         endpoints = _route_endpoints(conn)
+        alleg = _allegris_tails(conn)
     finally:
         conn.close()
 
@@ -3373,6 +3403,7 @@ def api_schedule():
     airframes = [
         {"reg": reg, "type": types[reg], "watch": reg in _WATCH_TAILS,
          "icao24": icao24_by_reg.get(reg),
+         "allegris": (reg or "").strip() in alleg,
          "legs": sorted(by_reg[reg], key=lambda x: x["start"])}
         for reg in by_reg
     ]
@@ -3418,6 +3449,7 @@ def api_schedule_flight(airline, number, fdate):
             ORDER BY o.observed_at
         """, (fdate_d, airline, number))
         stab = _reassignment_stability(conn)
+        alleg = _allegris_tails(conn)
     finally:
         conn.close()
 
@@ -3431,6 +3463,7 @@ def api_schedule_flight(airline, number, fdate):
         history.append({
             "observed": d.isoformat(), "reg": reg,
             "type": _CANON_SHORT.get(at, at) if at else None,
+            "allegris": (reg or "").strip() in alleg,
             "status": st, "found": found,
         })
     regs_seq = [h["reg"] for h in history if h["reg"]]
@@ -3453,6 +3486,7 @@ def api_schedule_flight(airline, number, fdate):
               for m in (leg.get("marketingFlightNumbers") or [])]
         out.update({
             "current_reg": reg, "current_type": _CANON_SHORT.get(at, at) if at else None,
+            "allegris": bool(ac.get("allegris")),  # this flight's payload, not the tail-set
             "dep_iata": dep, "arr_iata": arr,
             "dep_name": depj.get("departureAirportName"), "arr_name": arrj.get("arrivalAirportName"),
             "dep_sched": dep_t.isoformat() if dep_t else None,
@@ -3496,6 +3530,7 @@ def api_book():
         rows = _latest_assignments(conn, reg=reg, dep=dep, arr=arr)
         swapped = {(r[0], r[1]) for r in _q(conn, _BOOK_SWAP_SQL)}
         stab = _reassignment_stability(conn)
+        alleg = _allegris_tails(conn)
     finally:
         conn.close()
 
@@ -3510,6 +3545,7 @@ def api_book():
             "dep_sched": dep_t.isoformat() if dep_t else None,
             "arr_sched": arr_t.isoformat() if arr_t else None,
             "reg": r_reg, "type": short, "watch": r_reg in _WATCH_TAILS,
+            "allegris": (r_reg or "").strip() in alleg,
             "lead": lead, "status": status,
             "reassigned": (fdate, fnum) in swapped,
             "hold": _hold_probability(stab, lead, f"{d or '?'}-{a or '?'}", short),
@@ -3744,10 +3780,12 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .gantt-row.watch { background:var(--amber-dim); border-radius:0; }
 .gantt-row.watch .gantt-label { color:var(--text-bright); }
 .gantt-label .star { color:var(--amber); font-size:10px; margin-right:1px; }
-.gantt-label { width:104px; flex-shrink:0; font-family:var(--mono); font-size:11px; font-weight:700;
+.gantt-label { width:122px; flex-shrink:0; font-family:var(--mono); font-size:11px; font-weight:700;
   color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; text-decoration:none; }
 a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; }
 .tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; border-radius:0; color:#fff; }
+.abadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px; border-radius:0;
+  background:var(--fp-ink); color:#fff; letter-spacing:.4px; }   /* Allegris cabin */
 .t748 .tbadge, .tbadge.t748 { background:var(--accent); }
 .t388 .tbadge, .tbadge.t388 { background:var(--green); }
 .t789 .tbadge, .tbadge.t789 { background:var(--fp-dv-7); }
@@ -3881,6 +3919,7 @@ footer a:hover { color:var(--text); }
     <input id="filter" type="text" placeholder="Filter: tail, airport or flight (e.g. HND, D-ABYN, 716)">
     <div class="legend">
       <span id="typechk" style="display:contents"></span>
+      <label class="tchk" id="allegchk" title="Show only airframes with the Allegris cabin"><input type="checkbox" id="alleg-only"><span class="abadge">A</span>Allegris only</label>
       <span><span class="star" style="color:var(--amber)">&#9733;</span>watched</span>
       <span style="opacity:0.4">|</span>
       <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
@@ -3907,6 +3946,7 @@ const TFAM={'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','35
 function tcls(t){ return TFAM[t] || 'tother'; }
 const TYPE_ORDER=['748','388','788','789','78X','359','35K'];   // fixed checkbox/legend order
 const HIDE_KEY='sched.hiddenTypes';
+const ALLEG_KEY='sched.allegrisOnly';
 const HUBS=['FRA','MUC'];                       // German bases these widebodies rotate from
 function legDisplay(dep,arr){                   // destination-led label: arrow + the non-hub endpoint
   const dh=HUBS.includes(dep), ah=HUBS.includes(arr);
@@ -3926,7 +3966,7 @@ async function init(){
   const t0=new Date(d.window.start).getTime(), t1=new Date(d.window.end).getTime();
   const range=t1-t0, dayMs=86400000;
   const frac = ms => (ms - t0)/range;                        // 0..1 across the time area
-  const oLeft = f => 'calc(104px + (100% - 104px) * '+f+')'; // overlay coord (rows incl. label)
+  const oLeft = f => 'calc(122px + (100% - 122px) * '+f+')'; // overlay coord (rows incl. label)
   const dayName = ms => new Date(ms).toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'});
 
   // midnight ticks (fake-UTC midnights are epoch multiples of a day)
@@ -3953,8 +3993,9 @@ async function init(){
 
   d.airframes.forEach(a=>{
     const tc=tcls(a.type);
-    const lblInner=(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span>';
-    html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-type="'+a.type+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
+    const lblInner=(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span>'
+      +(a.allegris?'<span class="abadge" title="Allegris cabin">A</span>':'');
+    html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-type="'+a.type+'" data-allegris="'+(a.allegris?'1':'0')+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
     html+= a.icao24
       ? '<a class="gantt-label" href="/fleet/'+a.icao24+'" title="Open '+a.reg+' in Fleet DB">'+lblInner+'</a>'
       : '<div class="gantt-label">'+lblInner+'</div>';
@@ -4047,9 +4088,15 @@ async function init(){
     '<label class="tchk'+(hidden.has(t)?' off':'')+'" title="Show/hide '+t+' rows (watched tails stay visible)">'
     +'<input type="checkbox" data-t="'+t+'"'+(hidden.has(t)?'':' checked')+'>'
     +'<span class="sw '+tcls(t)+'"></span>'+t+'</label>').join('');
+  // "Allegris only" is strict on purpose (no watched-tail exemption): it's an
+  // explicit cabin lens, not a row-decluttering toggle like the type boxes.
+  let allegOnly=false;
+  try { allegOnly = localStorage.getItem(ALLEG_KEY)==='1'; } catch(e){}
+  $('alleg-only').checked=allegOnly;
   const applyTypes=()=>{
     document.querySelectorAll('.gantt-row[data-type]').forEach(r=>{
-      r.classList.toggle('typehide', hidden.has(r.dataset.type) && !r.classList.contains('watch'));
+      const typeHide = hidden.has(r.dataset.type) && !r.classList.contains('watch');
+      r.classList.toggle('typehide', typeHide || (allegOnly && r.dataset.allegris!=='1'));
     });
   };
   $('typechk').addEventListener('change', e=>{
@@ -4057,6 +4104,11 @@ async function init(){
     if(e.target.checked) hidden.delete(t); else hidden.add(t);
     e.target.closest('.tchk').classList.toggle('off', !e.target.checked);
     try { localStorage.setItem(HIDE_KEY, JSON.stringify([...hidden])); } catch(err){}
+    applyTypes();
+  });
+  $('alleg-only').addEventListener('change', e=>{
+    allegOnly=e.target.checked;
+    try { localStorage.setItem(ALLEG_KEY, allegOnly?'1':'0'); } catch(err){}
     applyTypes();
   });
   applyTypes();
@@ -4138,7 +4190,7 @@ function renderFlight(d,leg){
   if(d.found){
     const dur=isoDur(d.duration);
     h+='<div class="det-grid">';
-    h+=row('Aircraft',(d.current_reg||'?')+(d.current_type?' \\u00b7 '+d.current_type:''));
+    h+=row('Aircraft',(d.current_reg||'?')+(d.current_type?' \\u00b7 '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
     h+=row('Departure',fmt(d.dep_sched)+(d.dep_term?' \\u00b7 T'+d.dep_term:'')+(d.dep_gate?' \\u00b7 Gate '+d.dep_gate:''));
     h+=row('Arrival',fmt(d.arr_sched)+(d.arr_term?' \\u00b7 T'+d.arr_term:'')+(d.arr_gate?' \\u00b7 Gate '+d.arr_gate:''));
     if(dur) h+=row('Flight time',dur);
@@ -4155,7 +4207,7 @@ function renderFlight(d,leg){
       const ch = pr!==null && x.reg!==pr;
       const tags=[]; if(i===0) tags.push('originally planned'); if(i===d.history.length-1) tags.push('current');
       h+='<div class="hist-row'+(ch?' changed':'')+'"><span class="obs">'+fmtD(x.observed)+'</span>'
-        +'<span class="reg">'+(x.reg||'\\u2014')+'</span><span class="tag">'
+        +'<span class="reg">'+(x.reg||'\\u2014')+'</span>'+(x.allegris?'<span class="abadge" title="Allegris cabin">A</span>':'')+'<span class="tag">'
         +[x.type,tags.join(' \\u00b7 ')].filter(Boolean).join('  \\u00b7  ')+'</span></div>';
       pr=x.reg;
     });
@@ -4245,6 +4297,8 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--green); }
 .tbadge.t789 { background:var(--fp-dv-7); }
 .tbadge.t359 { background:var(--purple); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
+.abadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px;
+  background:var(--fp-ink); color:#fff; letter-spacing:.4px; }   /* Allegris cabin */
 .miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--fp-ink); flex-shrink:0; }
 .miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
 .miniconf .cn { font-family:var(--sans); font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:3px; }
@@ -4309,7 +4363,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
     <input id="arr-in" type="text" placeholder="to, e.g. HND" style="display:none">
     <button class="fp-btn fp-btn--solid" onclick="search()">Search</button>
   </div>
-  <div class="hint" id="hint">Tip: watched airframes are starred. Confidence is grey when there isn't enough history yet.</div>
+  <div class="hint" id="hint">Tip: watched airframes are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin (follows the assigned tail, so mind the hold %). Confidence is grey when there isn't enough history yet.</div>
   <div class="results" id="results"><div class="empty">Search a tail (e.g. D-ABYN) or a route (e.g. FRA &rarr; HND).</div></div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
@@ -4354,7 +4408,8 @@ function renderResults(d){
       + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+'</div>'
       + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
       + '<div class="tail">'+(f.watch?'<span class="star">&#9733;</span>':'')+(f.reg||'?')
-      + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span></div>'
+      + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span>'
+      + (f.allegris?'<span class="abadge" title="Allegris cabin">ALLEGRIS</span>':'')+'</div>'
       + miniChip(f.hold) + '</div>';
   });
   R.innerHTML = h;
@@ -4414,7 +4469,7 @@ function renderFlight(d){
   if(d.found){
     const dur = isoDur(d.duration);
     h += '<div class="det-grid">';
-    h += row('Aircraft',(d.current_reg||'?')+(d.current_type?' &middot; '+d.current_type:''));
+    h += row('Aircraft',(d.current_reg||'?')+(d.current_type?' &middot; '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
     h += row('Departure',fmt(d.dep_sched)+(d.dep_term?' &middot; T'+d.dep_term:'')+(d.dep_gate?' &middot; Gate '+d.dep_gate:''));
     h += row('Arrival',fmt(d.arr_sched)+(d.arr_term?' &middot; T'+d.arr_term:'')+(d.arr_gate?' &middot; Gate '+d.arr_gate:''));
     if(dur) h += row('Flight time',dur);
@@ -4430,7 +4485,7 @@ function renderFlight(d){
       const ch = pr!==null && x.reg!==pr;
       const tags = []; if(i===0) tags.push('originally planned'); if(i===d.history.length-1) tags.push('current');
       h += '<div class="hist-row'+(ch?' changed':'')+'"><span class="obs">'+fmtD(x.observed)+'</span>'
-        + '<span class="reg">'+(x.reg||'&mdash;')+'</span><span class="tag">'
+        + '<span class="reg">'+(x.reg||'&mdash;')+'</span>'+(x.allegris?'<span class="abadge" title="Allegris cabin">A</span>':'')+'<span class="tag">'
         + [x.type,tags.join(' &middot; ')].filter(Boolean).join('  &middot;  ')+'</span></div>';
       pr = x.reg;
     });
