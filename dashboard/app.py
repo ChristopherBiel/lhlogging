@@ -3681,7 +3681,8 @@ def api_book_airports():
 #
 # Coordinates ARE the SVG user space: the page draws with an equirectangular
 # projection, so x = longitude and y = -latitude, no client-side maths.
-# Regenerate with the script in tools/ if the outline ever needs more detail.
+# Regenerate both this and _AIRPORT_LL with tools/build_book_map.py if the
+# outline ever needs more detail or the network reaches a new field.
 _WORLD_OUTLINE = (
     "M33.9,0.95L37.7,3.1L37.77,3.68L39.2,4.68L38.74,5.91L39.44,6.84L39.19,8.49L40.32,10.32L39.52,"
     "10.9L36.51,11.72L34.56,11.52L33.74,9.42L30.74,8.34L29.62,6.52L29.34,4.5L30.75,3.36L30.42,1.1"

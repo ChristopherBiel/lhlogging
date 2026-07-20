@@ -102,8 +102,8 @@ lhlogging/
 │   ├── crontab                     # Cron schedule (runs inside Docker)
 │   ├── Dockerfile
 │   └── requirements.txt
-├── dashboard/                      # Live monitoring UI
-│   ├── app.py                      # Flask app with dark-themed SPA
+├── dashboard/                      # Monitoring UI + fleet-catching pages
+│   ├── app.py                      # Flask app: / (monitor), /book, /schedule, /insights, /fleet
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── db/
@@ -238,7 +238,7 @@ TRACK_AIRCRAFT_TYPES=
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 | **Flight-Routes Seed** | Mondays at 02:30 UTC | Rebuilds the `flight_routes` callsign→route reference from a consensus of clean flights (plus curated overrides) |
-| **Flight-Status Fetch** | Nightly ~22:00–23:00 Europe/Berlin | Pulls the public Lufthansa FIS feed for the B748/A388 flight numbers seen in the last 2 days, +1..+4 days ahead; records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
+| **Flight-Status Fetch** | Nightly ~22:00–23:00 Europe/Berlin | Pulls the public Lufthansa FIS feed for the tracked widebody flight numbers (747-8, A380, 787, A350) seen in the last 2 days, +1..+4 days ahead; records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
 
 ---
 
@@ -260,7 +260,7 @@ ADS-B pipeline can only observe after the fact.
   flight_number)` — the run date is part of the key, so **reassignments are
   preserved as a time series** (compare a target flight across `observed_date`
   to see the plan firm up or swap). Full per-flight payload kept in `raw` JSONB.
-- **Config:** `FIS_SEED_TYPES` (default `B748,A388`), `FIS_LOOKAHEAD_DAYS`
+- **Config:** `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`), `FIS_LOOKAHEAD_DAYS`
   (4), `FIS_SEED_LOOKBACK_DAYS` (2), `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`,
   `FIS_BLOCK_BACKOFF_S`. Ad-hoc single lookup:
   `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`
@@ -270,9 +270,11 @@ ADS-B pipeline can only observe after the fact.
 
 ## Dashboard
 
-The monitoring dashboard runs on port **8080** and auto-refreshes every 30 seconds.
+The dashboard runs on port **8080**. The `/` monitor page auto-refreshes every
+30 seconds; the fleet-catching pages below are driven by the nightly FIS
+snapshots.
 
-**What it shows:**
+**`/` — Monitor** (auto-refreshing system + fleet overview):
 - System health — last run status, result details, and timing for each job (state poller, flight detector, fleet discovery, fleet refresh)
 - Fleet breakdown — active/retired aircraft counts by type
 - Flight metrics — today, 7-day, and all-time counts (excludes `needs_review` flights)
@@ -280,6 +282,37 @@ The monitoring dashboard runs on port **8080** and auto-refreshes every 30 secon
 - Recent errors — any job failures in the last 48 hours (hidden when all clear)
 - Top routes — most frequent city pairs (30-day window)
 - Fleet table — sortable/filterable list with a "Needs Review" checkbox to find aircraft missing type or registration data
+
+### Fleet-catching pages
+
+Built on the FIS snapshots, these help you *catch* a specific airframe — find
+an upcoming flight, see which tail is published on it, and how likely that
+assignment is to still hold by departure.
+
+- **`/book` — Catch a Tail.** Find an upcoming flight three ways: **by tail**
+  (every leg a registration is published on), **by route** (several alternative
+  airports per side), or **by location** (pick a departure airport off a world
+  map). Each result carries the currently published tail, its cabin config
+  (First/Business seat counts, Allegris marker), and a measured hold
+  probability — how often that assignment survives to departure, from the
+  reassignment time series. Deep-linkable: `?reg=D-ABYN`, `?dep=FRA&arr=HND`,
+  `?loc=KIX`.
+- **`/schedule`** — per-airframe upcoming timeline from the latest snapshot of
+  each flight, grouped by tail.
+- **`/insights`** — descriptive, backward-looking analytics per aircraft
+  type/family (747-8, A380, 787, A350): route frequency, rotation transitions,
+  per-airframe profiles, and reassignment reliability.
+- **`/fleet`** — the aircraft database: one row per airframe, drill into a tail's
+  flight log and route history.
+
+**Map mode note.** The `/book` world map is self-hosted: the land/border
+outline and airport coordinates are inlined in `app.py` (regenerate with
+`tools/build_book_map.py`) and served from `/book/world.json` and
+`/api/book/map`. It deliberately loads no third-party map tiles, so no external
+service sees a visitor — consistent with the Datenschutz page. An airport with
+an upcoming departure but no known coordinates is listed under the map rather
+than dropped, which is the cue to re-run the generator (`--extra <IATA>` forces
+in a non-large field).
 
 ---
 
