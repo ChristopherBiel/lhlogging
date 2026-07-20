@@ -4395,11 +4395,24 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .fp-seg { margin-bottom:12px; }
 .fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
 .fp-seg > .active { background:var(--fp-ink); color:#fff; }
-.searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; align-items:flex-start; }
+.searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; align-items:stretch; }
 .searchbar > input { background:var(--surface); border:1.5px solid var(--fp-ink); padding:9px 14px; font-size:14px; font-family:var(--sans); color:var(--text-bright); width:200px; text-transform:uppercase; }
 .searchbar > input::placeholder { color:var(--muted); text-transform:none; }
 .searchbar > input:focus { outline:none; border-color:var(--accent); }
 .fp-btn:hover { opacity:.88; }  /* search button uses .fp-btn--solid */
+/* buttons stretch with the row so they match the input/tokbox height */
+.searchbar .fp-btn { display:inline-flex; align-items:center; padding-top:0; padding-bottom:0; }
+/* filter drawer — tucked behind the Filters button */
+.filterbar { display:none; align-items:center; flex-wrap:wrap; gap:9px 14px; border:1.5px solid var(--fp-ink);
+  background:var(--surface); padding:10px 14px; margin-bottom:8px; }
+.filterbar.show { display:flex; }
+.filterbar .fp-seg { margin-bottom:0; }
+.filterbar .fp-btn { font-size:.72rem; padding:.45em .8em; }
+.flabel { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
+.fchk { display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-family:var(--mono); font-size:11px; font-weight:700; color:var(--text); user-select:none; }
+.fchk input { accent-color:var(--fp-ink); width:13px; height:13px; margin:0; cursor:pointer; }
+.fsep { width:1.5px; height:18px; background:var(--border); }
+.fnote { font-family:var(--sans); font-size:11px; color:var(--muted); padding:8px 2px 0; }
 /* multi-airport token inputs (route mode) — chips + inline input + suggestions */
 .tokbox { display:flex; align-items:center; flex-wrap:wrap; gap:5px; background:var(--surface);
   border:1.5px solid var(--fp-ink); padding:5px 8px; width:280px; position:relative; cursor:text; }
@@ -4512,6 +4525,22 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
       <div class="sugg" id="arr-sugg"></div>
     </div>
     <button class="fp-btn fp-btn--solid" onclick="search()">Search</button>
+    <button class="fp-btn" id="filter-btn" onclick="toggleFilters()">Filters</button>
+  </div>
+  <div class="filterbar" id="filterbar">
+    <span class="flabel">Type</span>
+    <label class="fchk"><input type="checkbox" data-fam="747" checked>747-8</label>
+    <label class="fchk"><input type="checkbox" data-fam="A380" checked>A380</label>
+    <label class="fchk"><input type="checkbox" data-fam="787" checked>787</label>
+    <label class="fchk"><input type="checkbox" data-fam="A350" checked>A350</label>
+    <span class="fsep"></span>
+    <span class="flabel">Allegris</span>
+    <div class="fp-seg" id="f-alleg"><button class="active" data-v="any">any</button><button data-v="yes">yes</button><button data-v="no">no</button></div>
+    <span class="fsep"></span>
+    <span class="flabel">First class</span>
+    <div class="fp-seg" id="f-first"><button class="active" data-v="any">any</button><button data-v="yes">yes</button><button data-v="no">no</button></div>
+    <span class="fsep"></span>
+    <button class="fp-btn" id="f-reset">Reset</button>
   </div>
   <div class="hint" id="hint">Tip: route mode takes <b>several airports per side</b> &mdash; type a code or city for suggestions, Enter or comma adds it. Watched airframes are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin; <span class="cbadge cf">F8</span> <span class="cbadge">C80</span> = First / Business seat count (cabin follows the assigned tail, so mind the hold %).</div>
   <div class="results" id="results"><div class="empty">Search a tail (e.g. D-ABYN) or a route (e.g. FRA &rarr; HND).</div></div>
@@ -4634,11 +4663,51 @@ function cabinBadges(c){
        + (c.C ? '<span class="cbadge" title="'+full+'">C'+c.C+'</span>' : '');
 }
 
-function renderResults(d){
-  const R = $('results');
+/* ── Result filters (type / Allegris / First) — client-side over the last fetch ── */
+const FILT = { fams:null, alleg:'any', first:'any' };   // fams null = all types
+let LAST = null;
+function famOf(t){ return ({'748':'747','388':'A380','788':'787','789':'787','78X':'787','359':'A350','35K':'A350'})[t] || 'other'; }
+function toggleFilters(){ $('filterbar').classList.toggle('show'); }
+function passes(f){
+  if(FILT.fams && !FILT.fams.has(famOf(f.type))) return false;
+  if(FILT.alleg!=='any' && !!f.allegris !== (FILT.alleg==='yes')) return false;
+  if(FILT.first!=='any' && !!(f.cabin && f.cabin.F) !== (FILT.first==='yes')) return false;
+  return true;
+}
+function syncFilters(){
+  const n = (FILT.fams?1:0) + (FILT.alleg!=='any'?1:0) + (FILT.first!=='any'?1:0);
+  $('filter-btn').textContent = n ? 'Filters \\u00b7 '+n : 'Filters';
+  if(LAST) drawResults();
+}
+document.querySelectorAll('.fchk input').forEach(cb => cb.addEventListener('change', ()=>{
+  const boxes = [...document.querySelectorAll('.fchk input')], on = boxes.filter(x=>x.checked);
+  FILT.fams = on.length===boxes.length ? null : new Set(on.map(x=>x.dataset.fam));
+  syncFilters();
+}));
+function segWire(id, key){
+  $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', ()=>{
+    FILT[key] = b.dataset.v;
+    $(id).querySelectorAll('button').forEach(x=>x.classList.toggle('active', x===b));
+    syncFilters();
+  }));
+}
+segWire('f-alleg','alleg'); segWire('f-first','first');
+$('f-reset').addEventListener('click', ()=>{
+  document.querySelectorAll('.fchk input').forEach(x=>{ x.checked = true; });
+  ['f-alleg','f-first'].forEach(id => $(id).querySelectorAll('button')
+    .forEach(x=>x.classList.toggle('active', x.dataset.v==='any')));
+  FILT.fams = null; FILT.alleg = 'any'; FILT.first = 'any';
+  syncFilters();
+});
+
+function renderResults(d){ LAST = d; drawResults(); }
+function drawResults(){
+  const R = $('results'), d = LAST;
   if(d.error){ R.innerHTML = '<div class="empty">'+d.error+'</div>'; return; }
-  const fs = d.flights || [];
-  if(!fs.length){ R.innerHTML = '<div class="empty">No upcoming flights found. The schedule is only published ~4 days ahead &mdash; try again closer to your date, or check the spelling.</div>'; return; }
+  const all = d.flights || [];
+  if(!all.length){ R.innerHTML = '<div class="empty">No upcoming flights found. The schedule is only published ~4 days ahead &mdash; try again closer to your date, or check the spelling.</div>'; return; }
+  const fs = all.filter(passes);
+  if(!fs.length){ R.innerHTML = '<div class="empty">All '+all.length+' flights are hidden by the filters &mdash; adjust or reset them.</div>'; return; }
   let h = '';
   fs.forEach(f => {
     const lead = f.lead===0 ? 'today' : (f.lead===1 ? 'tomorrow' : 'in '+f.lead+' days');
@@ -4653,6 +4722,7 @@ function renderResults(d){
       + cabinBadges(f.cabin)+'</div>'
       + miniChip(f.hold) + '</div>';
   });
+  if(fs.length < all.length) h += '<div class="fnote">'+fs.length+' of '+all.length+' flights shown &mdash; '+(all.length-fs.length)+' hidden by filters</div>';
   R.innerHTML = h;
 }
 
