@@ -2,30 +2,36 @@ SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 TZ=Europe/Berlin
 
-# Lufthansa flight-status fetch — 7 slots/day, clustered around when tail
+# Lufthansa flight-status fetch — 8 slots/day, clustered around when tail
 # re-assignments actually land and when catching them still has value (before
 # the relevant departure bank pushes back), not evenly spaced:
 #
+#   02:45 watch 4h     red-eyes (the 03:45/05:00 departures)
+#   03:30 far pass     D+3..D+5 only, read-only against the catalog — quiet
+#                      window with no deadline, so a multi-hour run is fine
 #   05:45 sweep-lite   truth D-1/D-2 + forecast D0/D1 (FIS_LOOKAHEAD_DAYS=1) —
 #                      overnight re-plans, done before the first bank departs
 #   10:30 watch 4.5h   midday bank        (deps ~11:00-15:00)
 #   13:00 watch 4.5h   afternoon bank     (deps ~13:30-17:30)
 #   15:30 watch 4.5h   late-afternoon bank(deps ~16:00-20:00)
-#   18:15 sweep-full   truth + D0..D4 — D0 is queried first (priority sort), so
+#   18:15 sweep-full   truth + D0..D2 — D0 is queried first (priority sort), so
 #                      the evening bank departs on fresh data; also sets
-#                      tomorrow's plan
+#                      tomorrow's plan. D+3..D+5 stays with the far pass so
+#                      this can't grow slow enough to bump into 21:15.
 #   21:15 watch 4.5h   evening bank + just-after-midnight departures
-#   02:45 watch 4h     red-eyes (the 03:45/05:00 departures)
 #
-# Sweeps refresh the whole catalog window; watch passes re-check only flights
-# departing in the next few hours. run_nightly.sh jitters each start (short for
-# watches so the bank timing holds, longer for sweeps) and skips the slot if a
-# previous run is still active (flock), so slots never overlap into doubled
-# request rates.
+# Sweeps refresh the whole catalog window (near: D-2..D+2, plus discovery/
+# pairing/lifecycle); the far pass extends read-only to D+3..D+5; watch passes
+# re-check only flights departing in the next few hours. run_nightly.sh
+# jitters each start (short for watches so the bank timing holds, longer for
+# sweeps/far since neither is time-critical) and skips the slot if a previous
+# run is still active (flock), so slots never overlap into doubled request
+# rates.
+45  2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4 >> /var/log/lhlogging/flightstatus.log 2>&1
+30  3 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 /app/run_nightly.sh --far >> /var/log/lhlogging/flightstatus.log 2>&1
 45  5 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 FIS_LOOKAHEAD_DAYS=1 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
 30 10 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
 0  13 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
 30 15 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
 15 18 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
 15 21 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
-45  2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4 >> /var/log/lhlogging/flightstatus.log 2>&1

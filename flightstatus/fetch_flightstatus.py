@@ -18,10 +18,14 @@ run_nightly.sh). We load the timetable page once to establish the session, then
 issue same-origin `fetch()`es from inside the page.
 
 Run modes:
-  python fetch_flightstatus.py                 # sweep (catalog x -BACKFILL..+LOOKAHEAD days, incl. D0)
+  python fetch_flightstatus.py                 # near sweep (catalog x -BACKFILL..+LOOKAHEAD days,
+                                                #   incl. D0; owns discovery/pairing/catalog lifecycle)
+  python fetch_flightstatus.py --far           # far pass: catalog x D+FAR_MIN..D+FAR_MAX only,
+                                                #   read-only against the catalog, run once in a quiet
+                                                #   window since nothing here needs same-day freshness
   python fetch_flightstatus.py --watch 4.5     # watch pass: re-check flights departing in the next 4.5h
   python fetch_flightstatus.py --flight LH716 --date 2026-06-25   # ad-hoc single lookup (prints JSON)
-  python fetch_flightstatus.py --dry-run       # sweep/watch, print candidate set + plan, no browser/DB writes
+  python fetch_flightstatus.py --dry-run       # sweep/watch/far, print candidate set + plan, no browser/DB writes
 
 Must be run under a display (Xvfb): `xvfb-run -a python fetch_flightstatus.py`.
 """
@@ -51,7 +55,21 @@ DB_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 SEED_TYPES = [t.strip() for t in os.environ.get(
     "FIS_SEED_TYPES", "B748,A388,B788,B789,B78X,A359,A35K").split(",") if t.strip()]
 SEED_LOOKBACK_DAYS = int(os.environ.get("FIS_SEED_LOOKBACK_DAYS", "2"))
-LOOKAHEAD_DAYS = int(os.environ.get("FIS_LOOKAHEAD_DAYS", "4"))
+# Near sweep (05:45/18:15): D0 needs same-day freshness before the next
+# departure bank, so this stays short enough to always finish with margin.
+# Deeper lead times aren't time-critical — see FAR_MIN_DAYS/FAR_MAX_DAYS below,
+# a separate unhurried pass that used to be crammed in here (2026-07-20: at
+# LOOKAHEAD_DAYS=4 the catalog had grown past MAX_LOOKUPS, silently dropping
+# all of D+4 and part of D+3 every run).
+LOOKAHEAD_DAYS = int(os.environ.get("FIS_LOOKAHEAD_DAYS", "2"))
+# Far pass (--far, run once nightly in the quiet window after the red-eye
+# watch): re-checks D+FAR_MIN_DAYS..D+FAR_MAX_DAYS only. No discovery, no
+# chaining, no catalog prune — those stay owned by the near sweeps, which run
+# twice daily and keep the catalog current enough for this to just read it.
+# Nothing depends on same-day freshness this far out, so it's free to take
+# hours without risking the next scheduled slot.
+FAR_MIN_DAYS = int(os.environ.get("FIS_FAR_MIN_DAYS", "3"))
+FAR_MAX_DAYS = int(os.environ.get("FIS_FAR_MAX_DAYS", "5"))
 # Truth pass: also query the last N days so FIS returns the *actually-operated*
 # tail (overallStatus ARRIVED) as ground truth for calibration. FIS only keeps a
 # rolling few-days window of past flights, so the twice-daily job must catch them
@@ -75,10 +93,11 @@ BLOCK_BACKOFF_S = float(os.environ.get("FIS_BLOCK_BACKOFF_S", "45.0"))
 # seed. The FIS `previousFlight` field names them, so after the seed fetch we
 # follow that chain a couple of hops to fill the gaps. Capped to stay gentle.
 CHAIN_HOPS = int(os.environ.get("FIS_CHAIN_HOPS", "2"))
-# Catalog sweep (~105 numbers with the 787/A350 types) x (BACKFILL_DAYS +
-# LOOKAHEAD_DAYS) date slices ≈ 580 steady-state; give headroom so a run isn't
-# truncated. Work is priority-ordered by lead time, so if this cap does bite it
-# drops the least-valuable far-future lookups first.
+# Catalog sweep (120+ numbers) x (BACKFILL_DAYS + 1 + LOOKAHEAD_DAYS) date
+# slices ≈ 600 steady-state for the near sweep now that D+3..FAR_MAX_DAYS is
+# split off into its own unhurried --far pass (see below) — comfortably under
+# this cap again. Work is priority-ordered by lead time, so if this cap does
+# still bite it drops the least-valuable far-future lookups first.
 MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "700"))
 # Distil caps successful lookups per browser session (~100-115). Recycle the
 # browser context (fresh cf_clearance) every N lookups to stay under it — needed
@@ -730,7 +749,7 @@ def fetch_one(sess, flight_number: str, target: date, reset_cb):
 
 
 # --- runners ----------------------------------------------------------------
-def run_batch(dry_run: bool = False) -> int:
+def run_batch(dry_run: bool = False, far: bool = False) -> int:
     conn = connect()
     try:
         adsb_seed = seed_flight_numbers(conn)
@@ -739,40 +758,68 @@ def run_batch(dry_run: bool = False) -> int:
         conn.close()
         return 1
 
-    # The catalog is the primary source; the ADS-B seed folds into it. If the
-    # catalog table isn't there yet (migration 007 unapplied), fall back to the
-    # seed alone so the job keeps running.
-    using_catalog = refresh_catalog(conn, adsb_seed, commit=not dry_run)
-    if using_catalog:
-        candidates = catalog_candidates(conn)
-        source_label = "catalog"
+    if far:
+        # Far pass: read-only against the catalog — discovery, pairing, and
+        # the retire/probation lifecycle stay owned by the near sweeps (which
+        # run twice daily and keep it current enough for this to just read).
+        # Same degrade-gracefully fallback as the near path if migration 007
+        # isn't applied yet.
+        try:
+            candidates = catalog_candidates(conn)
+            using_catalog = True
+            source_label = "catalog (far, read-only)"
+        except psycopg.errors.UndefinedTable:
+            conn.rollback()
+            candidates = adsb_seed
+            using_catalog = False
+            source_label = "adsb-seed (far, catalog table absent)"
     else:
-        candidates = adsb_seed
-        source_label = "adsb-seed (catalog table absent)"
+        # The catalog is the primary source; the ADS-B seed folds into it. If the
+        # catalog table isn't there yet (migration 007 unapplied), fall back to the
+        # seed alone so the job keeps running.
+        using_catalog = refresh_catalog(conn, adsb_seed, commit=not dry_run)
+        if using_catalog:
+            candidates = catalog_candidates(conn)
+            source_label = "catalog"
+        else:
+            candidates = adsb_seed
+            source_label = "adsb-seed (catalog table absent)"
     if not candidates:
         log("no candidate flight numbers — nothing to do")
         conn.close()
         return 0
 
     today = date.today()
-    future = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
-    past = [today - timedelta(days=d) for d in range(1, BACKFILL_DAYS + 1)]  # truth pass
-    # Sweep D0 (today) too: same-day tail swaps only show up on today's slice, so
-    # skipping it lets an already-captured assignment go stale. It's a forecast
-    # day (not settled), so it's never truth-skipped and — offset 0 — is queried
-    # first under the priority sort.
-    targets = sorted([today, *past, *future])
+    if far:
+        # No backfill/truth (only future dates) and no D0 (the near sweeps and
+        # watches already keep today fresh).
+        past: list[date] = []
+        future = [today + timedelta(days=d) for d in range(FAR_MIN_DAYS, FAR_MAX_DAYS + 1)]
+        targets = sorted(future)
+    else:
+        future = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
+        past = [today - timedelta(days=d) for d in range(1, BACKFILL_DAYS + 1)]  # truth pass
+        # Sweep D0 (today) too: same-day tail swaps only show up on today's slice, so
+        # skipping it lets an already-captured assignment go stale. It's a forecast
+        # day (not settled), so it's never truth-skipped and — offset 0 — is queried
+        # first under the priority sort.
+        targets = sorted([today, *past, *future])
     # Chained legs may reference any day in the swept window; targets now spans
     # D0, so its set already bounds chain reachability.
     window_dates = set(targets)
 
     # Truth pass: skip past (number, date) pairs already settled — their tail
-    # won't change, so re-querying them wastes lookups.
+    # won't change, so re-querying them wastes lookups. Always empty in far
+    # mode (no past dates there).
     have_truth = existing_truth(conn, min(past), today) if past else set()
 
+    # Far mode never chains — discovery is the near sweeps' job (see above).
+    chain_hops = 0 if far else CHAIN_HOPS
     log(f"source={source_label}: {len(candidates)} flight numbers x dates "
-        f"{targets[0]}..{targets[-1]} (backfill={BACKFILL_DAYS}, lookahead={LOOKAHEAD_DAYS}, "
-        f"chain_hops={CHAIN_HOPS})")
+        f"{targets[0]}..{targets[-1]} "
+        f"(backfill={BACKFILL_DAYS if not far else 0}, "
+        f"lookahead={LOOKAHEAD_DAYS if not far else f'{FAR_MIN_DAYS}-{FAR_MAX_DAYS}'}, "
+        f"chain_hops={chain_hops})")
     log("flight numbers: " + ", ".join(f"LH{s['flight_number']}({s['seed_type']})" for s in candidates))
 
     # Work queue of (flight_number, date, seed_type, hop), deduped by (num, date).
@@ -860,7 +907,7 @@ def run_batch(dry_run: bool = False) -> int:
                         # rotation-chain expansion: follow previousFlight to fill
                         # legs (often tactically-flown) that the seed never caught
                         pn, pd = obs["prev_flight_number"], obs["prev_flight_date"]
-                        if (hop < CHAIN_HOPS and obs["prev_airline"] == "LH"
+                        if (hop < chain_hops and obs["prev_airline"] == "LH"
                                 and pn and pn.isdigit() and pd in window_dates
                                 and (pn, pd) not in queued and len(queued) < MAX_LOOKUPS
                                 and not (pd < today and (pn, pd) in have_truth)):
@@ -876,14 +923,17 @@ def run_batch(dry_run: bool = False) -> int:
                     pass
             browser.close()
         # catalog lifecycle: retire numbers that stopped returning a widebody.
-        if using_catalog:
+        # Owned by the near sweeps only — the far pass just reads the catalog.
+        if using_catalog and not far:
             try:
                 prune_catalog(conn)
             except Exception as e:
                 log(f"catalog prune error (non-fatal): {e}")
-        # coverage audit (monitor) — read-only; must never fail the run
+        # coverage audit (monitor) — read-only; must never fail the run. Always
+        # spans through FAR_MAX_DAYS so gap/overlap detection reflects the full
+        # near+far horizon regardless of which pass triggers it.
         try:
-            summary = coverage_audit(conn, today, LOOKAHEAD_DAYS)
+            summary = coverage_audit(conn, today, max(LOOKAHEAD_DAYS, FAR_MAX_DAYS))
         except Exception as e:
             log(f"coverage audit error (non-fatal): {e}")
     except Exception as e:
@@ -1057,22 +1107,30 @@ def main() -> int:
     ap.add_argument("--watch", type=float, metavar="HOURS",
                     help="watch pass: re-check flights departing within the next HOURS "
                          "(no catalog refresh/prune, no chaining)")
+    ap.add_argument("--far", action="store_true",
+                    help=f"far pass: re-check D+{FAR_MIN_DAYS}..D+{FAR_MAX_DAYS} only "
+                         "(no catalog refresh/prune, no chaining) — the near sweep covers "
+                         f"D-{BACKFILL_DAYS}..D+{LOOKAHEAD_DAYS} and owns discovery")
     ap.add_argument("--dry-run", action="store_true",
-                    help="sweep/watch: print the planned lookups only, no browser/DB writes")
+                    help="sweep/watch/far: print the planned lookups only, no browser/DB writes")
     ap.add_argument("--audit", action="store_true",
                     help="print the coverage audit for the current window and exit (no browser)")
     args = ap.parse_args()
 
     if args.watch is not None:
-        if args.flight or args.date:
-            ap.error("--watch cannot be combined with --flight/--date")
+        if args.flight or args.date or args.far:
+            ap.error("--watch cannot be combined with --flight/--date/--far")
         if args.watch <= 0:
             ap.error("--watch requires a positive number of hours")
         return run_watch(args.watch, dry_run=args.dry_run)
+    if args.far:
+        if args.flight or args.date:
+            ap.error("--far cannot be combined with --flight/--date")
+        return run_batch(dry_run=args.dry_run, far=True)
     if args.audit:
         conn = connect()
         try:
-            summary = coverage_audit(conn, date.today(), LOOKAHEAD_DAYS)
+            summary = coverage_audit(conn, date.today(), max(LOOKAHEAD_DAYS, FAR_MAX_DAYS))
             print(json.dumps(summary, indent=2, default=str))
         finally:
             conn.close()
