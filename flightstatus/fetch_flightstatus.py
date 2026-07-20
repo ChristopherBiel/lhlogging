@@ -155,19 +155,64 @@ def refresh_catalog(conn: psycopg.Connection, adsb_seed: list[dict], commit: boo
     """
     try:
         with conn.cursor() as cur:
+            # Normalization pre-pass: FIS zero-pads flight numbers in
+            # `previousFlight` ('096' for LH96), so a chained number can enter
+            # the pipeline in a padded spelling next to its canonical one. Two
+            # spellings of one number must not coexist in the catalog: the
+            # pairing insert maps both onto the same sibling, and a single
+            # INSERT .. ON CONFLICT may not touch a row twice (this killed
+            # every sweep 07-17..07-19). Fold padded rows into the canonical
+            # row, then drop/rename what's left — idempotent, no-op when clean.
+            cur.execute(
+                """
+                UPDATE fis_flight_catalog c SET
+                    seed_type          = COALESCE(c.seed_type, p.seed_type),
+                    last_widebody_date = GREATEST(c.last_widebody_date, p.last_widebody_date),
+                    updated_at         = NOW()
+                FROM fis_flight_catalog p
+                WHERE p.airline = c.airline
+                  AND p.flight_number ~ '^0[0-9]*$'
+                  AND (p.flight_number::int)::text = c.flight_number
+                """
+            )
+            cur.execute(
+                """
+                DELETE FROM fis_flight_catalog p
+                WHERE p.flight_number ~ '^0[0-9]*$'
+                  AND EXISTS (SELECT 1 FROM fis_flight_catalog c
+                              WHERE c.airline = p.airline
+                                AND c.flight_number = (p.flight_number::int)::text)
+                """
+            )
+            cur.execute(
+                """
+                UPDATE fis_flight_catalog SET
+                    flight_number = (flight_number::int)::text, updated_at = NOW()
+                WHERE flight_number ~ '^0[0-9]*$'
+                """
+            )
+            cur.execute(
+                """
+                UPDATE fis_flight_catalog SET
+                    paired_number = (paired_number::int)::text, updated_at = NOW()
+                WHERE paired_number ~ '^0[0-9]*$'
+                """
+            )
             # Source A — FIS history: numbers ever operated by a known A388/B748
             # tail. Joining on registration (not the often-empty aircraftType
             # string) is the robust widebody signal — it catches the tactical
-            # A380 MUC legs too.
+            # A380 MUC legs too. Numbers group by canonical ::int spelling so
+            # legacy padded observation rows fold into one catalog entry.
             cur.execute(
                 """
                 INSERT INTO fis_flight_catalog
                     (airline, flight_number, seed_type, source, last_widebody_date)
-                SELECT o.airline, o.flight_number, MIN(a.aircraft_type), 'fis_history', MAX(o.flight_date)
+                SELECT o.airline, (o.flight_number::int)::text, MIN(a.aircraft_type), 'fis_history', MAX(o.flight_date)
                 FROM flight_status_observations o
                 JOIN aircraft a ON a.registration = o.registration
                 WHERE o.found AND a.aircraft_type = ANY(%s)
-                GROUP BY o.airline, o.flight_number
+                  AND o.flight_number ~ '^[0-9]+$'
+                GROUP BY o.airline, (o.flight_number::int)
                 ON CONFLICT (airline, flight_number) DO UPDATE SET
                     seed_type          = COALESCE(EXCLUDED.seed_type, fis_flight_catalog.seed_type),
                     last_widebody_date = GREATEST(fis_flight_catalog.last_widebody_date, EXCLUDED.last_widebody_date),
@@ -194,6 +239,9 @@ def refresh_catalog(conn: psycopg.Connection, adsb_seed: list[dict], commit: boo
             # for even, N-1 for odd). Only off widebody-confirmed numbers so we
             # don't pair charter/non-widebody noise. This is what makes skipped
             # turnaround legs (e.g. LH763) get queried without any chaining.
+            # GROUP BY the canonical ::int so two spellings of one source
+            # number can never propose the same target twice in this statement
+            # (ON CONFLICT forbids double-touch — the 07-17 sweep outage).
             cur.execute(
                 """
                 INSERT INTO fis_flight_catalog
@@ -202,9 +250,10 @@ def refresh_catalog(conn: psycopg.Connection, adsb_seed: list[dict], commit: boo
                        CASE WHEN c.flight_number::int % 2 = 0
                             THEN (c.flight_number::int + 1)::text
                             ELSE (c.flight_number::int - 1)::text END,
-                       c.seed_type, c.flight_number, 'pairing'
+                       MIN(c.seed_type), (c.flight_number::int)::text, 'pairing'
                 FROM fis_flight_catalog c
                 WHERE c.flight_number ~ '^[0-9]+$' AND c.last_widebody_date IS NOT NULL
+                GROUP BY c.airline, (c.flight_number::int)
                 ON CONFLICT (airline, flight_number) DO UPDATE SET
                     paired_number = COALESCE(fis_flight_catalog.paired_number, EXCLUDED.paired_number),
                     updated_at    = NOW()
@@ -509,6 +558,16 @@ def log_batch_finish(conn: psycopg.Connection, run_id: int, total: int, ok: int,
 
 
 # --- parsing ----------------------------------------------------------------
+def norm_flight_number(n: str | None) -> str | None:
+    """Strip FIS's zero-padding ('096' -> '96') at the parse boundary, so a
+    chained-in number never diverges from its canonical spelling downstream
+    (catalog inserts, work-queue dedup) — the divergence that made the pairing
+    insert propose the same row twice and crash every sweep (07-17..07-19)."""
+    if n and n.isdigit():
+        return str(int(n))
+    return n
+
+
 def norm_registration(reg: str | None) -> str | None:
     """'DABYN' -> 'D-ABYN' (German regs) to match the aircraft table; leave others as-is."""
     if not reg:
@@ -572,7 +631,7 @@ def parse_flight(payload: dict, flight_number: str, target: date, seed_type: str
     details = fl.get("flightDetails") or {}
     prev = details.get("previousFlight") or {}
     obs["prev_airline"] = prev.get("operatingCarrier")
-    obs["prev_flight_number"] = prev.get("operatingCarrierFlightNumber")
+    obs["prev_flight_number"] = norm_flight_number(prev.get("operatingCarrierFlightNumber"))
     obs["prev_flight_date"] = _d(prev.get("flightDate"))
 
     legs = fl.get("legs") or []
