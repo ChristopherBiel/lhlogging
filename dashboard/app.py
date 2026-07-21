@@ -1263,11 +1263,8 @@ _FLEET_HTML = """\
   --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
 /* Faceplate: hard square edges + mono instrument labels */
-input, select, button, textarea,
-.btn, .badge, .badge-active, .badge-retired, .badge-review, .badge-tracking,
-.toggle-group, .toggle-btn, .nav-link, .card, .metric, .modal, .toast,
-.toolbar input, .toolbar select, .route-track, .route-fill, .chart-bar,
-.editable { border-radius: 0 !important; }
+/* square native form controls — divs/spans set radius:0 in their own rules */
+input, select, button, textarea { border-radius: 0 !important; }
 th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-sans); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1299,13 +1296,13 @@ body {
   display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
 }
 .toolbar input[type="text"] {
-  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 6px;
+  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 0;
   color: var(--text-bright); padding: 7px 12px; font-size: 13px; flex: 1; min-width: 200px;
   outline: none;
 }
 .toolbar input[type="text"]:focus { border-color: var(--accent); }
 .toolbar select {
-  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 6px;
+  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 0;
   color: var(--text); padding: 7px 10px; font-size: 12px; outline: none; cursor: pointer;
 }
 .toolbar .count { font-size: 12px; color: var(--muted); margin-left: auto; }
@@ -1332,7 +1329,7 @@ body {
 .fleet-table tr { cursor: pointer; transition: background 0.1s; }
 .fleet-table tbody tr:hover { background: var(--surface); }
 .fleet-table .reg { font-weight: 700; color: var(--text-bright); font-size: 13px; }
-.fleet-table .hex { font-family: monospace; font-size: 11px; color: var(--muted); }
+.fleet-table .hex { font-family: var(--fp-font-mono); font-size: 11px; color: var(--muted); }
 .fleet-table .type { color: var(--accent); font-weight: 600; }
 .fleet-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .review-toggle {
@@ -1349,7 +1346,7 @@ body {
 
 .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
 .error-banner {
-  display: none; background: var(--red-dim); border: 1px solid rgba(248,113,113,0.25);
+  display: none; background: var(--red-dim); border: 1.5px solid var(--red);
   border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
   color: var(--red); font-size: 12px;
 }
@@ -1595,11 +1592,8 @@ _FLEET_DETAIL_HTML = """\
   --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
 /* Faceplate: hard square edges + mono instrument labels */
-input, select, button, textarea,
-.btn, .badge, .badge-active, .badge-retired, .badge-review, .badge-tracking,
-.toggle-group, .toggle-btn, .nav-link, .card, .metric, .modal, .toast,
-.toolbar input, .toolbar select, .route-track, .route-fill, .chart-bar,
-.editable { border-radius: 0 !important; }
+/* square native form controls — divs/spans set radius:0 in their own rules */
+input, select, button, textarea { border-radius: 0 !important; }
 th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-sans); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1669,7 +1663,7 @@ body {
   display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
 }
 .route-label { width: 90px; text-align: right; font-size: 12px; color: var(--text); font-weight: 500; }
-.route-track { flex: 1; height: 18px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.route-track { flex: 1; height: 18px; background: var(--surface2); border-radius: 0; overflow: hidden; }
 .route-fill { height: 100%; border-radius: 0; background: var(--fp-dv-1); }
 .route-count { width: 30px; font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -1698,7 +1692,7 @@ body {
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
 .error-banner {
-  display: none; background: var(--red-dim); border: 1px solid rgba(248,113,113,0.25);
+  display: none; background: var(--red-dim); border: 1.5px solid var(--red);
   border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
   color: var(--red); font-size: 12px;
 }
@@ -1799,7 +1793,7 @@ async function init() {
 
   $('info-card').innerHTML = '<div class="info-grid">' +
     item('Registration', info.registration) +
-    item('ICAO24', '<span style="font-family:monospace">' + info.icao24 + '</span>') +
+    item('ICAO24', '<span style="font-family:var(--fp-font-mono)">' + info.icao24 + '</span>') +
     item('Type', info.aircraft_type || '\\u2014') +
     item('Model', info.aircraft_subtype || '\\u2014') +
     item('Status', statusBadge) +
@@ -2416,11 +2410,8 @@ if ADMIN_PATH_PREFIX:
   --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
 }
 /* Faceplate: hard square edges + mono instrument labels */
-input, select, button, textarea,
-.btn, .badge, .badge-active, .badge-retired, .badge-review, .badge-tracking,
-.toggle-group, .toggle-btn, .nav-link, .card, .metric, .modal, .toast,
-.toolbar input, .toolbar select, .route-track, .route-fill, .chart-bar,
-.editable { border-radius: 0 !important; }
+/* square native form controls — divs/spans set radius:0 in their own rules */
+input, select, button, textarea { border-radius: 0 !important; }
 th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-sans); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -2463,7 +2454,7 @@ body {
   display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center;
 }
 input, select {
-  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 6px;
+  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 0;
   padding: 7px 10px; color: var(--text); font-size: 13px; outline: none;
 }
 input:focus, select:focus { border-color: var(--accent); }
@@ -2494,7 +2485,7 @@ td {
 tr:hover td { background: var(--surface); }
 tr.review td { background: var(--amber-dim); }
 .editable {
-  cursor: text; padding: 2px 4px; border-radius: 3px; min-width: 30px;
+  cursor: text; padding: 2px 4px; border-radius: 0; min-width: 30px;
   display: inline-block;
 }
 .editable:hover { background: var(--surface2); }
@@ -2536,7 +2527,7 @@ tr.review td { background: var(--amber-dim); }
 /* Toast */
 .toast {
   position: fixed; bottom: 24px; right: 24px; padding: 10px 18px;
-  border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 200;
+  border-radius: 0; font-size: 13px; font-weight: 500; z-index: 200;
   transition: opacity 0.3s; pointer-events: none;
 }
 .toast-ok { background: var(--green); color: #fff; }
