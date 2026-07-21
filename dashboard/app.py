@@ -83,12 +83,6 @@ _FACEPLATE_CSS = r"""/*! Faceplate v1.0 — Christopher Biel's portable design s
     /* data visualization (categorical) */
     --fp-dv-1:#5E7A50; --fp-dv-2:#BB6240; --fp-dv-3:#D6A23C;
     --fp-dv-4:#2C7A78; --fp-dv-5:#8A6A53; --fp-dv-6:#9BA0A4;
-    /* dv-7: project extension (not in Faceplate v1.0 upstream). A 7th series
-       hue was needed once terra (dv-2) and ochre (dv-3) became status-reserved
-       on the schedule page and dv-6 proved too light to carry white bar labels.
-       Steel blue, muted to the Faceplate register; CVD-validated against its
-       display neighbours dv-4/dv-5 (worst adjacent deutan dE 14.3). */
-    --fp-dv-7:#4E6E8E;
 
     /* typography */
     --fp-font-sans:"Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -4911,9 +4905,9 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .gantt-row { display:flex; align-items:center; margin-bottom:6px; height:24px; }
 .gantt-row.dim { opacity:.22; }
 .gantt-row.typehide { display:none; }   /* type unchecked (watched rows are exempt) */
-.gantt-row.watch { background:var(--amber-dim); border-radius:0; }
+.gantt-row.watch { outline:1.5px dashed var(--fp-ink); outline-offset:-1px; }
 .gantt-row.watch .gantt-label { color:var(--text-bright); }
-.gantt-label .star { color:var(--amber); font-size:10px; margin-right:1px; }
+.gantt-label .star { color:var(--fp-ink); font-size:10px; margin-right:1px; }
 .gantt-label { width:122px; flex-shrink:0; font-family:var(--mono); font-size:11px; font-weight:700;
   color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; text-decoration:none; }
 a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; }
@@ -4921,17 +4915,17 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
 .abadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px; border-radius:0;
   background:var(--fp-ink); color:#fff; letter-spacing:.4px; }   /* Allegris cabin */
 .t748 .tbadge, .tbadge.t748 { background:var(--accent); }
-.t388 .tbadge, .tbadge.t388 { background:var(--green); }
-.t789 .tbadge, .tbadge.t789 { background:var(--fp-dv-7); }
-.t359 .tbadge, .tbadge.t359 { background:var(--purple); }
+.t388 .tbadge, .tbadge.t388 { background:var(--fp-dv-2); }
+.t789 .tbadge, .tbadge.t789 { background:var(--fp-dv-4); }
+.t359 .tbadge, .tbadge.t359 { background:var(--fp-dv-3); color:var(--fp-ink); }
 .tbadge.tother { background:var(--surface2); color:var(--muted); }
 /* type checkboxes — double as the type legend; watched tails ignore hiding */
 .tchk { display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-family:var(--mono);
   font-size:10px; font-weight:700; color:var(--text); text-transform:uppercase; user-select:none; }
 .tchk input { accent-color:var(--fp-ink); width:13px; height:13px; margin:0; cursor:pointer; }
 .tchk .sw { width:12px; height:12px; }
-.tchk .sw.t748 { background:var(--accent); } .tchk .sw.t388 { background:var(--green); }
-.tchk .sw.t789 { background:var(--fp-dv-7); } .tchk .sw.t359 { background:var(--purple); }
+.tchk .sw.t748 { background:var(--accent); } .tchk .sw.t388 { background:var(--fp-dv-2); }
+.tchk .sw.t789 { background:var(--fp-dv-4); } .tchk .sw.t359 { background:var(--fp-dv-3); }
 .tchk .sw.tother { background:var(--fp-gray); }
 .tchk.off { color:var(--muted); }
 .tchk.off .sw { opacity:.3; }
@@ -4939,9 +4933,9 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
 /* per-type colour tokens — saturated hue / light tint / deep text (white text on hue, deep on tint).
    One hue per family: 787 variants share t789, A350 variants share t359; the badge names the variant. */
 .gantt-flight.t748, .tie.t748 { --_s:var(--fp-sage); --_t:var(--fp-sage-tint); --_d:color-mix(in srgb,var(--fp-sage) 72%,#000); }
-.gantt-flight.t388, .tie.t388 { --_s:var(--fp-dv-4);  --_t:color-mix(in srgb,var(--fp-dv-4) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-4) 74%,#000); }
-.gantt-flight.t789, .tie.t789 { --_s:var(--fp-dv-7);  --_t:color-mix(in srgb,var(--fp-dv-7) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-7) 74%,#000); }
-.gantt-flight.t359, .tie.t359 { --_s:var(--fp-dv-5);  --_t:color-mix(in srgb,var(--fp-dv-5) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-5) 74%,#000); }
+.gantt-flight.t388, .tie.t388 { --_s:var(--fp-dv-2);  --_t:color-mix(in srgb,var(--fp-dv-2) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-2) 74%,#000); }
+.gantt-flight.t789, .tie.t789 { --_s:var(--fp-dv-4);  --_t:color-mix(in srgb,var(--fp-dv-4) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-4) 74%,#000); }
+.gantt-flight.t359, .tie.t359 { --_s:var(--fp-dv-3);  --_t:color-mix(in srgb,var(--fp-dv-3) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-3) 74%,#000); }
 .gantt-flight.tother, .tie.tother { --_s:var(--fp-gray); --_t:color-mix(in srgb,var(--fp-gray) 34%,#fff); --_d:var(--fp-body); }
 
 .gantt-flight { position:absolute; top:1px; height:20px; border-radius:0; overflow:hidden; display:flex;
@@ -4957,27 +4951,25 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
 .gantt-flight.st-tracked, .gantt-flight.st-actual, .gantt-flight.st-extra { background:var(--_s); }
 .gantt-flight.st-tracked .lbl, .gantt-flight.st-actual .lbl, .gantt-flight.st-extra .lbl {
   color:#fff; text-shadow:0 1px 1.5px rgba(0,0,0,.45); }
-.gantt-flight.st-actual { box-shadow:inset 6px 0 0 var(--fp-terra); }   /* deviation: what actually flew */
+/* ochre (A350/t359) is light — its past-bar labels go ink for contrast */
+.gantt-flight.t359.st-tracked .lbl, .gantt-flight.t359.st-actual .lbl, .gantt-flight.t359.st-extra .lbl {
+  color:var(--fp-ink); text-shadow:none; }
+/* a deviation (what actually flew) now renders as a normal solid bar — no colour cap */
 .gantt-flight.st-extra  { background:repeating-linear-gradient(45deg,var(--_s) 0 6px,color-mix(in srgb,var(--_s) 60%,#fff) 6px 11px); }
 
 /* FUTURE — light tint + bold deep label */
 .gantt-flight.st-planned { background:var(--_t); }
 .gantt-flight.st-planned .lbl { color:var(--_d); }
 
-/* NOT TRACKED yet — light grey dashed */
-.gantt-flight.st-missing { background:color-mix(in srgb,var(--fp-gray) 20%,#fff); border:1.5px dashed var(--fp-gray); }
-.gantt-flight.st-missing .lbl { color:var(--fp-muted); }
-
-/* ORIGINAL PLANNED SLOT a deviation departed from (ghost, dashed terracotta) */
-.gantt-flight.st-ghost { background:color-mix(in srgb,var(--fp-terra) 9%,transparent); border:1.5px dashed var(--fp-terra); }
-.gantt-flight.st-ghost .lbl { color:var(--fp-terra-deep); }
+/* PLANNED SLOT — a scheduled slot not yet tracked, or one vacated by a deviation. Light grey dashed */
+.gantt-flight.st-missing, .gantt-flight.st-ghost { background:color-mix(in srgb,var(--fp-gray) 20%,#fff); border:1.5px dashed var(--fp-gray); }
+.gantt-flight.st-missing .lbl, .gantt-flight.st-ghost .lbl { color:var(--fp-muted); }
 
 /* SWAP / reassignment */
-.gantt-flight.is-swap { box-shadow:inset 0 0 0 2px var(--amber); }
-.gantt-flight.is-swap.st-actual { box-shadow:inset 0 0 0 2px var(--amber), inset 6px 0 0 var(--fp-terra); }
+.gantt-flight.is-swap { box-shadow:inset 0 0 0 2px var(--fp-dv-6); }
 .gantt-flight .swapchip { position:absolute; right:0; top:0; height:100%; text-align:center; line-height:1;
   writing-mode:vertical-rl; transform:rotate(180deg);   /* "SWAP" reads bottom-to-top: a thin vertical strip */
-  font-family:var(--sans); font-size:6px; font-weight:700; letter-spacing:-.02em; color:var(--fp-ink); background:var(--amber); padding:0 2px; }
+  font-family:var(--sans); font-size:6px; font-weight:700; letter-spacing:-.02em; color:var(--fp-ink); background:var(--fp-dv-6); padding:0 2px; }
 
 /* rotation tie — the "stay" parked away from base; hover-only, drawn behind bars */
 .tie { position:absolute; top:10px; height:3px; background:var(--_s); opacity:.4; z-index:0; cursor:help; }
@@ -4985,14 +4977,15 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
 .tie::before { left:0; } .tie::after { right:0; }
 .tielab { position:absolute; top:-7px; left:50%; transform:translateX(-50%); font-family:var(--mono);
   font-size:10px; font-weight:800; letter-spacing:.2px; color:var(--_d); background:var(--surface); padding:0 5px; white-space:nowrap; }
-.now-line { position:absolute; top:0; bottom:0; width:2px; background:var(--amber); opacity:.95; z-index:6; pointer-events:none; }
-.now-line::after { content:''; position:absolute; top:-3px; left:-3px; width:8px; height:8px; border-radius:0; background:var(--amber); }
+.now-line { position:absolute; top:0; bottom:0; width:2px; background:var(--fp-ink); z-index:6; pointer-events:none; }
+.now-line::after { content:'NOW'; position:absolute; top:-13px; left:50%; transform:translateX(-50%); background:var(--fp-ink); color:#fff;
+  font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.08em; line-height:1; padding:1px 3px; white-space:nowrap; }
 /* phone: don't compact — keep the timeline wide & scroll sideways; pin the reg column */
 @media (max-width:640px){
   .gantt-inner { min-width:1040px; }
   .gantt-row { height:40px; align-items:flex-start; padding-top:2px; }
   .gantt-label { position:sticky; left:0; z-index:7; background:var(--surface); align-self:stretch; align-items:center; }
-  .gantt-row.watch .gantt-label { background:var(--amber-dim); }
+  .gantt-row.watch .gantt-label { background:var(--surface); }
   .gantt-axis-row .gantt-label { background:var(--surface); }
   .gantt-flight .lbl .fl { display:none; }     /* drop flight numbers on phone */
   .tie { top:25px; }                            /* connecting line moved below the bars */
@@ -5016,9 +5009,9 @@ footer a:hover { color:var(--text); }
 .conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
 .conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
 .conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--sans); }
-.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:var(--green); }
-.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
-.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:var(--fp-terra-deep); }
+/* confidence tiers are monochrome — the % and wording carry the level (no traffic-light hue) */
+.conf-chip.cg, .conf-chip.ca, .conf-chip.cr { background:var(--surface); }
+.conf-chip.cg .cp, .conf-chip.ca .cp, .conf-chip.cr .cp { color:var(--fp-ink); }
 .det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
 .det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--sans); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
 .det-grid .v { color:var(--text-bright); }
@@ -5054,18 +5047,17 @@ footer a:hover { color:var(--text); }
     <div class="legend">
       <span id="typechk" style="display:contents"></span>
       <label class="tchk" id="allegchk" title="Show only airframes with the Allegris cabin"><input type="checkbox" id="alleg-only"><span class="abadge">A</span>Allegris only</label>
-      <span><span class="star" style="color:var(--amber)">&#9733;</span>watched</span>
+      <span><span class="sw" style="background:var(--surface);outline:1.5px dashed var(--fp-ink);outline-offset:-2px"></span>watched</span>
       <span style="opacity:0.4">|</span>
       <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
-      <span><span class="sw" style="background:var(--accent);box-shadow:inset 5px 0 0 var(--red)"></span>deviation</span>
-      <span><span class="sw" style="background:color-mix(in srgb,var(--red) 9%,#fff);border:1.5px dashed var(--red)"></span>planned slot</span>
-      <span><span class="sw" style="background:color-mix(in srgb,var(--line) 20%,#fff);border:1.5px dashed var(--line)"></span>not tracked</span>
       <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,color-mix(in srgb,var(--accent) 60%,#fff) 4px 7px)"></span>unplanned</span>
+      <span><span class="sw" style="background:var(--accent);box-shadow:inset 0 0 0 2px var(--fp-dv-6)"></span>swap</span>
+      <span><span class="sw" style="background:color-mix(in srgb,var(--line) 20%,#fff);border:1.5px dashed var(--line)"></span>planned slot</span>
       <span><span class="sw" style="background:var(--accent-dim)"></span>planned (future)</span>
     </div>
   </div>
   <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
-  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The amber <b>now</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) &mdash; a <span style="color:var(--red)">terracotta cap</span> marks a deviation, with the dashed <span style="color:var(--red)">planned slot</span> beside it, and a hatched bar is an unplanned flight; to the <b>right</b>, pale bars are the plan. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
+  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, pale bars are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are boxed with a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
@@ -5505,9 +5497,9 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .fcard .tail { font-family:var(--mono); font-weight:700; font-size:13px; color:var(--text-bright); display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-width:90px; }
 .fcard .tail .star { color:var(--amber); }
 .tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; color:#fff; }
-.tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--green); }
-.tbadge.t789 { background:var(--fp-dv-7); }
-.tbadge.t359 { background:var(--purple); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
+.tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--fp-dv-2); }
+.tbadge.t789 { background:var(--fp-dv-4); }
+.tbadge.t359 { background:var(--fp-dv-3); color:var(--fp-ink); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
 .abadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px;
   background:var(--fp-ink); color:#fff; letter-spacing:.4px; }   /* Allegris cabin */
 /* cabin-config badges: F<n> = First (amber, the catch), C<n> = Business */
@@ -5517,9 +5509,9 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--fp-ink); flex-shrink:0; }
 .miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
 .miniconf .cn { font-family:var(--sans); font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:3px; }
-.miniconf.cg { background:var(--green-dim); border-color:var(--green); } .miniconf.cg .p { color:var(--green); }
-.miniconf.ca { background:var(--amber-dim); border-color:var(--amber); } .miniconf.ca .p { color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
-.miniconf.cr { background:var(--red-dim); border-color:var(--red); } .miniconf.cr .p { color:var(--fp-terra-deep); }
+/* confidence tiers are monochrome — the % carries the level (no traffic-light hue) */
+.miniconf.cg, .miniconf.ca, .miniconf.cr { background:var(--surface); }
+.miniconf.cg .p, .miniconf.ca .p, .miniconf.cr .p { color:var(--fp-ink); }
 .empty { color:var(--muted); padding:30px; text-align:center; font-family:var(--sans); font-size:12px; border:1.5px dashed var(--border); }
 footer { text-align:center; padding:26px 0 10px; font-family:var(--sans); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
 footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
@@ -5535,9 +5527,9 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
 .conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
 .conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
 .conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--sans); }
-.conf-chip.cg { background:var(--green-dim); border-color:var(--green); } .conf-chip.cg .cp { color:var(--green); }
-.conf-chip.ca { background:var(--amber-dim); border-color:var(--amber); } .conf-chip.ca .cp { color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
-.conf-chip.cr { background:var(--red-dim); border-color:var(--red); } .conf-chip.cr .cp { color:var(--fp-terra-deep); }
+/* confidence tiers are monochrome — the % and wording carry the level (no traffic-light hue) */
+.conf-chip.cg, .conf-chip.ca, .conf-chip.cr { background:var(--surface); }
+.conf-chip.cg .cp, .conf-chip.ca .cp, .conf-chip.cr .cp { color:var(--fp-ink); }
 .det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
 .det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--sans); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
 .det-grid .v { color:var(--text-bright); }
