@@ -1327,9 +1327,14 @@ body {
 .fleet-table .type { color: var(--accent); font-weight: 600; }
 .fleet-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .review-toggle {
-  font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer;
+  font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
 }
-.review-toggle input { cursor: pointer; }
+/* square check (no native checkbox) — hollow = off, ink-filled = on */
+.review-toggle .box { width: 13px; height: 13px; border: 1.5px solid var(--fp-ink); background: transparent; flex-shrink: 0; }
+.review-toggle.on .box { background: var(--fp-ink); }
+.review-toggle.on { color: var(--text-bright); }
+.review-toggle:hover .box { outline: 2px solid var(--fp-gray); outline-offset: 1px; }
+.review-toggle:focus-visible { outline: 2px solid var(--fp-ink); outline-offset: 2px; }
 .fleet-table tr.review-row { background: color-mix(in srgb,var(--fp-dv-3) 12%,var(--fp-bg)); }
 .fleet-table tr.review-row:hover { background: var(--amber-dim); }
 /* status badges = Faceplate .fp-chip + a semantic tint */
@@ -1381,7 +1386,7 @@ body {
         <button class="toggle-btn" data-status="retired">Retired</button>
         <button class="toggle-btn" data-status="tracking">Tracking</button>
       </div>
-      <label class="review-toggle"><input type="checkbox" id="review-filter"> Needs Review</label>
+      <span class="review-toggle" id="review-filter" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Needs Review</span>
       <div class="count" id="count"></div>
     </div>
 
@@ -1449,7 +1454,7 @@ async function init() {
 function getFiltered() {
   const q = $('search').value.toLowerCase().trim();
   const typeVal = $('type-filter').value;
-  const reviewOnly = $('review-filter').checked;
+  const reviewOnly = $('review-filter').classList.contains('on');
   return allAircraft.filter(a => {
     if (reviewOnly && !a.needs_review) return false;
     if (statusFilter === 'active' && !a.is_active) return false;
@@ -1538,7 +1543,11 @@ $('search').addEventListener('input', render);
 $('type-filter').addEventListener('change', render);
 
 // Needs review filter
-$('review-filter').addEventListener('change', render);
+(function(){ const el=$('review-filter');
+  const t=()=>{ const on=el.classList.toggle('on'); el.setAttribute('aria-checked', on?'true':'false'); render(); };
+  el.addEventListener('click', t);
+  el.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); t(); } });
+})();
 
 // Status toggle
 document.querySelectorAll('.toggle-btn').forEach(btn => {
@@ -2526,6 +2535,13 @@ tr.review td { background: var(--amber-dim); }
 }
 .toast-ok { background: var(--green); color: #fff; }
 .toast-err { background: var(--red); color: #fff; }
+/* square check (no native checkbox) — hollow = off, ink-filled = on */
+.review-toggle { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text); user-select:none; }
+.review-toggle .box { width:13px; height:13px; border:1.5px solid var(--fp-ink); background:transparent; flex-shrink:0; }
+.review-toggle.on .box { background:var(--fp-ink); }
+.review-toggle.on { color:var(--text-bright); }
+.review-toggle:hover .box { outline:2px solid var(--fp-gray); outline-offset:1px; }
+.review-toggle:focus-visible { outline:2px solid var(--fp-ink); outline-offset:2px; }
 </style>
 </head>
 <body class="fp">
@@ -2558,9 +2574,7 @@ tr.review td { background: var(--amber-dim); }
         <option value="active">Active</option>
         <option value="retired">Retired</option>
       </select>
-      <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">
-        <input type="checkbox" id="ac-review" onchange="loadAircraft()"> Needs review
-      </label>
+      <span class="review-toggle" id="ac-review" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Needs review</span>
       <div style="flex:1"></div>
       <button class="fp-btn fp-btn--solid" onclick="showAddAircraft()">+ Aircraft</button>
     </div>
@@ -2585,9 +2599,7 @@ tr.review td { background: var(--amber-dim); }
       <input id="fl-arr" type="text" placeholder="Arr" style="width:70px" oninput="debounce(loadFlights,300)()">
       <input id="fl-from" type="date" onchange="loadFlights()" style="width:130px">
       <input id="fl-to" type="date" onchange="loadFlights()" style="width:130px">
-      <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">
-        <input type="checkbox" id="fl-review" onchange="loadFlights()"> Review
-      </label>
+      <span class="review-toggle" id="fl-review" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Review</span>
       <div style="flex:1"></div>
       <button class="fp-btn fp-btn--solid" onclick="showAddFlight()">+ Flight</button>
     </div>
@@ -2702,7 +2714,7 @@ async function loadAircraft() {
   if (t) p.set('type', t);
   const st = $('ac-status').value;
   if (st) p.set('status', st);
-  if ($('ac-review').checked) p.set('needs_review', 'true');
+  if ($('ac-review').classList.contains('on')) p.set('needs_review', 'true');
 
   const d = await api('/aircraft?' + p);
   if (!d) return;
@@ -2816,7 +2828,7 @@ async function loadFlights() {
   if (v('fl-arr')) p.set('arr', v('fl-arr'));
   if (v('fl-from')) p.set('date_from', v('fl-from'));
   if (v('fl-to')) p.set('date_to', v('fl-to'));
-  if ($('fl-review').checked) p.set('needs_review', 'true');
+  if ($('fl-review').classList.contains('on')) p.set('needs_review', 'true');
   p.set('page', flPage);
 
   const d = await api('/flights?' + p);
@@ -2921,6 +2933,16 @@ function closeModal(id) { $(id).classList.remove('show'); }
 document.querySelectorAll('.modal-bg').forEach(bg => {
   bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('show'); });
 });
+
+// wire the square "review" toggles (replace the old native-checkbox onchange)
+function wireReview(id, cb){
+  const el = $(id); if(!el) return;
+  const t = ()=>{ const on=el.classList.toggle('on'); el.setAttribute('aria-checked', on?'true':'false'); cb(); };
+  el.addEventListener('click', t);
+  el.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); t(); } });
+}
+wireReview('ac-review', loadAircraft);
+wireReview('fl-review', loadFlights);
 
 // Init
 loadAircraft();
@@ -5445,8 +5467,15 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .filterbar .fp-seg { margin-bottom:0; }
 .filterbar .fp-btn { font-size:.72rem; padding:.45em .8em; }
 .flabel { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
-.fchk { display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-family:var(--mono); font-size:11px; font-weight:700; color:var(--text); user-select:none; }
-.fchk input { accent-color:var(--fp-ink); width:13px; height:13px; margin:0; cursor:pointer; }
+.fchk { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-family:var(--mono); font-size:11px; font-weight:700; color:var(--fp-ink); user-select:none; }
+.fchk:focus-visible { outline:2px solid var(--fp-ink); outline-offset:2px; }
+/* colour square is the toggle — filled = shown, hollow = filtered out (no checkbox) */
+.fchk .sw { width:12px; height:12px; border:1.5px solid var(--_c,var(--fp-ink)); background:var(--_c,var(--fp-ink)); }
+.fchk .sw.t748 { --_c:var(--accent); } .fchk .sw.t388 { --_c:var(--fp-dv-2); }
+.fchk .sw.t789 { --_c:var(--fp-dv-4); } .fchk .sw.t359 { --_c:var(--fp-dv-3); }
+.fchk.off { color:var(--muted); }
+.fchk.off .sw { background:transparent; }
+.fchk:hover .sw { outline:2px solid var(--fp-gray); outline-offset:1px; }
 .fsep { width:1.5px; height:18px; background:var(--border); }
 .fnote { font-family:var(--sans); font-size:11px; color:var(--muted); padding:8px 2px 0; }
 /* multi-airport token inputs (route mode) — chips + inline input + suggestions */
@@ -5621,10 +5650,10 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
   </div>
   <div class="filterbar" id="filterbar">
     <span class="flabel">Type</span>
-    <label class="fchk"><input type="checkbox" data-fam="747" checked>747-8</label>
-    <label class="fchk"><input type="checkbox" data-fam="A380" checked>A380</label>
-    <label class="fchk"><input type="checkbox" data-fam="787" checked>787</label>
-    <label class="fchk"><input type="checkbox" data-fam="A350" checked>A350</label>
+    <span class="fchk" data-fam="747" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t748"></span>747-8</span>
+    <span class="fchk" data-fam="A380" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t388"></span>A380</span>
+    <span class="fchk" data-fam="787" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t789"></span>787</span>
+    <span class="fchk" data-fam="A350" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t359"></span>A350</span>
     <span class="fsep"></span>
     <span class="flabel">Allegris</span>
     <div class="fp-seg" id="f-alleg"><button class="active" data-v="any">any</button><button data-v="yes">yes</button><button data-v="no">no</button></div>
@@ -5782,11 +5811,16 @@ function syncFilters(){
   $('filter-btn').textContent = n ? 'Filters \\u00b7 '+n : 'Filters';
   if(LAST) drawResults();
 }
-document.querySelectorAll('.fchk input').forEach(cb => cb.addEventListener('change', ()=>{
-  const boxes = [...document.querySelectorAll('.fchk input')], on = boxes.filter(x=>x.checked);
+function applyFams(){
+  const boxes = [...document.querySelectorAll('.fchk')], on = boxes.filter(x=>!x.classList.contains('off'));
   FILT.fams = on.length===boxes.length ? null : new Set(on.map(x=>x.dataset.fam));
   syncFilters();
-}));
+}
+document.querySelectorAll('.fchk').forEach(el => {
+  const t = ()=>{ const off=el.classList.toggle('off'); el.setAttribute('aria-checked', off?'false':'true'); applyFams(); };
+  el.addEventListener('click', t);
+  el.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); t(); } });
+});
 function segWire(id, key){
   $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', ()=>{
     FILT[key] = b.dataset.v;
@@ -5796,7 +5830,7 @@ function segWire(id, key){
 }
 segWire('f-alleg','alleg'); segWire('f-first','first');
 $('f-reset').addEventListener('click', ()=>{
-  document.querySelectorAll('.fchk input').forEach(x=>{ x.checked = true; });
+  document.querySelectorAll('.fchk').forEach(x=>{ x.classList.remove('off'); x.setAttribute('aria-checked','true'); });
   ['f-alleg','f-first'].forEach(id => $(id).querySelectorAll('button')
     .forEach(x=>x.classList.toggle('active', x.dataset.v==='any')));
   FILT.fams = null; FILT.alleg = 'any'; FILT.first = 'any';
