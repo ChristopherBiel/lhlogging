@@ -4888,8 +4888,13 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
   color:var(--text-bright); padding:8px 14px; font-size:13px; width:300px; font-family:var(--sans); }
 .controls input:focus { outline:none; border-color:var(--accent); }
 .controls input::placeholder { color:var(--muted); }
-.legend { display:flex; gap:13px; flex-wrap:wrap; font-family:var(--sans); font-size:10px; color:var(--muted);
-  text-transform:uppercase; letter-spacing:.3px; align-items:center; }
+/* grouped legend — one labelled row per group (Filter / Bars / Marks) reads better than one long line */
+.legend { display:flex; flex-direction:column; gap:7px; font-family:var(--sans); font-size:10px; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.3px; margin-bottom:16px; }
+.legend--key { margin:14px 0 6px; }   /* read-only key: bar & mark meanings, below the chart */
+.legrp { display:flex; align-items:baseline; gap:9px 14px; flex-wrap:wrap; }
+.leglbl { flex:0 0 42px; font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.1em; color:var(--fp-ink); }
+.legrp .items { display:flex; align-items:center; gap:8px 14px; flex-wrap:wrap; }
 .legend .sw { display:inline-block; width:12px; height:12px; border-radius:0; vertical-align:middle; margin-right:5px; }
 
 /* gantt */
@@ -4905,8 +4910,8 @@ body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
 .gantt-row { display:flex; align-items:center; margin-bottom:6px; height:24px; }
 .gantt-row.dim { opacity:.22; }
 .gantt-row.typehide { display:none; }   /* type unchecked (watched rows are exempt) */
-.gantt-row.watch { outline:1.5px dashed var(--fp-ink); outline-offset:-1px; }
-.gantt-row.watch .gantt-label { color:var(--text-bright); }
+/* watched tails sort to the top; one dashed rule marks where that group ends — rows themselves render like any other */
+.gantt-row.watch:has(+ .gantt-row:not(.watch)) { border-bottom:1.5px dashed var(--fp-ink); }
 .gantt-label .star { color:var(--fp-ink); font-size:10px; margin-right:1px; }
 .gantt-label { width:122px; flex-shrink:0; font-family:var(--mono); font-size:11px; font-weight:700;
   color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; text-decoration:none; }
@@ -4920,15 +4925,18 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
 .t359 .tbadge, .tbadge.t359 { background:var(--fp-dv-3); color:var(--fp-ink); }
 .tbadge.tother { background:var(--surface2); color:var(--muted); }
 /* type checkboxes — double as the type legend; watched tails ignore hiding */
-.tchk { display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-family:var(--mono);
-  font-size:10px; font-weight:700; color:var(--text); text-transform:uppercase; user-select:none; }
-.tchk input { accent-color:var(--fp-ink); width:13px; height:13px; margin:0; cursor:pointer; }
-.tchk .sw { width:12px; height:12px; }
-.tchk .sw.t748 { background:var(--accent); } .tchk .sw.t388 { background:var(--fp-dv-2); }
-.tchk .sw.t789 { background:var(--fp-dv-4); } .tchk .sw.t359 { background:var(--fp-dv-3); }
-.tchk .sw.tother { background:var(--fp-gray); }
+.tchk { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-family:var(--mono);
+  font-size:10px; font-weight:700; color:var(--fp-ink); text-transform:uppercase; user-select:none; }
+.tchk:focus-visible { outline:2px solid var(--fp-ink); outline-offset:2px; }
+.tchk:hover .sw { outline:2px solid var(--fp-gray); outline-offset:1px; }   /* hover ring hints the square is a toggle */
+/* the colour square IS the control — filled = shown, hollow outline = filtered out (no checkbox) */
+.tchk .sw { width:12px; height:12px; border:1.5px solid var(--_c,var(--fp-ink)); background:var(--_c,var(--fp-ink)); }
+.tchk .sw.t748 { --_c:var(--accent); } .tchk .sw.t388 { --_c:var(--fp-dv-2); }
+.tchk .sw.t789 { --_c:var(--fp-dv-4); } .tchk .sw.t359 { --_c:var(--fp-dv-3); }
+.tchk .sw.tother { --_c:var(--fp-gray); }
 .tchk.off { color:var(--muted); }
-.tchk.off .sw { opacity:.3; }
+.tchk.off .sw { background:transparent; }
+.tchk.off .abadge { background:transparent; color:var(--muted); box-shadow:inset 0 0 0 1.5px var(--muted); }
 .gantt-track { flex:1; position:relative; height:22px; background:color-mix(in srgb,var(--fp-gray) 26%,#fff); border-radius:0; overflow:visible; }
 /* per-type colour tokens — saturated hue / light tint / deep text (white text on hue, deep on tint).
    One hue per family: 787 variants share t789, A350 variants share t359; the badge names the variant. */
@@ -5044,20 +5052,27 @@ footer a:hover { color:var(--text); }
     <div class="meta" id="meta">Loading planned airframe rotations…</div>
   <div class="controls">
     <input id="filter" type="text" placeholder="Filter: tail, airport or flight (e.g. HND, D-ABYN, 716)">
-    <div class="legend">
+  </div>
+  <div class="legend legend--filter">
+    <div class="legrp"><span class="leglbl">Filter</span><div class="items">
       <span id="typechk" style="display:contents"></span>
-      <label class="tchk" id="allegchk" title="Show only airframes with the Allegris cabin"><input type="checkbox" id="alleg-only"><span class="abadge">A</span>Allegris only</label>
-      <span><span class="sw" style="background:var(--surface);outline:1.5px dashed var(--fp-ink);outline-offset:-2px"></span>watched</span>
-      <span style="opacity:0.4">|</span>
-      <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
-      <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,color-mix(in srgb,var(--accent) 60%,#fff) 4px 7px)"></span>unplanned</span>
-      <span><span class="sw" style="background:var(--accent);box-shadow:inset 0 0 0 2px var(--fp-dv-6)"></span>swap</span>
-      <span><span class="sw" style="background:color-mix(in srgb,var(--line) 20%,#fff);border:1.5px dashed var(--line)"></span>planned slot</span>
-      <span><span class="sw" style="background:var(--accent-dim)"></span>planned (future)</span>
-    </div>
+      <span class="tchk" id="allegchk" role="checkbox" aria-checked="false" tabindex="0" title="Show only airframes with the Allegris cabin"><span class="abadge">A</span>Allegris only</span>
+    </div></div>
   </div>
   <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
-  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, pale bars are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are boxed with a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
+  <div class="legend legend--key">
+    <div class="legrp"><span class="leglbl">Bars</span><div class="items">
+      <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
+      <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,color-mix(in srgb,var(--accent) 60%,#fff) 4px 7px)"></span>unplanned</span>
+      <span><span class="sw" style="background:var(--accent-dim)"></span>planned (future)</span>
+      <span><span class="sw" style="background:color-mix(in srgb,var(--line) 20%,#fff);border:1.5px dashed var(--line)"></span>planned slot</span>
+    </div></div>
+    <div class="legrp"><span class="leglbl">Marks</span><div class="items">
+      <span><span class="sw" style="background:var(--accent);box-shadow:inset 0 0 0 2px var(--fp-dv-6)"></span>swap</span>
+      <span><span class="star" style="color:var(--fp-ink)">&#9733;</span>watched</span>
+    </div></div>
+  </div>
+  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, pale bars are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
@@ -5211,32 +5226,40 @@ async function init(){
   let hidden;
   try { hidden=new Set(JSON.parse(localStorage.getItem(HIDE_KEY)||'[]')); } catch(e){ hidden=new Set(); }
   $('typechk').innerHTML=types.map(t=>
-    '<label class="tchk'+(hidden.has(t)?' off':'')+'" title="Show/hide '+t+' rows (watched tails stay visible)">'
-    +'<input type="checkbox" data-t="'+t+'"'+(hidden.has(t)?'':' checked')+'>'
-    +'<span class="sw '+tcls(t)+'"></span>'+t+'</label>').join('');
+    '<span class="tchk'+(hidden.has(t)?' off':'')+'" data-t="'+t+'" role="checkbox" aria-checked="'+(hidden.has(t)?'false':'true')+'" tabindex="0" title="Show/hide '+t+' rows (watched tails stay visible)">'
+    +'<span class="sw '+tcls(t)+'"></span>'+t+'</span>').join('');
   // "Allegris only" is strict on purpose (no watched-tail exemption): it's an
   // explicit cabin lens, not a row-decluttering toggle like the type boxes.
   let allegOnly=false;
   try { allegOnly = localStorage.getItem(ALLEG_KEY)==='1'; } catch(e){}
-  $('alleg-only').checked=allegOnly;
+  $('allegchk').classList.toggle('off', !allegOnly);
+  $('allegchk').setAttribute('aria-checked', allegOnly?'true':'false');
   const applyTypes=()=>{
     document.querySelectorAll('.gantt-row[data-type]').forEach(r=>{
       const typeHide = hidden.has(r.dataset.type) && !r.classList.contains('watch');
       r.classList.toggle('typehide', typeHide || (allegOnly && r.dataset.allegris!=='1'));
     });
   };
-  $('typechk').addEventListener('change', e=>{
-    const t=e.target.dataset.t; if(!t) return;
-    if(e.target.checked) hidden.delete(t); else hidden.add(t);
-    e.target.closest('.tchk').classList.toggle('off', !e.target.checked);
+  const toggleType=el=>{
+    const t=el.dataset.t; if(!t) return;
+    if(hidden.has(t)) hidden.delete(t); else hidden.add(t);
+    const off=hidden.has(t);
+    el.classList.toggle('off', off);
+    el.setAttribute('aria-checked', off?'false':'true');
     try { localStorage.setItem(HIDE_KEY, JSON.stringify([...hidden])); } catch(err){}
     applyTypes();
-  });
-  $('alleg-only').addEventListener('change', e=>{
-    allegOnly=e.target.checked;
+  };
+  $('typechk').addEventListener('click', e=>{ const el=e.target.closest('.tchk'); if(el) toggleType(el); });
+  $('typechk').addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ const el=e.target.closest('.tchk'); if(el){ e.preventDefault(); toggleType(el); } } });
+  const toggleAlleg=()=>{
+    allegOnly=!allegOnly;
+    $('allegchk').classList.toggle('off', !allegOnly);
+    $('allegchk').setAttribute('aria-checked', allegOnly?'true':'false');
     try { localStorage.setItem(ALLEG_KEY, allegOnly?'1':'0'); } catch(err){}
     applyTypes();
-  });
+  };
+  $('allegchk').addEventListener('click', toggleAlleg);
+  $('allegchk').addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleAlleg(); } });
   applyTypes();
 }
 
