@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 372 76" width="372" height="76" role="img" aria-label="Christopher Biel — primary lockup">
+  <!-- Primary horizontal lockup. NOTE: text uses Manrope / IBM Plex Mono — install or embed the fonts,
+       or outline the text before distributing, for pixel-accurate rendering everywhere. -->
+  <!-- mark on CBCB plate -->
+  <g transform="translate(8,8)">
+    <rect width="60" height="60" fill="#CBCBCB"/>
+    <g transform="scale(0.9375)"> <!-- 64 -> 60 -->
+      <line x1="8" y1="22" x2="56" y2="22" stroke="#1C1E21" stroke-width="2" stroke-dasharray="3 4" opacity="0.35"/>
+      <path d="M 8.00,52.00 L 15.68,52.00 L 16.96,51.12 L 18.24,48.32 L 19.52,44.29 L 20.80,39.63 L 22.08,34.85 L 23.36,30.34 L 24.64,26.35 L 25.92,23.06 L 27.20,20.52 L 28.48,18.74 L 29.76,17.65 L 31.04,17.16 L 32.32,17.16 L 33.60,17.51 L 34.88,18.11 L 36.16,18.84 L 37.44,19.62 L 38.72,20.38 L 40.00,21.06 L 41.28,21.64 L 42.56,22.10 L 43.84,22.44 L 45.12,22.66 L 46.40,22.77 L 47.68,22.80 L 48.96,22.76 L 50.24,22.67 L 51.52,22.56 L 52.80,22.43 L 54.08,22.31 L 55.36,22.19 L 56.00,22.14"
+            fill="none" stroke="#1C1E21" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="56" cy="22.14" r="3.2" fill="#1C1E21"/>
+    </g>
+  </g>
+  <!-- wordmark + tagline -->
+  <text x="82" y="40" font-family="Manrope, system-ui, sans-serif" font-weight="800" font-size="27" letter-spacing="-0.5" fill="#1C1E21">Christopher Biel</text>
+  <text x="83" y="58" font-family="'IBM Plex Mono', monospace" font-weight="500" font-size="10" letter-spacing="1.4" fill="#8A9097">ROBOTICS &amp; MACHINE LEARNING ENGINEER</text>
+</svg>

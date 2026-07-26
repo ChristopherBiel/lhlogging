@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faceplate — brand sheet</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./faceplate.tokens.css">
+<link rel="stylesheet" href="./faceplate.components.css">
+<style>
+  body{margin:0;background:var(--fp-surface)}
+  .wrap{max-width:960px;margin:0 auto;padding:var(--fp-space-5) var(--fp-space-4) var(--fp-space-7)}
+  section{background:var(--fp-bg);border:var(--fp-keyline) solid var(--fp-ink);padding:var(--fp-space-4);margin-bottom:var(--fp-space-4)}
+  .sw{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--fp-space-2)}
+  .chip{border:var(--fp-hairline) solid var(--fp-border)}
+  .chip .fill{height:52px}
+  .chip .m{padding:var(--fp-space-2)}
+  .row{display:flex;gap:var(--fp-space-2);align-items:center;flex-wrap:wrap}
+  table{border-collapse:collapse;width:100%}
+  td,th{text-align:left;padding:var(--fp-space-2) var(--fp-space-3) var(--fp-space-2) 0;border-bottom:var(--fp-hairline) solid var(--fp-border)}
+</style>
+</head>
+<body class="fp">
+<div class="wrap">
+
+  <section class="fp-band" style="border-color:var(--fp-sage)">
+    <div class="fp-label" style="color:var(--fp-text-inverse);opacity:.85">Faceplate v2.0.0 · generated</div>
+    <div class="fp-display" style="color:var(--fp-text-inverse)">Brand sheet</div>
+  </section>
+
+  <section>
+    <div class="fp-kicker">S01</div>
+    <h2 class="fp-h2">Palette</h2><span class="fp-rule"></span>
+    <p class="fp-body">The closed set. Every colour Faceplate renders is here.</p>
+    <div class="sw"><div class="chip"><div class="fill" style="background:#FFFFFF"></div><div class="m"><div class="fp-label">white</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#FFFFFF</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Page background; also inverse text on saturated fills</div></div></div>
+<div class="chip"><div class="fill" style="background:#F7F8F8"></div><div class="m"><div class="fp-label">offWhite</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#F7F8F8</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Panels, cards, subtle sections</div></div></div>
+<div class="chip"><div class="fill" style="background:#E4E7E9"></div><div class="m"><div class="fp-label">hairlineGrey</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#E4E7E9</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Rules, dividers, card borders</div></div></div>
+<div class="chip"><div class="fill" style="background:#8A9097"></div><div class="m"><div class="fp-label">stoneGrey</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#8A9097</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Captions, axis labels, secondary icons</div></div></div>
+<div class="chip"><div class="fill" style="background:#52585E"></div><div class="m"><div class="fp-label">slateGrey</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#52585E</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Body text</div></div></div>
+<div class="chip"><div class="fill" style="background:#1C1E21"></div><div class="m"><div class="fp-label">nearBlack</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#1C1E21</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Headings, primary text. ~16:1 on white</div></div></div>
+<div class="chip"><div class="fill" style="background:#5E7A50"></div><div class="m"><div class="fp-label">sage</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#5E7A50</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Primary brand accent — rules, fills, large headings</div></div></div>
+<div class="chip"><div class="fill" style="background:#455C3A"></div><div class="m"><div class="fp-label">sageDeep</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#455C3A</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">AA-safe sage for small text and links on white</div></div></div>
+<div class="chip"><div class="fill" style="background:#DCE5D2"></div><div class="m"><div class="fp-label">sageTint</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#DCE5D2</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Soft highlight backgrounds, tags, chips</div></div></div>
+<div class="chip"><div class="fill" style="background:#EFF3EA"></div><div class="m"><div class="fp-label">sageXl</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#EFF3EA</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Very light section wash</div></div></div>
+<div class="chip"><div class="fill" style="background:#BB6240"></div><div class="m"><div class="fp-label">terra</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#BB6240</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Complement — secondary accent, warm highlights</div></div></div>
+<div class="chip"><div class="fill" style="background:#9E4F33"></div><div class="m"><div class="fp-label">terraDeep</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#9E4F33</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">AA-safe terracotta for small text on white</div></div></div>
+<div class="chip"><div class="fill" style="background:#F0D9CC"></div><div class="m"><div class="fp-label">terraTint</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#F0D9CC</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Soft warm highlight backgrounds</div></div></div>
+<div class="chip"><div class="fill" style="background:#CBCBCB"></div><div class="m"><div class="fp-label">signatureGrey</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#CBCBCB</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Reads CB·CB·CB — the monogram three times. Structural only: never text on white (1.6:1), and never white text on it.</div></div></div>
+<div class="chip"><div class="fill" style="background:#D6A23C"></div><div class="m"><div class="fp-label">ochre</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#D6A23C</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Data-viz series 3</div></div></div>
+<div class="chip"><div class="fill" style="background:#2C7A78"></div><div class="m"><div class="fp-label">teal</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#2C7A78</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Data-viz series 4</div></div></div>
+<div class="chip"><div class="fill" style="background:#8A6A53"></div><div class="m"><div class="fp-label">clay</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#8A6A53</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Data-viz series 5</div></div></div>
+<div class="chip"><div class="fill" style="background:#9BA0A4"></div><div class="m"><div class="fp-label">neutralGrey</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#9BA0A4</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Data-viz series 6 (neutral slot)</div></div></div>
+<div class="chip"><div class="fill" style="background:#EFF3EA"></div><div class="m"><div class="fp-label">seq1</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#EFF3EA</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Sequential ramp step 1 of 7 (low to high)</div></div></div>
+<div class="chip"><div class="fill" style="background:#D8E2CC"></div><div class="m"><div class="fp-label">seq2</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#D8E2CC</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Sequential ramp step 2 of 7 (low to high)</div></div></div>
+<div class="chip"><div class="fill" style="background:#BFD0AC"></div><div class="m"><div class="fp-label">seq3</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#BFD0AC</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Sequential ramp step 3 of 7 (low to high)</div></div></div>
+<div class="chip"><div class="fill" style="background:#A2BB89"></div><div class="m"><div class="fp-label">seq4</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#A2BB89</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Sequential ramp step 4 of 7 (low to high)</div></div></div>
+<div class="chip"><div class="fill" style="background:#82A268"></div><div class="m"><div class="fp-label">seq5</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#82A268</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Sequential ramp step 5 of 7 (low to high)</div></div></div>
+<div class="chip"><div class="fill" style="background:#5E7A50"></div><div class="m"><div class="fp-label">seq6</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#5E7A50</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Sequential ramp step 6 of 7 (low to high)</div></div></div>
+<div class="chip"><div class="fill" style="background:#41562F"></div><div class="m"><div class="fp-label">seq7</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#41562F</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Sequential ramp step 7 of 7 (low to high)</div></div></div>
+<div class="chip"><div class="fill" style="background:#9E4F33"></div><div class="m"><div class="fp-label">div1</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#9E4F33</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Diverging ramp step 1 of 7 (negative to positive)</div></div></div>
+<div class="chip"><div class="fill" style="background:#C9876B"></div><div class="m"><div class="fp-label">div2</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#C9876B</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Diverging ramp step 2 of 7 (negative to positive)</div></div></div>
+<div class="chip"><div class="fill" style="background:#EAD3C5"></div><div class="m"><div class="fp-label">div3</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#EAD3C5</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Diverging ramp step 3 of 7 (negative to positive)</div></div></div>
+<div class="chip"><div class="fill" style="background:#F1F2EC"></div><div class="m"><div class="fp-label">div4</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#F1F2EC</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Diverging ramp step 4 of 7 (negative to positive)</div></div></div>
+<div class="chip"><div class="fill" style="background:#C3D2B0"></div><div class="m"><div class="fp-label">div5</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#C3D2B0</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Diverging ramp step 5 of 7 (negative to positive)</div></div></div>
+<div class="chip"><div class="fill" style="background:#88A56F"></div><div class="m"><div class="fp-label">div6</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#88A56F</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Diverging ramp step 6 of 7 (negative to positive)</div></div></div>
+<div class="chip"><div class="fill" style="background:#41562F"></div><div class="m"><div class="fp-label">div7</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#41562F</div><div class="fp-body" style="font-size:var(--fp-text-xxs);margin-top:4px">Diverging ramp step 7 of 7 (negative to positive)</div></div></div></div>
+  </section>
+
+  <section>
+    <div class="fp-kicker">S02</div>
+    <h2 class="fp-h2">Data visualisation</h2><span class="fp-rule"></span>
+    <div class="sw"><div class="chip"><div class="fill" style="background:#5E7A50"></div><div class="m"><div class="fp-label">--fp-dv-1</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#5E7A50</div></div></div>
+<div class="chip"><div class="fill" style="background:#BB6240"></div><div class="m"><div class="fp-label">--fp-dv-2</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#BB6240</div></div></div>
+<div class="chip"><div class="fill" style="background:#D6A23C"></div><div class="m"><div class="fp-label">--fp-dv-3</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#D6A23C</div></div></div>
+<div class="chip"><div class="fill" style="background:#2C7A78"></div><div class="m"><div class="fp-label">--fp-dv-4</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#2C7A78</div></div></div>
+<div class="chip"><div class="fill" style="background:#8A6A53"></div><div class="m"><div class="fp-label">--fp-dv-5</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#8A6A53</div></div></div>
+<div class="chip"><div class="fill" style="background:#9BA0A4"></div><div class="m"><div class="fp-label">--fp-dv-6</div><div class="fp-mono" style="font-size:var(--fp-text-xxs)">#9BA0A4</div></div></div></div>
+  </section>
+
+  <section>
+    <div class="fp-kicker">S03</div>
+    <h2 class="fp-h2">Type scale</h2><span class="fp-rule"></span>
+    <table><tr><td class="fp-mono" style="font-size:var(--fp-text-xs)">10px</td><td class="fp-mono" style="font-size:var(--fp-text-xs)">--fp-text-xxs</td><td style="font-size:.625rem;font-weight:800;letter-spacing:var(--fp-track-tight)">CB·CB·CB</td></tr>
+<tr><td class="fp-mono" style="font-size:var(--fp-text-xs)">12px</td><td class="fp-mono" style="font-size:var(--fp-text-xs)">--fp-text-xs</td><td style="font-size:.75rem;font-weight:800;letter-spacing:var(--fp-track-tight)">CB·CB·CB</td></tr>
+<tr><td class="fp-mono" style="font-size:var(--fp-text-xs)">14px</td><td class="fp-mono" style="font-size:var(--fp-text-xs)">--fp-text-sm</td><td style="font-size:.875rem;font-weight:800;letter-spacing:var(--fp-track-tight)">CB·CB·CB</td></tr>
+<tr><td class="fp-mono" style="font-size:var(--fp-text-xs)">16px</td><td class="fp-mono" style="font-size:var(--fp-text-xs)">--fp-text-base</td><td style="font-size:1rem;font-weight:800;letter-spacing:var(--fp-track-tight)">CB·CB·CB</td></tr>
+<tr><td class="fp-mono" style="font-size:var(--fp-text-xs)">20px</td><td class="fp-mono" style="font-size:var(--fp-text-xs)">--fp-text-h3</td><td style="font-size:1.25rem;font-weight:800;letter-spacing:var(--fp-track-tight)">CB·CB·CB</td></tr>
+<tr><td class="fp-mono" style="font-size:var(--fp-text-xs)">25px</td><td class="fp-mono" style="font-size:var(--fp-text-xs)">--fp-text-h2</td><td style="font-size:1.5625rem;font-weight:800;letter-spacing:var(--fp-track-tight)">CB·CB·CB</td></tr>
+<tr><td class="fp-mono" style="font-size:var(--fp-text-xs)">32px</td><td class="fp-mono" style="font-size:var(--fp-text-xs)">--fp-text-h1</td><td style="font-size:2rem;font-weight:800;letter-spacing:var(--fp-track-tight)">CB·CB·CB</td></tr></table>
+  </section>
+
+  <section>
+    <div class="fp-kicker">S04</div>
+    <h2 class="fp-h2">Components</h2><span class="fp-rule"></span>
+    <p class="fp-label" style="margin:var(--fp-space-3) 0 var(--fp-space-2)">Buttons</p>
+    <div class="row"><a class="fp-btn">BASE</a><a class="fp-btn fp-btn--solid">SOLID</a><a class="fp-btn fp-btn--terra">TERRA</a><a class="fp-btn fp-btn--ghost">GHOST</a></div>
+    <p class="fp-label" style="margin:var(--fp-space-3) 0 var(--fp-space-2)">Chips</p>
+    <div class="row"><span class="fp-chip fp-chip--sage">CONTROL</span><span class="fp-chip fp-chip--terra">KEYBOARDS</span><span class="fp-chip fp-chip--gray">CB·CB·CB</span></div>
+    <p class="fp-label" style="margin:var(--fp-space-3) 0 var(--fp-space-2)">Segmented</p>
+    <div class="row"><div class="fp-seg"><span class="is-on">GRID</span><span>LIST</span><span>SPEC</span></div></div>
+    <p class="fp-label" style="margin:var(--fp-space-3) 0 var(--fp-space-2)">Dividers</p>
+    <hr class="fp-hr"><hr class="fp-hr--dashed" style="margin-top:var(--fp-space-2)"><hr class="fp-hr--gray" style="margin-top:var(--fp-space-2)">
+  </section>
+
+</div>
+</body>
+</html>

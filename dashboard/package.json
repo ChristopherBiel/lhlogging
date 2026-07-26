@@ -1,0 +1,11 @@
+{
+  "name": "lhlogging-dashboard",
+  "private": true,
+  "description": "Faceplate conformance tooling for the dashboard. The app itself is Python; this exists only so `npx faceplate check` runs against a pinned version.",
+  "scripts": {
+    "check": "faceplate check . --strict"
+  },
+  "devDependencies": {
+    "faceplate": "git+https://github.com/ChristopherBiel/faceplate.git#v2.0.0"
+  }
+}

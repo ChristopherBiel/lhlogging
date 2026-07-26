@@ -5,9 +5,15 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# ...except the vendored Faceplate design system. It is a shipped dependency,
+# not a build artefact, and `npx faceplate check` verifies it against
+# dashboard/dist/MANIFEST.sha256 -- so it has to be in the tree.
+!dashboard/dist/
 .venv/
 venv/
 *.log
+node_modules/
 
 # Local DB exports / scratch
 tmp/

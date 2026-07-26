@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" role="img" aria-label="Drones / eVTOL">
+  <g stroke-linecap="round">
+    <line x1="10" y1="10" x2="6.5" y2="6.5"/><line x1="14" y1="10" x2="17.5" y2="6.5"/>
+    <line x1="10" y1="14" x2="6.5" y2="17.5"/><line x1="14" y1="14" x2="17.5" y2="17.5"/>
+  </g>
+  <rect x="10" y="10" width="4" height="4"/>
+  <circle cx="5.5" cy="5.5" r="2.4"/><circle cx="18.5" cy="5.5" r="2.4"/><circle cx="5.5" cy="18.5" r="2.4"/><circle cx="18.5" cy="18.5" r="2.4"/>
+</svg>

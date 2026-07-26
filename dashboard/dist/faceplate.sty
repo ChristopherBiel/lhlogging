@@ -1,0 +1,105 @@
+% Faceplate v2.0.0 — LaTeX
+% GENERATED FROM tokens/*.json — DO NOT EDIT.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{faceplate}[2.0.0 Faceplate design system]
+\RequirePackage{xcolor}
+\RequirePackage{tcolorbox}
+
+\definecolor{fpBg}{HTML}{FFFFFF}
+\definecolor{fpSurface}{HTML}{F7F8F8}
+\definecolor{fpBorder}{HTML}{E4E7E9}
+\definecolor{fpMuted}{HTML}{8A9097}
+\definecolor{fpBody}{HTML}{52585E}
+\definecolor{fpInk}{HTML}{1C1E21}
+\definecolor{fpSage}{HTML}{5E7A50}
+\definecolor{fpSageDeep}{HTML}{455C3A}
+\definecolor{fpSageTint}{HTML}{DCE5D2}
+\definecolor{fpSageXl}{HTML}{EFF3EA}
+\definecolor{fpTerra}{HTML}{BB6240}
+\definecolor{fpTerraDeep}{HTML}{9E4F33}
+\definecolor{fpTerraTint}{HTML}{F0D9CC}
+\definecolor{fpGrey}{HTML}{CBCBCB}
+\definecolor{fpTextInverse}{HTML}{FFFFFF}
+\definecolor{fpDv1}{HTML}{5E7A50}
+\definecolor{fpDv2}{HTML}{BB6240}
+\definecolor{fpDv3}{HTML}{D6A23C}
+\definecolor{fpDv4}{HTML}{2C7A78}
+\definecolor{fpDv5}{HTML}{8A6A53}
+\definecolor{fpDv6}{HTML}{9BA0A4}
+\definecolor{fpRuleColor}{HTML}{5E7A50}
+\definecolor{fpFocusRingColor}{HTML}{1C1E21}
+\definecolor{fpSeq1}{HTML}{EFF3EA}
+\definecolor{fpSeq2}{HTML}{D8E2CC}
+\definecolor{fpSeq3}{HTML}{BFD0AC}
+\definecolor{fpSeq4}{HTML}{A2BB89}
+\definecolor{fpSeq5}{HTML}{82A268}
+\definecolor{fpSeq6}{HTML}{5E7A50}
+\definecolor{fpSeq7}{HTML}{41562F}
+\definecolor{fpDiv1}{HTML}{9E4F33}
+\definecolor{fpDiv2}{HTML}{C9876B}
+\definecolor{fpDiv3}{HTML}{EAD3C5}
+\definecolor{fpDiv4}{HTML}{F1F2EC}
+\definecolor{fpDiv5}{HTML}{C3D2B0}
+\definecolor{fpDiv6}{HTML}{88A56F}
+\definecolor{fpDiv7}{HTML}{41562F}
+\definecolor{fpLabelColor}{HTML}{8A9097}
+\definecolor{fpKickerColor}{HTML}{5E7A50}
+\definecolor{fpPlateBackground}{HTML}{CBCBCB}
+\definecolor{fpPlateColor}{HTML}{1C1E21}
+\definecolor{fpPlateSageBackground}{HTML}{5E7A50}
+\definecolor{fpPlateSageColor}{HTML}{FFFFFF}
+\definecolor{fpButtonBackground}{HTML}{FFFFFF}
+\definecolor{fpButtonBorder}{HTML}{1C1E21}
+\definecolor{fpButtonText}{HTML}{1C1E21}
+\definecolor{fpButtonSolidBackground}{HTML}{5E7A50}
+\definecolor{fpButtonSolidBorder}{HTML}{5E7A50}
+\definecolor{fpButtonSolidText}{HTML}{FFFFFF}
+\definecolor{fpButtonTerraBackground}{HTML}{BB6240}
+\definecolor{fpButtonTerraBorder}{HTML}{BB6240}
+\definecolor{fpButtonTerraText}{HTML}{FFFFFF}
+\definecolor{fpButtonHoverBackground}{HTML}{F7F8F8}
+\definecolor{fpButtonSolidHoverBackground}{HTML}{455C3A}
+\definecolor{fpButtonTerraHoverBackground}{HTML}{9E4F33}
+\definecolor{fpChipBorder}{HTML}{1C1E21}
+\definecolor{fpChipSageBackground}{HTML}{DCE5D2}
+\definecolor{fpChipTerraBackground}{HTML}{F0D9CC}
+\definecolor{fpChipGreyBackground}{HTML}{CBCBCB}
+\definecolor{fpChipText}{HTML}{1C1E21}
+\definecolor{fpCardBackground}{HTML}{FFFFFF}
+\definecolor{fpCardBorder}{HTML}{1C1E21}
+\definecolor{fpPanelBackground}{HTML}{F7F8F8}
+\definecolor{fpPanelBorder}{HTML}{E4E7E9}
+\definecolor{fpSegBorder}{HTML}{1C1E21}
+\definecolor{fpSegDividerColor}{HTML}{1C1E21}
+\definecolor{fpSegSelectedBackground}{HTML}{1C1E21}
+\definecolor{fpSegSelectedText}{HTML}{FFFFFF}
+\definecolor{fpSegItemColor}{HTML}{1C1E21}
+\definecolor{fpSegHoverBackground}{HTML}{EFF3EA}
+\definecolor{fpHrColor}{HTML}{1C1E21}
+\definecolor{fpHrGreyColor}{HTML}{CBCBCB}
+\definecolor{fpLinkColor}{HTML}{455C3A}
+\definecolor{fpLinkUnderlineColor}{HTML}{DCE5D2}
+\definecolor{fpLinkHoverUnderlineColor}{HTML}{5E7A50}
+\definecolor{fpBandBackground}{HTML}{5E7A50}
+\definecolor{fpBandText}{HTML}{FFFFFF}
+\definecolor{fpBandTerraBackground}{HTML}{BB6240}
+\definecolor{fpBandInkBackground}{HTML}{1C1E21}
+\definecolor{fpUtilityBgSageBackground}{HTML}{5E7A50}
+\definecolor{fpUtilityBgSageText}{HTML}{FFFFFF}
+\definecolor{fpUtilityBgGreyBackground}{HTML}{CBCBCB}
+\definecolor{fpUtilityBgGreyText}{HTML}{1C1E21}
+\definecolor{fpUtilityBgSurfaceBackground}{HTML}{F7F8F8}
+
+% Square edges, keyline border, accent fill — the same decisions as the web.
+\newtcbox{\fpbtnsolid}{nobeforeafter, colback=fpButtonSolidBackground,
+  colframe=fpButtonSolidBorder, coltext=fpButtonSolidText,
+  boxrule=2pt, arc=0pt, outer arc=0pt, boxsep=0pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt}
+
+\newtcbox{\fpchipsage}{nobeforeafter, colback=fpChipSageBackground,
+  colframe=fpChipBorder, coltext=fpChipText,
+  boxrule=2pt, arc=0pt, outer arc=0pt, boxsep=0pt,
+  left=4pt, right=4pt, top=2pt, bottom=2pt}
+
+% The accent rule under a heading.
+\newcommand{\fprule}{{\color{fpRuleColor}\rule{48pt}{4pt}}}

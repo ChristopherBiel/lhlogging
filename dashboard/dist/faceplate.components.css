@@ -1,0 +1,153 @@
+/*! Faceplate v2.0.0 — reference components — OPTIONAL
+ *  GENERATED FROM tokens/*.json — DO NOT EDIT.
+ *  Regenerate: npm run build
+ */
+/*  These are ONE correct implementation, not the required one. A project is
+ *  free to ignore this file entirely and build its own components; the rules
+ *  it must follow live in docs/, and 'npx faceplate check' verifies them.
+ *  Requires faceplate.tokens.css.
+ */
+/* Faceplate — component STRUCTURE for the web.
+ *
+ * This file is hand-written and is the only place a component's shape is
+ * described. Values are interpolated from tokens by dollar-brace placeholders,
+ * which the build resolves to var(--fp-*). A placeholder naming a token that
+ * does not exist FAILS THE BUILD, so a typo cannot silently produce an unset
+ * property.
+ *
+ * Consuming projects never author this file. They receive the generated CSS.
+ */
+
+@layer fp.base {
+  /* Opt-in: put class `fp` on a wrapper (or <body>) to adopt base type/colours.
+     Kept opt-in so Faceplate never restyles a host project globally. */
+  .fp {
+    font-family:var(--fp-font-sans);
+    color:var(--fp-ink);
+    background:var(--fp-bg);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .fp :where(p){ color:var(--fp-body); line-height:var(--fp-leading); }
+  .fp :where(a):not([class]){ color:var(--fp-sage-deep); }
+}
+
+@layer fp.components {
+  /* --- type --- */
+  /* Display and H1 are one role. .fp-display is kept as a readable alias for
+     the largest heading — it resolves to exactly .fp-h1. */
+  .fp-display,
+  .fp-h1{ font-weight:var(--fp-heading-h1-weight); font-size:var(--fp-text-h1); letter-spacing:var(--fp-track-tight); line-height:var(--fp-heading-h1-line-height); }
+  .fp-h2{ font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-h2); letter-spacing:var(--fp-heading-h2-letter-spacing); line-height:var(--fp-heading-h2-line-height); }
+  .fp-h3{ font-weight:var(--fp-heading-h3-weight); font-size:var(--fp-text-h3); line-height:var(--fp-heading-h3-line-height); letter-spacing:var(--fp-heading-h3-letter-spacing); }
+  .fp-body{ font-size:var(--fp-text-base); line-height:var(--fp-leading); color:var(--fp-body); }
+  .fp-mono{ font-family:var(--fp-font-mono); }
+  .fp-label{ font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-label-color); }
+  .fp-kicker{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-kicker-color); }
+  .fp-wordmark{ font-family:var(--fp-font-sans); font-weight:var(--fp-wordmark-weight); letter-spacing:var(--fp-track-tight); line-height:var(--fp-wordmark-line-height); }
+
+  /* accent rule under a heading */
+  .fp-rule{ display:block; height:var(--fp-rule-height); width:var(--fp-rule-width); background:var(--fp-rule-color); border:0; }
+
+  /* monogram / mark plate */
+  .fp-plate{ display:inline-grid; place-items:center; aspect-ratio:1; background:var(--fp-plate-background); color:var(--fp-plate-color); border-radius:var(--fp-plate-radius); }
+  .fp-plate--sage{ background:var(--fp-plate-sage-background); color:var(--fp-plate-sage-color); }
+
+  /* buttons */
+  .fp-btn{ display:inline-block; font-family:var(--fp-font-sans); font-weight:var(--fp-button-font-weight); font-size:var(--fp-button-font-size); letter-spacing:var(--fp-button-letter-spacing);
+           padding:var(--fp-button-padding-block) var(--fp-button-padding-inline); border:var(--fp-button-border-width) solid var(--fp-button-border); border-radius:var(--fp-button-radius);
+           background:var(--fp-button-background); color:var(--fp-button-text); cursor:pointer; text-decoration:none; line-height:var(--fp-button-line-height); }
+  .fp-btn--solid{ background:var(--fp-button-solid-background); border-color:var(--fp-button-solid-border); color:var(--fp-button-solid-text); }
+  .fp-btn--terra{ background:var(--fp-button-terra-background); border-color:var(--fp-button-terra-border); color:var(--fp-button-terra-text); }
+  .fp-btn--ghost{ background:transparent; }
+
+  .fp-btn:hover{ background:var(--fp-button-hover-background); }
+  .fp-btn--solid:hover{ background:var(--fp-button-solid-hover-background); border-color:var(--fp-button-solid-hover-background); }
+  .fp-btn--terra:hover{ background:var(--fp-button-terra-hover-background); border-color:var(--fp-button-terra-hover-background); }
+  .fp-btn--ghost:hover{ background:var(--fp-button-hover-background); }
+  .fp-btn:disabled, .fp-btn[aria-disabled="true"]{ opacity:var(--fp-disabled-opacity); cursor:not-allowed; }
+  .fp-btn:disabled:hover, .fp-btn[aria-disabled="true"]:hover{ background:var(--fp-button-background); }
+  .fp-btn--solid:disabled:hover{ background:var(--fp-button-solid-background); }
+  .fp-btn--terra:disabled:hover{ background:var(--fp-button-terra-background); }
+
+  /* chips & topical tags */
+  .fp-chip{ display:inline-flex; align-items:center; gap:var(--fp-chip-gap); font-family:var(--fp-font-mono); font-weight:var(--fp-chip-font-weight);
+            font-size:var(--fp-chip-font-size); letter-spacing:var(--fp-chip-letter-spacing); text-transform:uppercase;
+            padding:var(--fp-chip-padding-block) var(--fp-chip-padding-inline); border:var(--fp-chip-border-width) solid var(--fp-chip-border); border-radius:var(--fp-chip-radius);
+            color:var(--fp-chip-text); }
+  .fp-chip--sage{ background:var(--fp-chip-sage-background); }
+  .fp-chip--terra{ background:var(--fp-chip-terra-background); }
+  .fp-chip--gray{ background:var(--fp-chip-grey-background); }
+  .fp-chip svg{ width:var(--fp-chip-icon-size); height:var(--fp-chip-icon-size); }
+
+  /* card & panel */
+  .fp-card{ background:var(--fp-card-background); border:var(--fp-card-border-width) solid var(--fp-card-border); border-radius:var(--fp-card-radius); padding:var(--fp-card-padding); }
+  .fp-panel{ background:var(--fp-panel-background); border:var(--fp-panel-border-width) solid var(--fp-panel-border); border-radius:var(--fp-panel-radius); padding:var(--fp-panel-padding); }
+
+  /* segmented control
+     Children may be <span>, <button> or <a> — the reset below makes all three
+     render identically, so the markup choice is the consumer's and cannot be
+     got wrong. UA differences neutralised: button borders/appearance/font,
+     anchor colour and underline, and the line-height that made the same
+     control 26.06px or 30.06px depending on the tag. */
+  .fp-seg{ display:inline-flex; border:var(--fp-seg-border-width) solid var(--fp-seg-border); border-radius:var(--fp-seg-radius); }
+  .fp-seg > *{
+    appearance:none; -webkit-appearance:none;
+    margin:0; border:0;
+    border-right:var(--fp-seg-divider-width) solid var(--fp-seg-divider-color);
+    border-radius:0;
+    background:transparent;
+    font-family:var(--fp-font-mono);
+    font-size:var(--fp-seg-item-font-size);
+    font-weight:var(--fp-seg-item-font-weight);
+    line-height:var(--fp-seg-item-line-height);
+    color:var(--fp-seg-item-color);
+    text-decoration:none;
+    text-align:center;
+    cursor:pointer;
+    padding:var(--fp-seg-item-padding-block) var(--fp-seg-item-padding-inline);
+    box-sizing:border-box;
+    display:inline-flex; align-items:center; justify-content:center;
+  }
+  .fp-seg > *:last-child{ border-right:0; }
+  .fp-seg > *:hover{ background:var(--fp-seg-hover-background); }
+  .fp-seg > .is-on, .fp-seg > [aria-selected="true"]{ background:var(--fp-seg-selected-background); color:var(--fp-seg-selected-text); }
+  .fp-seg > .is-on:hover, .fp-seg > [aria-selected="true"]:hover{ background:var(--fp-seg-selected-background); }
+  .fp-seg > *:disabled, .fp-seg > [aria-disabled="true"]{ opacity:var(--fp-disabled-opacity); cursor:not-allowed; }
+  .fp-seg > *:disabled:hover, .fp-seg > [aria-disabled="true"]:hover{ background:transparent; }
+
+  /* dividers */
+  .fp-hr{ border:0; border-top:var(--fp-hr-weight) solid var(--fp-hr-color); }
+  .fp-hr--dashed{ border:0; border-top:var(--fp-hr-weight) dashed var(--fp-hr-color); }
+  .fp-hr--gray{ border:0; border-top:var(--fp-hr-grey-weight) solid var(--fp-hr-grey-color); }
+
+  /* link */
+  .fp-link{ color:var(--fp-link-color); font-weight:var(--fp-link-weight); text-decoration:none; border-bottom:var(--fp-link-underline-width) solid var(--fp-link-underline-color); }
+  .fp-link:hover{ border-bottom-color:var(--fp-link-hover-underline-color); }
+
+  /* focus — one ring for every interactive component.
+     :focus-visible only, so it appears for keyboard users and not on click.
+     v1 had no focus styling at all, which left consumers to invent it and
+     left keyboard users with only the browser default. */
+  .fp-btn:focus-visible,
+  .fp-seg > *:focus-visible,
+  .fp-link:focus-visible,
+  .fp-chip:focus-visible{
+    outline:var(--fp-focus-ring-width) solid var(--fp-focus-ring-color);
+    outline-offset:var(--fp-focus-ring-offset);
+  }
+
+  /* intensity bands (reversed surfaces for registers 03/04) */
+  .fp-band{ background:var(--fp-band-background); color:var(--fp-band-text); }
+  .fp-band--terra{ background:var(--fp-band-terra-background); color:var(--fp-band-text); }
+  .fp-band--ink{ background:var(--fp-band-ink-background); color:var(--fp-band-text); }
+}
+
+@layer fp.utilities {
+  .fp-square{ border-radius:0 !important; }
+  .fp-c-ink{ color:var(--fp-ink); }   .fp-c-sage{ color:var(--fp-sage); }   .fp-c-terra{ color:var(--fp-terra); }
+  .fp-c-muted{ color:var(--fp-muted); } .fp-c-body{ color:var(--fp-body); }
+  .fp-bg-sage{ background:var(--fp-utility-bg-sage-background); color:var(--fp-utility-bg-sage-text); }
+  .fp-bg-gray{ background:var(--fp-utility-bg-grey-background); color:var(--fp-utility-bg-grey-text); }
+  .fp-bg-surface{ background:var(--fp-utility-bg-surface-background); }
+}

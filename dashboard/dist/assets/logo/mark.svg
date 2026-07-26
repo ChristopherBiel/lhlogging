@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Christopher Biel — step response mark">
+  <!-- Step response mark: 2nd-order, zeta=0.5, delayed step. Uses currentColor (recolour via CSS 'color'). -->
+  <line x1="8" y1="22" x2="56" y2="22" stroke="currentColor" stroke-width="2" stroke-dasharray="3 4" opacity="0.4"/>
+  <path d="M 8.00,52.00 L 15.68,52.00 L 16.32,51.84 L 16.96,51.12 L 17.60,49.92 L 18.24,48.32 L 18.88,46.42 L 19.52,44.29 L 20.16,42.00 L 20.80,39.63 L 21.44,37.23 L 22.08,34.85 L 22.72,32.54 L 23.36,30.34 L 24.00,28.26 L 24.64,26.35 L 25.28,24.61 L 25.92,23.06 L 26.56,21.69 L 27.20,20.52 L 27.84,19.54 L 28.48,18.74 L 29.12,18.12 L 29.76,17.65 L 30.40,17.34 L 31.04,17.16 L 31.68,17.11 L 32.32,17.16 L 32.96,17.30 L 33.60,17.51 L 34.24,17.79 L 34.88,18.11 L 35.52,18.46 L 36.16,18.84 L 36.80,19.23 L 37.44,19.62 L 38.08,20.01 L 38.72,20.38 L 39.36,20.73 L 40.00,21.06 L 40.64,21.37 L 41.28,21.64 L 41.92,21.89 L 42.56,22.10 L 43.20,22.29 L 43.84,22.44 L 44.48,22.56 L 45.12,22.66 L 45.76,22.72 L 46.40,22.77 L 47.04,22.79 L 47.68,22.80 L 48.32,22.78 L 48.96,22.76 L 49.60,22.72 L 50.24,22.67 L 50.88,22.62 L 51.52,22.56 L 52.16,22.50 L 52.80,22.43 L 53.44,22.37 L 54.08,22.31 L 54.72,22.25 L 55.36,22.19 L 56.00,22.14"
+        fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="56" cy="22.14" r="3.2" fill="currentColor"/>
+</svg>
