@@ -238,7 +238,7 @@ TRACK_AIRCRAFT_TYPES=
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 | **Flight-Routes Seed** | Mondays at 02:30 UTC | Rebuilds the `flight_routes` callsign→route reference from a consensus of clean flights (plus curated overrides) |
-| **Flight-Status Fetch** | Nightly ~22:00–23:00 Europe/Berlin | Pulls the public Lufthansa FIS feed for the tracked widebody flight numbers (747-8, A380, 787, A350) seen in the last 2 days, +1..+4 days ahead; records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
+| **Flight-Status Fetch** | 15 slots/day, Europe/Berlin ([schedule](docs/flightstatus_schedule.md)) | Pulls the public Lufthansa FIS feed for the catalogued widebody flight numbers (747-8, A380, 787, A350) across D-2…D+4; records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below). Coverage is tiered: 747-8/A380 are re-checked every ~2.6h at D+1/D+2 so reassignments can be dated to a few hours |
 
 ---
 
@@ -255,14 +255,36 @@ ADS-B pipeline can only observe after the fact.
 - **Bot protection:** the endpoint sits behind Imperva/Distil. `curl` and
   headless browsers are blocked; only a *real headed* Chromium gets through, so
   the service runs Playwright headed under Xvfb. Requests are paced gently
-  (5–10 s) with a rate-limit backoff — a full ~120-lookup run takes ~20 min.
-- **Storage:** each night appends a snapshot per `(observed_date, flight_date,
-  flight_number)` — the run date is part of the key, so **reassignments are
-  preserved as a time series** (compare a target flight across `observed_date`
-  to see the plan firm up or swap). Full per-flight payload kept in `raw` JSONB.
-- **Config:** `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`), `FIS_LOOKAHEAD_DAYS`
-  (4), `FIS_SEED_LOOKBACK_DAYS` (2), `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`,
-  `FIS_BLOCK_BACKOFF_S`. Ad-hoc single lookup:
+  (5–10 s) with a rate-limit backoff, one run at a time (flock) — a ~450-lookup
+  sweep takes ~90 min, a 66-lookup pulse ~12 min.
+- **Storage:** every pass appends a row per `(run, flight_date, flight_number)`,
+  so **reassignments are preserved as a time series** — ordering a flight's rows
+  by `observed_at` shows the plan firm up or swap. Full per-flight payload kept
+  in `raw` JSONB.
+- **Run modes** — `--dry-run` on any of them prints the planned lookups by lead
+  offset without touching the browser or the DB:
+
+  | mode | what it does | ~lookups |
+  |---|---|---|
+  | *(none)* | near sweep, D-2…D+2 — owns discovery, pairing, catalog lifecycle, `previousFlight` chaining, coverage audit | 400–470 |
+  | `--far` | far pass, broad tier D+3 / deep tier D+1…D+4, read-only against the catalog | ~220 |
+  | `--watch H` | re-check only flights departing within the next H hours | 5–50 |
+  | `--pulse` | re-check only the deep tier at D+1/D+2, several times a day | ~66 |
+  | `--flight LH716 --date …` | ad-hoc single lookup, prints JSON (`tools/fis_lookup.sh`) | 1 |
+  | `--audit` | print the fleet-continuity coverage audit, no browser | 0 |
+
+- **Tiering:** the *deep* tier (`FIS_DEEP_TYPES`, default `B748,A388`) is tracked
+  at high cadence because reassignment hazard turns out to be nearly flat in
+  lead time — more frequent looks buy far more than deeper ones. Tier membership
+  comes from the modal *observed* fleet type per flight number, not from the
+  catalog's `seed_type`. See [docs/flightstatus_schedule.md](docs/flightstatus_schedule.md)
+  for the measurements behind the schedule and the request budget.
+- **Config:** `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`),
+  `FIS_LOOKAHEAD_DAYS` (2), `FIS_BACKFILL_DAYS` (2), `FIS_FAR_MIN_DAYS`/`MAX_DAYS`
+  (3/3), `FIS_FAR_DEEP_MAX_DAYS` (4), `FIS_DEEP_TYPES`, `FIS_PULSE_OFFSETS`
+  (`1,2`), `FIS_DEEP_LOOKAHEAD_BONUS` (1), `FIS_SEED_LOOKBACK_DAYS` (2),
+  `FIS_MAX_LOOKUPS` (700), `FIS_SESSION_LOOKUPS` (80),
+  `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`, `FIS_BLOCK_BACKOFF_S`. Ad-hoc single lookup:
   `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`
   (set `NIGHTLY_JITTER=0` to skip the start jitter).
 
