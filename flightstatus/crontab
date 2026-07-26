@@ -2,36 +2,71 @@ SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 TZ=Europe/Berlin
 
-# Lufthansa flight-status fetch — 8 slots/day, clustered around when tail
-# re-assignments actually land and when catching them still has value (before
-# the relevant departure bank pushes back), not evenly spaced:
+# Lufthansa flight-status fetch — 15 slots/day, tiered by fleet type.
 #
-#   02:45 watch 4h     red-eyes (the 03:45/05:00 departures)
-#   03:30 far pass     D+3..D+5 only, read-only against the catalog — quiet
-#                      window with no deadline, so a multi-hour run is fine
-#   05:45 sweep-lite   truth D-1/D-2 + forecast D0/D1 (FIS_LOOKAHEAD_DAYS=1) —
-#                      overnight re-plans, done before the first bank departs
-#   10:30 watch 4.5h   midday bank        (deps ~11:00-15:00)
-#   13:00 watch 4.5h   afternoon bank     (deps ~13:30-17:30)
-#   15:30 watch 4.5h   late-afternoon bank(deps ~16:00-20:00)
-#   18:15 sweep-full   truth + D0..D2 — D0 is queried first (priority sort), so
-#                      the evening bank departs on fresh data; also sets
-#                      tomorrow's plan. D+3..D+5 stays with the far pass so
-#                      this can't grow slow enough to bump into 21:15.
-#   21:15 watch 4.5h   evening bank + just-after-midnight departures
+# Two measurements drive this layout (2026-07-26, see docs/flightstatus_schedule.md):
+#
+#   1. The reassignment hazard barely varies with lead time — roughly 1-1.7
+#      changes per 100 leg-hours everywhere from D0 out to D+5 — so there is no
+#      "decision moment" to catch. What a lookup buys is not depth but
+#      resolution: how tightly we can bracket a change we already know happened.
+#   2. A change first seen at D+4/D+5 is the tail that actually flies 0-5% of
+#      the time. Those lookups bought almost no label value, so they were cut
+#      and now fund high-cadence tracking closer in.
+#
+# So coverage is split into a DEEP tier (B748 + A388, ~33 numbers) tracked every
+# ~2.6h at D+1/D+2, and a BROAD tier (787/A350) that keeps the whole near window
+# but gets a single far look at D+3.
+#
+#   00:10 pulse        deep tier x D+1/D+2                            ~66
+#   02:00 pulse                                                       ~66
+#   02:45 watch 4h     red-eyes (the 03:45/05:00 departures)           ~5
+#   03:30 far pass     broad D+3; deep D+1..D+4 — the deep near       ~221
+#                      slices ride along because nothing else runs
+#                      03:00-05:00 and the pulse cadence would gap there
+#   05:45 sweep-lite   truth D-1/D-2 + forecast D0/D1                 ~400
+#                      (FIS_LOOKAHEAD_DAYS=1), + deep D+2 — overnight
+#                      re-plans, done before the first bank departs
+#   09:00 pulse                                                       ~66
+#   10:30 watch 4.5h   midday bank        (deps ~11:00-15:00)         ~32
+#   11:35 pulse                                                       ~66
+#   13:00 watch 4.5h   afternoon bank     (deps ~13:30-17:30)         ~40
+#   14:10 pulse                                                       ~66
+#   15:30 watch 4.5h   late-afternoon bank(deps ~16:00-20:00)         ~47
+#   16:45 pulse                                                       ~66
+#   18:15 sweep-full   truth + D0..D2, + deep D+3 (closes the 39h     ~467
+#                      far->sweep seam) — D0 is queried first
+#                      (priority sort), so the evening bank departs on
+#                      fresh data; also sets tomorrow's plan
+#   21:15 watch 4.5h   evening bank + just-after-midnight departures  ~30
+#   22:00 pulse                                                       ~66
+#                                                          total    ~1700/day
+#
+# Combined with the three sweeps, a deep-tier leg gets 10 looks/day at D+1/D+2
+# with a maximum gap of ~2.8h — tight enough to date a reassignment to a few
+# hours instead of the ~23h brackets the old two-sweep cadence produced.
 #
 # Sweeps refresh the whole catalog window (near: D-2..D+2, plus discovery/
-# pairing/lifecycle); the far pass extends read-only to D+3..D+5; watch passes
-# re-check only flights departing in the next few hours. run_nightly.sh
-# jitters each start (short for watches so the bank timing holds, longer for
-# sweeps/far since neither is time-critical) and skips the slot if a previous
-# run is still active (flock), so slots never overlap into doubled request
-# rates.
+# pairing/lifecycle); the far pass extends read-only to D+3 (D+4 deep); watch
+# passes re-check only flights departing in the next few hours; pulse passes
+# re-check only the deep tier at D+1/D+2. run_nightly.sh jitters each start
+# (10 min for pulses so the cadence holds, 15 for watches so the bank timing
+# holds, 30 for sweeps/far since neither is time-critical) and skips the slot if
+# a previous run is still active (flock), so slots never overlap into doubled
+# request rates. Every slot has >=23 min of margin to the next at worst-case
+# jitter + duration; a skipped pulse just widens one bracket.
+10  0 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
+0   2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 45  2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4 >> /var/log/lhlogging/flightstatus.log 2>&1
 30  3 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 /app/run_nightly.sh --far >> /var/log/lhlogging/flightstatus.log 2>&1
 45  5 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 FIS_LOOKAHEAD_DAYS=1 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
+0   9 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 30 10 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
+35 11 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 0  13 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
+10 14 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 30 15 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
+45 16 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 15 18 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
 15 21 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
+0  22 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
