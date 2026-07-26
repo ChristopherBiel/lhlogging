@@ -17,6 +17,14 @@ clients and headless browsers. The only thing that gets through is a *real*
 run_nightly.sh). We load the timetable page once to establish the session, then
 issue same-origin `fetch()`es from inside the page.
 
+Coverage is tiered by fleet type. The *deep* tier (B748 + A388) is tracked at
+high cadence in the D+1/D+2 window so we can date a reassignment to a few hours
+rather than a day; the *broad* tier (787/A350) keeps the full near window but
+only one far look. Measured 2026-07-26: reassignment hazard barely varies with
+lead time (~1-1.7 changes per 100 leg-hours from D0 out to D+5), so what limits
+us is not how far ahead we look but how often — with two looks a day, changes
+land in ~23h-wide brackets and the time of day they happen is unrecoverable.
+
 Run modes:
   python fetch_flightstatus.py                 # near sweep (catalog x -BACKFILL..+LOOKAHEAD days,
                                                 #   incl. D0; owns discovery/pairing/catalog lifecycle)
@@ -24,8 +32,10 @@ Run modes:
                                                 #   read-only against the catalog, run once in a quiet
                                                 #   window since nothing here needs same-day freshness
   python fetch_flightstatus.py --watch 4.5     # watch pass: re-check flights departing in the next 4.5h
+  python fetch_flightstatus.py --pulse         # pulse pass: deep-tier numbers x D+PULSE_OFFSETS only,
+                                                #   ~7x/day, so deep-tier brackets stay under ~3h
   python fetch_flightstatus.py --flight LH716 --date 2026-06-25   # ad-hoc single lookup (prints JSON)
-  python fetch_flightstatus.py --dry-run       # sweep/watch/far, print candidate set + plan, no browser/DB writes
+  python fetch_flightstatus.py --dry-run       # sweep/watch/far/pulse, print candidate set + plan, no writes
 
 Must be run under a display (Xvfb): `xvfb-run -a python fetch_flightstatus.py`.
 """
@@ -67,9 +77,33 @@ LOOKAHEAD_DAYS = int(os.environ.get("FIS_LOOKAHEAD_DAYS", "2"))
 # chaining, no catalog prune — those stay owned by the near sweeps, which run
 # twice daily and keep the catalog current enough for this to just read it.
 # Nothing depends on same-day freshness this far out, so it's free to take
-# hours without risking the next scheduled slot.
+# hours without risking the next scheduled slot. It also carries the deep tier's
+# PULSE_OFFSETS: it is the only run in the 03:00-05:00 window, so without that
+# the pulse cadence would have a hole there (see PULSE_OFFSETS below).
 FAR_MIN_DAYS = int(os.environ.get("FIS_FAR_MIN_DAYS", "3"))
-FAR_MAX_DAYS = int(os.environ.get("FIS_FAR_MAX_DAYS", "5"))
+# Broad-tier ceiling. Was 5 until 2026-07-26: a change first seen at D+4 or D+5
+# is the tail that ends up flying 0-5% of the time, so those lookups bought
+# almost no label value and now fund the deep-tier pulses instead.
+FAR_MAX_DAYS = int(os.environ.get("FIS_FAR_MAX_DAYS", "3"))
+FAR_DEEP_MAX_DAYS = int(os.environ.get("FIS_FAR_DEEP_MAX_DAYS", "4"))
+
+# --- tiering ----------------------------------------------------------------
+# Deep tier: the types we want fine temporal resolution on. Everything else is
+# the broad tier — full near window, one far look, no pulses.
+DEEP_TYPES = [t.strip() for t in os.environ.get(
+    "FIS_DEEP_TYPES", "B748,A388").split(",") if t.strip()]
+# Which lead days the pulse passes re-check. D+1/D+2 is where the hazard is
+# highest (1.37 and 1.68 changes per 100 leg-hours) and where a change still has
+# a real chance of being the one that flies.
+PULSE_OFFSETS = [int(d) for d in os.environ.get(
+    "FIS_PULSE_OFFSETS", "1,2").split(",") if d.strip()]
+# Extra lookahead day the deep tier gets on every near sweep, so both pulse
+# offsets are refreshed by the sweeps too: lite (D+1) reaches D+2, full (D+2)
+# reaches D+3. Keeping the sampling pattern identical across D+1 and D+2 matters
+# — comparing their hazards is otherwise confounded by the sampling grid.
+DEEP_LOOKAHEAD_BONUS = int(os.environ.get("FIS_DEEP_LOOKAHEAD_BONUS", "1"))
+# How far back to look when deciding which numbers are deep-tier.
+DEEP_TIER_DAYS = int(os.environ.get("FIS_DEEP_TIER_DAYS", "6"))
 # Truth pass: also query the last N days so FIS returns the *actually-operated*
 # tail (overallStatus ARRIVED) as ground truth for calibration. FIS only keeps a
 # rolling few-days window of past flights, so the twice-daily job must catch them
@@ -309,6 +343,91 @@ def catalog_candidates(conn: psycopg.Connection) -> list[dict]:
             """
         )
         return [{"flight_number": r[0], "seed_type": r[1]} for r in cur.fetchall()]
+
+
+def deep_numbers(conn: psycopg.Connection) -> dict:
+    """Flight numbers whose recent FIS history is dominated by a deep-tier type.
+
+    Keyed off the tail actually observed (registration -> `aircraft`), not
+    `fis_flight_catalog.seed_type`: that column records why a number was first
+    added and has drifted badly — it currently labels *no* number A388, because
+    those numbers entered the catalog under some other type's rotation.
+
+    Modal rather than "ever seen": a number stays deep-tier while it is usually
+    flown by a deep type, so a one-off A350 substitution on LH424 doesn't drop
+    it out of the tier mid-week (and an A350 number that once had a 747 sub
+    doesn't get pulled in). Returns {flight_number: fleet_type}; empty on any
+    error, which degrades the tiering off rather than failing the run.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH modal AS (
+                    SELECT o.flight_number, a.aircraft_type AS fleet_type,
+                           row_number() OVER (PARTITION BY o.flight_number
+                                              ORDER BY count(*) DESC, a.aircraft_type) AS rn
+                    FROM flight_status_observations o
+                    JOIN aircraft a ON a.registration = btrim(o.registration)
+                    WHERE o.found
+                      AND o.observed_at > NOW() - make_interval(days => %(days)s)
+                    GROUP BY o.flight_number, a.aircraft_type
+                )
+                SELECT flight_number, fleet_type FROM modal
+                WHERE rn = 1 AND fleet_type = ANY(%(types)s)
+                """,
+                {"days": DEEP_TIER_DAYS, "types": DEEP_TYPES},
+            )
+            return {r[0]: r[1] for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001 - tiering is an optimisation, never fatal
+        conn.rollback()
+        log(f"deep-tier query failed, treating every number as broad tier: {e}")
+        return {}
+
+
+def pulse_candidates(conn: psycopg.Connection, offsets: list) -> list[dict]:
+    """(flight_number, date) work for a pulse pass: deep-tier catalog numbers
+    across D+offset, minus anything already settled.
+
+    Only numbers that are *both* catalogued (not retired) and deep-tier by
+    observed type are pulsed, so the pass stays at a predictable ~30 lookups per
+    offset. Discovery stays with the sweeps — a number the catalog has never
+    seen cannot enter here."""
+    deep = deep_numbers(conn)
+    if not deep:
+        return []
+    try:
+        catalogued = {c["flight_number"] for c in catalog_candidates(conn)}
+    except psycopg.errors.UndefinedTable:
+        conn.rollback()
+        catalogued = set(deep)  # migration 007 unapplied — pulse the tier as-is
+
+    today = date.today()
+    targets = [today + timedelta(days=d) for d in offsets]
+    with conn.cursor() as cur:  # a cancelled leg won't get a tail again
+        cur.execute(
+            """
+            SELECT DISTINCT ON (o.flight_date, o.flight_number)
+                   o.flight_number, o.flight_date, o.overall_status
+            FROM flight_status_observations o
+            WHERE o.airline = 'LH' AND o.flight_date = ANY(%s)
+            ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
+            """,
+            (targets,),
+        )
+        settled = {(r[0], r[1]) for r in cur.fetchall()
+                   if (r[2] or "").upper() in TERMINAL_STATUSES}
+
+    # Nearest offset first, shuffled within it — same rationale as the sweep's
+    # priority sort: the ordering that matters is by lead time, and shuffling
+    # inside a band keeps 7 passes a day from replaying one fixed sequence.
+    work = []
+    for target in targets:
+        batch = [{"flight_number": n, "flight_date": target, "seed_type": deep[n]}
+                 for n in deep if n in catalogued and (n, target) not in settled]
+        random.shuffle(batch)
+        work.extend(batch)
+    return work
 
 
 def prune_catalog(conn: psycopg.Connection) -> None:
@@ -790,22 +909,37 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
         return 0
 
     today = date.today()
+    # Target dates are per-tier: the deep tier gets an extra lookahead day on the
+    # near sweeps and, on the far pass, the pulse offsets too (nothing else runs
+    # between 03:00 and 05:00, so the pulse cadence would otherwise have a hole).
+    deep = deep_numbers(conn)
     if far:
         # No backfill/truth (only future dates) and no D0 (the near sweeps and
         # watches already keep today fresh).
         past: list[date] = []
-        future = [today + timedelta(days=d) for d in range(FAR_MIN_DAYS, FAR_MAX_DAYS + 1)]
-        targets = sorted(future)
+        broad_future = [today + timedelta(days=d)
+                        for d in range(FAR_MIN_DAYS, FAR_MAX_DAYS + 1)]
+        deep_future = [today + timedelta(days=d)
+                       for d in range(FAR_MIN_DAYS, FAR_DEEP_MAX_DAYS + 1)]
+        deep_future += [today + timedelta(days=d) for d in PULSE_OFFSETS]
+        base: list[date] = []
     else:
-        future = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
+        broad_future = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
+        deep_future = [today + timedelta(days=d)
+                       for d in range(1, LOOKAHEAD_DAYS + DEEP_LOOKAHEAD_BONUS + 1)]
         past = [today - timedelta(days=d) for d in range(1, BACKFILL_DAYS + 1)]  # truth pass
         # Sweep D0 (today) too: same-day tail swaps only show up on today's slice, so
         # skipping it lets an already-captured assignment go stale. It's a forecast
         # day (not settled), so it's never truth-skipped and — offset 0 — is queried
         # first under the priority sort.
-        targets = sorted([today, *past, *future])
-    # Chained legs may reference any day in the swept window; targets now spans
-    # D0, so its set already bounds chain reachability.
+        base = [today, *past]
+
+    def targets_for(number: str) -> list:
+        return sorted(set(base) | set(deep_future if number in deep else broad_future))
+
+    # Chained legs may reference any day in the swept window; the union spans D0,
+    # so it already bounds chain reachability.
+    targets = sorted(set(base) | set(broad_future) | set(deep_future))
     window_dates = set(targets)
 
     # Truth pass: skip past (number, date) pairs already settled — their tail
@@ -815,11 +949,13 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
 
     # Far mode never chains — discovery is the near sweeps' job (see above).
     chain_hops = 0 if far else CHAIN_HOPS
+    n_deep = sum(1 for s in candidates if s["flight_number"] in deep)
     log(f"source={source_label}: {len(candidates)} flight numbers x dates "
         f"{targets[0]}..{targets[-1]} "
         f"(backfill={BACKFILL_DAYS if not far else 0}, "
         f"lookahead={LOOKAHEAD_DAYS if not far else f'{FAR_MIN_DAYS}-{FAR_MAX_DAYS}'}, "
-        f"chain_hops={chain_hops})")
+        f"chain_hops={chain_hops}, "
+        f"deep={n_deep}/{len(candidates)} to {max(deep_future) if deep_future else '-'})")
     log("flight numbers: " + ", ".join(f"LH{s['flight_number']}({s['seed_type']})" for s in candidates))
 
     # Work queue of (flight_number, date, seed_type, hop), deduped by (num, date).
@@ -828,7 +964,7 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
     work = []
     skipped_truth = 0
     for s in candidates:
-        for t in targets:
+        for t in targets_for(s["flight_number"]):
             key = (s["flight_number"], t)
             if key in queued:
                 continue
@@ -845,8 +981,14 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
 
     if dry_run:
         n_truth = sum(1 for w in work if w[1] < today)
-        log(f"dry-run: {len(work)} planned lookups ({n_truth} truth / {len(work) - n_truth} forecast); "
+        by_offset = defaultdict(int)
+        for w in work:
+            by_offset[(w[1] - today).days] += 1
+        log(f"dry-run: {len(work)} planned lookups ({n_truth} truth / {len(work) - n_truth} forecast, "
+            f"{sum(1 for w in work if w[0] in deep)} deep-tier); "
             f"{skipped_truth} past pairs skipped as already-settled")
+        log("dry-run: by lead offset: "
+            + ", ".join(f"D{o:+d}={by_offset[o]}" for o in sorted(by_offset)))
         log("dry-run: not launching browser or writing to DB")
         conn.rollback()  # discard the uncommitted catalog refresh
         conn.close()
@@ -982,30 +1124,13 @@ def watch_candidates(conn: psycopg.Connection, horizon_hours: float) -> list[dic
     ]
 
 
-def run_watch(horizon_hours: float, dry_run: bool = False) -> int:
-    """Light same-day pass: re-check only the flights departing within the next
-    few hours, so a late tail swap is caught while catching it still has value.
-    No catalog refresh/prune, no coverage audit, no chain expansion — those
-    belong to the sweeps; this stays cheap enough to run around each departure
-    bank (typically 15-45 lookups, one Distil session)."""
-    conn = connect()
-    try:
-        work = watch_candidates(conn, horizon_hours)
-    except Exception as e:
-        log(f"watch candidate query failed: {e}")
-        conn.close()
-        return 1
-    if not work:
-        log(f"watch[{horizon_hours}h]: no re-checkable departures in window — nothing to do")
-        conn.close()
-        return 0
-    log(f"watch[{horizon_hours}h]: {len(work)} departures: "
-        + ", ".join(f"LH{w['flight_number']}@{w['dep']:%H:%M}Z" for w in work))
-    if dry_run:
-        log("dry-run: not launching browser or writing to DB")
-        conn.close()
-        return 0
+def run_light_pass(label: str, work: list, conn: psycopg.Connection) -> int:
+    """Fetch a pre-computed (flight_number, flight_date) work list and store it.
 
+    The shared body of the two light passes — watch and pulse. Neither refreshes
+    or prunes the catalog, chains, or runs the coverage audit: those belong to
+    the sweeps. Both stay small enough for a single Distil session, so the only
+    difference between them is how `work` was chosen."""
     per_pass = per_pass_schema(conn)
     run_id = log_batch_start(conn)
     obs_run_id = run_id if per_pass else None  # None -> legacy daily upsert
@@ -1059,13 +1184,71 @@ def run_watch(horizon_hours: float, dry_run: bool = False) -> int:
             browser.close()
     except Exception as e:
         status, detail = "error", str(e)
-        log(f"watch error: {e}")
+        log(f"{label} error: {e}")
     finally:
         log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
         conn.close()
-    log(f"watch done: {total} lookups ({resets} session recycles), "
+    log(f"{label} done: {total} lookups ({resets} session recycles), "
         f"{ok} found, {err} blocked/missing, {upserted} rows upserted")
     return 0 if status == "ok" else 1
+
+
+def run_watch(horizon_hours: float, dry_run: bool = False) -> int:
+    """Light same-day pass: re-check only the flights departing within the next
+    few hours, so a late tail swap is caught while catching it still has value.
+    Typically 15-45 lookups."""
+    conn = connect()
+    try:
+        work = watch_candidates(conn, horizon_hours)
+    except Exception as e:
+        log(f"watch candidate query failed: {e}")
+        conn.close()
+        return 1
+    if not work:
+        log(f"watch[{horizon_hours}h]: no re-checkable departures in window — nothing to do")
+        conn.close()
+        return 0
+    log(f"watch[{horizon_hours}h]: {len(work)} departures: "
+        + ", ".join(f"LH{w['flight_number']}@{w['dep']:%H:%M}Z" for w in work))
+    if dry_run:
+        log("dry-run: not launching browser or writing to DB")
+        conn.close()
+        return 0
+    return run_light_pass(f"watch[{horizon_hours}h]", work, conn)
+
+
+def run_pulse(dry_run: bool = False) -> int:
+    """Deep-tier high-cadence pass: re-check B748/A388 legs at D+1/D+2 only.
+
+    Run ~7x/day between the sweeps. The sweeps see those slices twice a day,
+    which leaves ~12h between looks — wide enough that a reassignment can only
+    be placed within half a day, and far too wide to tell what time of day it
+    happened. Interleaving these keeps every gap under ~3h for the two types we
+    study closely, at ~30 lookups per offset."""
+    conn = connect()
+    try:
+        work = pulse_candidates(conn, PULSE_OFFSETS)
+    except Exception as e:
+        log(f"pulse candidate query failed: {e}")
+        conn.close()
+        return 1
+    if not work:
+        log("pulse: no deep-tier candidates — nothing to do "
+            f"(types={','.join(DEEP_TYPES)}, offsets={PULSE_OFFSETS})")
+        conn.close()
+        return 0
+    offsets = sorted({(w["flight_date"] - date.today()).days for w in work})
+    log(f"pulse: {len(work)} lookups, {len(work) // max(len(offsets), 1)} numbers x "
+        f"D{'/D'.join(f'+{o}' for o in offsets)} "
+        f"(deep types: {','.join(DEEP_TYPES)})")
+    if dry_run:
+        log("dry-run: " + ", ".join(f"LH{w['flight_number']}@{w['flight_date']}"
+                                    for w in work[:40])
+            + (" ..." if len(work) > 40 else ""))
+        log("dry-run: not launching browser or writing to DB")
+        conn.close()
+        return 0
+    return run_light_pass("pulse", work, conn)
 
 
 def run_single(flight: str, target: str) -> int:
@@ -1109,20 +1292,29 @@ def main() -> int:
                          "(no catalog refresh/prune, no chaining)")
     ap.add_argument("--far", action="store_true",
                     help=f"far pass: re-check D+{FAR_MIN_DAYS}..D+{FAR_MAX_DAYS} only "
-                         "(no catalog refresh/prune, no chaining) — the near sweep covers "
+                         f"(deep tier to D+{FAR_DEEP_MAX_DAYS}, plus its pulse offsets; "
+                         "no catalog refresh/prune, no chaining) — the near sweep covers "
                          f"D-{BACKFILL_DAYS}..D+{LOOKAHEAD_DAYS} and owns discovery")
+    ap.add_argument("--pulse", action="store_true",
+                    help=f"pulse pass: deep tier ({','.join(DEEP_TYPES)}) x "
+                         f"D{'/D'.join(f'+{o}' for o in PULSE_OFFSETS)} only, run several "
+                         "times a day to keep those brackets under ~3h")
     ap.add_argument("--dry-run", action="store_true",
-                    help="sweep/watch/far: print the planned lookups only, no browser/DB writes")
+                    help="sweep/watch/far/pulse: print the planned lookups only, no browser/DB writes")
     ap.add_argument("--audit", action="store_true",
                     help="print the coverage audit for the current window and exit (no browser)")
     args = ap.parse_args()
 
     if args.watch is not None:
-        if args.flight or args.date or args.far:
-            ap.error("--watch cannot be combined with --flight/--date/--far")
+        if args.flight or args.date or args.far or args.pulse:
+            ap.error("--watch cannot be combined with --flight/--date/--far/--pulse")
         if args.watch <= 0:
             ap.error("--watch requires a positive number of hours")
         return run_watch(args.watch, dry_run=args.dry_run)
+    if args.pulse:
+        if args.flight or args.date or args.far:
+            ap.error("--pulse cannot be combined with --flight/--date/--far")
+        return run_pulse(dry_run=args.dry_run)
     if args.far:
         if args.flight or args.date:
             ap.error("--far cannot be combined with --flight/--date")
