@@ -1,0 +1,214 @@
+:root {
+  /* Faceplate v2.0.0 (vendored, dist/) — project semantics aliased onto --fp-* */
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
+  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
+  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
+  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
+}
+/* Scoped reset. A universal `* { margin:0; padding:0 }` reaches into
+   @layer fp.components and silently zeroes .fp-btn / .fp-chip / .fp-seg
+   padding -- unlayered CSS beats layered CSS regardless of specificity, which
+   is how a real project shipped a segmented control reading "anyyesno".
+   See dist/docs/using-faceplate.md#a-note-on-resets
+
+   The exclusion is wrapped in :where() on purpose. Bare
+   :not([class*="fp-"]):not([class*="fp-"] *) carries the specificity of its
+   arguments -- two attribute selectors, (0,2,0) -- which outranks every
+   single-class rule in this file and quietly flattens .container's
+   `margin:0 auto`. :where() is always (0,0,0), so this keeps the reach of the
+   old universal reset and none of its weight. */
+* { box-sizing:border-box; }
+*:where(:not([class*="fp-"]):not([class*="fp-"] *)) { margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-size:var(--fp-text-sm); line-height:1.5;
+  font-family:var(--fp-font-sans); -webkit-font-smoothing:antialiased; }
+.container { width:96vw; max-width:2000px; margin:0 auto; padding:0 var(--fp-space-3) var(--fp-space-6); }
+
+/* header / device label */
+/* -- Header - structural (intensity 02) ------------------------------------
+   Faceplate unbranded: no band, no monogram plate, no wordmark. Identity is
+   the product glyph plus an ink keyline; colour coverage stays inside 02. */
+.header { display:flex; align-items:center; gap:var(--fp-space-3) var(--fp-space-4); flex-wrap:wrap;
+  padding:0 0 var(--fp-space-3); margin:var(--fp-space-3) 0 var(--fp-space-4);
+  border-bottom:var(--fp-keyline) solid var(--fp-ink); }
+.brand { display:flex; align-items:center; gap:var(--fp-space-3); }
+.brand-mark { width:var(--fp-space-5); height:var(--fp-space-5); flex-shrink:0;
+  display:inline-grid; place-items:center; color:var(--fp-sage); }
+.brand-mark svg { width:100%; height:100%; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:var(--fp-text-h3); font-weight:800;
+  letter-spacing:var(--fp-track-tight); color:var(--fp-ink); text-transform:uppercase;
+  line-height:var(--fp-leading-tight); margin-bottom:0; }
+.header h1 span { color:var(--fp-sage); }
+.model { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label);
+  color:var(--fp-muted); text-transform:uppercase; margin-top:var(--fp-space-1); }
+.nav { display:flex; gap:var(--fp-space-3); flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:500;
+  letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-body); text-decoration:none;
+  padding:var(--fp-space-1) 0; border-bottom:var(--fp-keyline) solid transparent;
+  transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:var(--fp-sage-deep); border-bottom-color:var(--fp-sage); text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--fp-muted); }
+
+.meta { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); line-height:1.6; }
+.meta b { color:var(--text); font-weight:700; }
+
+.controls { display:flex; gap:var(--fp-space-3); align-items:center; flex-wrap:wrap; margin-bottom:var(--fp-space-3); }
+.controls input { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius);
+  color:var(--text-bright); padding:var(--fp-space-2) var(--fp-space-3); font-size:var(--fp-text-sm); width:300px; font-family:var(--fp-font-sans); }
+.controls input:focus { outline:none; border-color:var(--accent); }
+.controls input::placeholder { color:var(--muted); }
+/* grouped legend — one labelled row per group (Filter / Bars / Marks) reads better than one long line */
+.legend { display:flex; flex-direction:column; gap:var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted);
+  text-transform:uppercase; letter-spacing:.3px; margin-bottom:var(--fp-space-3); }
+.legend--key { margin:var(--fp-space-3) 0 var(--fp-space-2); }   /* read-only key: bar & mark meanings, below the chart */
+.legrp { display:flex; align-items:baseline; gap:var(--fp-space-2) var(--fp-space-3); flex-wrap:wrap; }
+.leglbl { flex:0 0 42px; font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; letter-spacing:.1em; color:var(--fp-ink); }
+.legrp .items { display:flex; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); flex-wrap:wrap; }
+.legend .sw { display:inline-block; width:12px; height:12px; border-radius:var(--fp-radius); vertical-align:middle; margin-right:var(--fp-space-1); }
+
+/* gantt */
+.gantt { overflow-x:auto; border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); background:var(--surface); padding:var(--fp-space-3) var(--fp-space-3) var(--fp-space-2); }
+.gantt-inner { min-width:820px; }
+.gantt-axis-row { display:flex; align-items:center; margin-bottom:var(--fp-space-2); }
+.gantt-axis { flex:1; position:relative; height:13px; }
+.gantt-axis .gantt-day { position:absolute; font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--muted);
+  text-transform:uppercase; letter-spacing:.4px; padding-left:var(--fp-space-2); border-left:var(--fp-keyline) solid var(--line); white-space:nowrap; }
+.gantt-rows { position:relative; }
+.gantt-grid { position:absolute; inset:0; pointer-events:none; z-index:4; }
+.grid-line { position:absolute; top:0; bottom:0; width:1px; background:var(--line); opacity:.7; }
+.gantt-row { display:flex; align-items:center; margin-bottom:var(--fp-space-2); height:24px; }
+.gantt-row.dim { opacity:.22; }
+.gantt-row.typehide { display:none; }   /* type unchecked (watched rows are exempt) */
+/* watched tails sort to the top; one dashed rule marks where that group ends — rows themselves render like any other */
+.gantt-row.watch:has(+ .gantt-row:not(.watch)) { border-bottom:var(--fp-keyline) dashed var(--fp-ink); }
+.gantt-label .star { color:var(--fp-ink); font-size:var(--fp-text-xxs); margin-right:var(--fp-space-1); }
+.gantt-label { width:122px; flex-shrink:0; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700;
+  color:var(--text-bright); padding-right:var(--fp-space-2); display:flex; align-items:center; gap:var(--fp-space-1); text-decoration:none; }
+a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; }
+.tbadge { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; padding:var(--fp-space-1) var(--fp-space-1); border-radius:var(--fp-radius); color:var(--fp-text-inverse); }
+.abadge { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; padding:var(--fp-space-1) var(--fp-space-1); border-radius:var(--fp-radius);
+  background:var(--fp-ink); color:var(--fp-text-inverse); letter-spacing:.4px; }   /* Allegris cabin */
+.t748 .tbadge, .tbadge.t748 { background:var(--accent); }
+.t388 .tbadge, .tbadge.t388 { background:var(--fp-dv-2); }
+.t789 .tbadge, .tbadge.t789 { background:var(--fp-dv-4); }
+.t359 .tbadge, .tbadge.t359 { background:var(--fp-dv-3); color:var(--fp-ink); }
+.tbadge.tother { background:var(--surface2); color:var(--muted); }
+/* type checkboxes — double as the type legend; watched tails ignore hiding */
+.tchk { display:inline-flex; align-items:center; gap:var(--fp-space-2); cursor:pointer; font-family:var(--fp-font-mono);
+  font-size:var(--fp-text-xxs); font-weight:700; color:var(--fp-ink); text-transform:uppercase; user-select:none; }
+.tchk:focus-visible { outline:var(--fp-focus-ring-width) solid var(--fp-focus-ring-color); outline-offset:var(--fp-focus-ring-offset); }
+.tchk:hover .sw { outline:var(--fp-keyline) solid var(--fp-gray); outline-offset:var(--fp-focus-ring-offset); }   /* hover ring hints the square is a toggle */
+/* the colour square IS the control — filled = shown, hollow outline = filtered out (no checkbox) */
+.tchk .sw { width:12px; height:12px; border:var(--fp-keyline) solid var(--_c,var(--fp-ink)); background:var(--_c,var(--fp-ink)); }
+.tchk .sw.t748 { --_c:var(--accent); } .tchk .sw.t388 { --_c:var(--fp-dv-2); }
+.tchk .sw.t789 { --_c:var(--fp-dv-4); } .tchk .sw.t359 { --_c:var(--fp-dv-3); }
+.tchk .sw.tother { --_c:var(--fp-gray); }
+.tchk.off { color:var(--muted); }
+.tchk.off .sw { background:transparent; }
+.tchk.off .abadge { background:transparent; color:var(--muted); box-shadow:inset 0 0 0 var(--fp-keyline) var(--muted); }
+.gantt-track { flex:1; position:relative; height:22px; background:var(--fp-surface); border-radius:var(--fp-radius); overflow:visible; }
+/* Per-type hue. The palette is closed and only sage and terracotta ship tint and
+   deep variants, so a bar carries its type as a saturated fill (past) or a left
+   keyline (future) rather than as four locally-mixed per-hue tints.
+   --_d is the label colour on white: the Deep variant where one exists, ink where
+   the hue is too light for small text (ochre is ~2:1 on white).
+   See dist/docs/colour.md. One hue per family: 787 variants share t789,
+   A350 variants share t359; the badge names the variant. */
+.gantt-flight.t748, .tie.t748 { --_s:var(--fp-sage);    --_d:var(--fp-sage-deep); }
+.gantt-flight.t388, .tie.t388 { --_s:var(--fp-dv-2);    --_d:var(--fp-terra-deep); }
+.gantt-flight.t789, .tie.t789 { --_s:var(--fp-dv-4);    --_d:var(--fp-dv-4); }
+.gantt-flight.t359, .tie.t359 { --_s:var(--fp-dv-3);    --_d:var(--fp-ink); }
+.gantt-flight.tother, .tie.tother { --_s:var(--fp-gray); --_d:var(--fp-body); }
+
+.gantt-flight { position:absolute; top:1px; height:20px; border-radius:var(--fp-radius); overflow:hidden; display:flex;
+  align-items:center; opacity:1; transition:opacity .15s, box-shadow .15s; }
+.gantt-flight.dim { opacity:.12; }
+.gantt-flight .lbl { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; white-space:nowrap; padding:0 var(--fp-space-2);
+  letter-spacing:.2px; display:flex; align-items:baseline; gap:var(--fp-space-1); }
+.gantt-flight .lbl .fl { font-weight:500; font-size:var(--fp-text-xxs); opacity:.85; }
+.clk { cursor:pointer; }
+.clk:hover { z-index:3; outline:var(--fp-keyline) solid var(--fp-ink); outline-offset:-2px; }   /* outline composes with status box-shadows */
+
+/* PAST — saturated fill + reversed label (incl. flight #). No text-shadow:
+   dist/docs/principles.md rules out shadows in data visualisation. */
+.gantt-flight.st-tracked, .gantt-flight.st-actual, .gantt-flight.st-extra { background:var(--_s); }
+.gantt-flight.st-tracked .lbl, .gantt-flight.st-actual .lbl, .gantt-flight.st-extra .lbl {
+  color:var(--fp-text-inverse); }
+/* Light fills take ink labels instead. Ochre is ~2:1 under white; the signature
+   grey is the sharper trap at ~1.6:1 -- colour.md's "never white text on it".
+   v1 hid both behind a text-shadow, which data-viz does not allow. Ink is
+   ~10:1 on the grey and ~7:1 on the ochre. */
+.gantt-flight.t359.st-tracked .lbl, .gantt-flight.t359.st-actual .lbl, .gantt-flight.t359.st-extra .lbl,
+.gantt-flight.tother.st-tracked .lbl, .gantt-flight.tother.st-actual .lbl, .gantt-flight.tother.st-extra .lbl {
+  color:var(--fp-ink); }
+/* A deviation (what actually flew) renders as a hatched bar. The hatch alternates
+   the type hue with the surface tone, so the label has to clear BOTH stripes --
+   a reversed label disappears on the light one whatever the hue. Ink does it
+   everywhere: 4.6:1 on sage, the darkest hue here, and 15.7:1 on the surface. */
+.gantt-flight.st-extra  { background:repeating-linear-gradient(45deg,var(--_s) 0 6px,var(--fp-surface) 6px 11px); }
+.gantt-flight.st-extra .lbl { color:var(--fp-ink); }
+
+/* FUTURE — white bar on the off-white track; the type reads from a left keyline */
+.gantt-flight.st-planned { background:var(--fp-bg); border-left:var(--fp-keyline) solid var(--_s); }
+.gantt-flight.st-planned .lbl { color:var(--_d); }
+
+/* PLANNED SLOT — a scheduled slot not yet tracked, or one vacated by a deviation. Dashed neutral */
+.gantt-flight.st-missing, .gantt-flight.st-ghost { background:var(--fp-bg); border:var(--fp-hairline) dashed var(--fp-gray); }
+.gantt-flight.st-missing .lbl, .gantt-flight.st-ghost .lbl { color:var(--fp-body); }   /* muted is 3.2:1 on white -- too low for a 10px label */
+
+/* SWAP / reassignment */
+.gantt-flight.is-swap { box-shadow:inset 0 0 0 var(--fp-keyline) var(--fp-dv-6); }
+.gantt-flight .swapchip { position:absolute; right:0; top:0; height:100%; text-align:center; line-height:1;
+  writing-mode:vertical-rl; transform:rotate(180deg);   /* "SWAP" reads bottom-to-top: a thin vertical strip */
+  font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); font-weight:700; letter-spacing:-.02em; color:var(--fp-ink); background:var(--fp-dv-6); padding:0 var(--fp-space-1); }
+
+/* rotation tie — the "stay" parked away from base; hover-only, drawn behind bars */
+.tie { position:absolute; top:10px; height:3px; background:var(--_s); opacity:.4; z-index:0; cursor:help; }
+.tie::before, .tie::after { content:''; position:absolute; top:-2px; width:2px; height:7px; background:var(--_s); opacity:.75; }
+.tie::before { left:0; } .tie::after { right:0; }
+.tielab { position:absolute; top:-7px; left:50%; transform:translateX(-50%); font-family:var(--fp-font-mono);
+  font-size:var(--fp-text-xxs); font-weight:800; letter-spacing:.2px; color:var(--_d); background:var(--surface); padding:0 var(--fp-space-1); white-space:nowrap; }
+.now-line { position:absolute; top:0; bottom:0; width:2px; background:var(--fp-ink); z-index:6; pointer-events:none; }
+.now-line::after { content:'NOW'; position:absolute; top:-13px; left:50%; transform:translateX(-50%); background:var(--fp-ink); color:var(--fp-text-inverse);
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; letter-spacing:.08em; line-height:1; padding:var(--fp-space-1) var(--fp-space-1); white-space:nowrap; }
+/* phone: don't compact — keep the timeline wide & scroll sideways; pin the reg column */
+@media (max-width:640px){
+  .gantt-inner { min-width:1040px; }
+  .gantt-row { height:40px; align-items:flex-start; padding-top:var(--fp-space-1); }
+  .gantt-label { position:sticky; left:0; z-index:7; background:var(--surface); align-self:stretch; align-items:center; }
+  .gantt-row.watch .gantt-label { background:var(--surface); }
+  .gantt-axis-row .gantt-label { background:var(--surface); }
+  .gantt-flight .lbl .fl { display:none; }     /* drop flight numbers on phone */
+  .tie { top:25px; }                            /* connecting line moved below the bars */
+  .tielab { top:3px; font-size:var(--fp-text-xxs); }
+}
+.empty { color:var(--muted); padding:var(--fp-space-5); text-align:center; font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); }
+footer { text-align:center; padding:var(--fp-space-4) 0 var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+footer a { color:var(--muted); text-decoration:none; }
+footer a:hover { color:var(--text); }
+
+/* flight detail modal */
+.modal-bg { display:none; position:fixed; inset:0; background:color-mix(in srgb,var(--fp-ink) 55%,transparent); z-index:100; justify-content:center; align-items:center; padding:var(--fp-space-3); }
+.modal-bg.show { display:flex; }
+.modal { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); padding:var(--fp-space-4); width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
+.modal h3 { font-size:var(--fp-text-base); color:var(--text-bright); margin-bottom:var(--fp-space-1); padding-right:var(--fp-space-4); }
+.modal .sub { font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); }
+.modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:var(--fp-text-h3); line-height:1; border:none; background:none; }
+.modal .close:hover { color:var(--text-bright); }
+.reassign-banner { background:var(--amber-dim); border:var(--fp-keyline) solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); border-radius:var(--fp-radius); padding:var(--fp-space-2) var(--fp-space-2); font-size:var(--fp-text-xs); margin-bottom:var(--fp-space-3); }
+.conf-chip { display:flex; align-items:center; gap:var(--fp-space-3); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); padding:var(--fp-space-2) var(--fp-space-3); margin-bottom:var(--fp-space-3); }
+.conf-chip .cp { font-family:var(--fp-font-mono); font-size:var(--fp-text-h3); font-weight:700; line-height:1; flex-shrink:0; }
+.conf-chip .ct { font-size:var(--fp-text-xs); color:var(--text-bright); line-height:1.45; }
+.conf-chip .cn { color:var(--muted); font-size:var(--fp-text-xs); font-family:var(--fp-font-sans); }
+/* confidence tiers are monochrome — the % and wording carry the level (no traffic-light hue) */
+.conf-chip.cg, .conf-chip.ca, .conf-chip.cr { background:var(--surface); }
+.conf-chip.cg .cp, .conf-chip.ca .cp, .conf-chip.cr .cp { color:var(--fp-ink); }
+.det-grid { display:grid; grid-template-columns:auto 1fr; gap:var(--fp-space-2) var(--fp-space-3); font-size:var(--fp-text-xs); margin-bottom:var(--fp-space-3); }
+.det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); text-transform:uppercase; letter-spacing:.3px; }
+.det-grid .v { color:var(--text-bright); }
+.hist-title { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 var(--fp-space-2); }
+.hist-row { display:flex; align-items:center; gap:var(--fp-space-2); font-size:var(--fp-text-xs); padding:var(--fp-space-2) 0; border-bottom:var(--fp-keyline) solid var(--border); }
+.hist-row:last-child { border-bottom:none; }
+.hist-row .obs { width:96px; color:var(--muted); flex-shrink:0; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); }
+.hist-row .reg { font-family:var(--fp-font-mono); font-weight:700; color:var(--text-bright); min-width:64px; }
+.hist-row.changed .reg { color:var(--amber); }
+.hist-row .tag { font-size:var(--fp-text-xxs); color:var(--muted); }

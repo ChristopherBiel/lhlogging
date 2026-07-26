@@ -1,0 +1,40 @@
+/* Faceplate typefaces, self-hosted.
+ *
+ * Manrope and IBM Plex Mono are both SIL OFL, so the .woff2 files are served
+ * from this origin instead of the Google Fonts CDN. That CDN sends visitor IP
+ * addresses to Google, which a Munich court held in 2022 requires consent —
+ * and this app publishes a German Impressum and Datenschutzerklaerung, so it is
+ * squarely in scope. See dist/docs/typography.md ("Serving the fonts").
+ *
+ * Licences ship alongside the binaries in ../fonts/.
+ * Family names are unquoted identifiers (valid CSS) so `npx faceplate check`
+ * can read them -- its font rule stops scanning at the first quote.
+ */
+@font-face {
+  font-family: Manrope;
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/static/fonts/manrope-variable.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: IBM Plex Mono;
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: IBM Plex Mono;
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: IBM Plex Mono;
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-600.woff2") format("woff2");
+}

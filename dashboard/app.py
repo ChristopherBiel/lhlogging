@@ -7,12 +7,22 @@ import random
 import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import psycopg
 import psycopg.rows
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, redirect, render_template_string, request
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template_string,
+    request,
+    send_from_directory,
+)
 
 load_dotenv()
 
@@ -42,179 +52,32 @@ def _q1(conn, sql, params=None):
     return rows[0][0] if rows else None
 
 
-# ── Faceplate design system (vendored from github:ChristopherBiel/faceplate#v1.0.0) ──
-# Embedded as constants so the single-file deploy model keeps working
-# (the Dockerfile copies only app.py). Pages load /faceplate.css and alias
-# their semantic CSS variables onto the --fp-* tokens defined here.
-_FACEPLATE_CSS = r"""/*! Faceplate v1.0 — Christopher Biel's portable design system
- *  TE-inspired · hard square edges · sage + terracotta · Manrope + IBM Plex Mono
- *  Everything is prefixed `--fp-` / `.fp-` to avoid collisions in existing codebases.
- *  Styles live in @layer fp.* so a project's own (unlayered) CSS always wins / can override.
- *  Fonts are NOT imported here — see fonts.css (self-host) or add a Google Fonts <link>.
- */
+# ── Faceplate design system ──────────────────────────────────────────
+# Vendored verbatim at dashboard/dist/ (github:ChristopherBiel/faceplate#v2.0.0)
+# together with its MANIFEST.sha256, so `npx faceplate check` can prove the copy
+# has not drifted. Never edit anything under dist/ -- a modified vendored copy
+# makes the project agree with itself while diverging from the brand.
+# Applied UNBRANDED (Layer 1 only): design system, no personal layer.
+_FACEPLATE_DIR = Path(__file__).resolve().parent / "dist"
 
-@layer fp.tokens, fp.base, fp.components, fp.utilities;
-
-/* ============================================================ TOKENS */
-@layer fp.tokens {
-  :root {
-    /* base neutrals */
-    --fp-bg:#FFFFFF;
-    --fp-surface:#F7F8F8;
-    --fp-border:#E4E7E9;
-    --fp-muted:#8A9097;
-    --fp-body:#52585E;
-    --fp-ink:#1C1E21;
-
-    /* accent — sage */
-    --fp-sage:#5E7A50;
-    --fp-sage-deep:#455C3A;   /* small text / links on white (AA) */
-    --fp-sage-tint:#DCE5D2;
-    --fp-sage-xl:#EFF3EA;
-
-    /* complement — terracotta */
-    --fp-terra:#BB6240;
-    --fp-terra-deep:#9E4F33;
-    --fp-terra-tint:#F0D9CC;
-
-    /* signature neutral — #CBCBCB reads as CB·CB·CB */
-    --fp-gray:#CBCBCB;
-
-    /* data visualization (categorical) */
-    --fp-dv-1:#5E7A50; --fp-dv-2:#BB6240; --fp-dv-3:#D6A23C;
-    --fp-dv-4:#2C7A78; --fp-dv-5:#8A6A53; --fp-dv-6:#9BA0A4;
-
-    /* typography */
-    --fp-font-sans:"Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    --fp-font-mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    --fp-text-xs:.75rem;     --fp-text-sm:.875rem;   --fp-text-base:1rem;
-    --fp-text-h3:1.25rem;    --fp-text-h2:1.5625rem; --fp-text-h1:2rem;  --fp-text-display:2.5rem;
-    --fp-leading:1.65;       --fp-leading-tight:1.15;
-    --fp-track-tight:-.02em; --fp-track-label:.12em;
-
-    /* shape & structure */
-    --fp-radius:0;          /* hard square edges — the Faceplate signature */
-    --fp-keyline:1.5px;     /* structural border (ink) */
-    --fp-hairline:1px;
-    --fp-rule:var(--fp-sage);
-
-    /* spacing — 8px base */
-    --fp-space-1:.25rem; --fp-space-2:.5rem; --fp-space-3:1rem;
-    --fp-space-4:1.5rem; --fp-space-5:2rem; --fp-space-6:3rem; --fp-space-7:4rem;
-  }
-}
-
-/* ============================================================ BASE (opt-in) */
-/* Apply class `fp` to a wrapper (or <body>) to adopt the base type/colors.
-   Kept opt-in so Faceplate never restyles a host project globally. */
-@layer fp.base {
-  .fp {
-    font-family:var(--fp-font-sans);
-    color:var(--fp-ink);
-    background:var(--fp-bg);
-    -webkit-font-smoothing:antialiased;
-    text-rendering:optimizeLegibility;
-  }
-  .fp :where(p){ color:var(--fp-body); line-height:var(--fp-leading); }
-  .fp :where(a):not([class]){ color:var(--fp-sage-deep); }
-}
-
-/* ============================================================ COMPONENTS */
-@layer fp.components {
-  /* --- type --- */
-  .fp-display{ font-weight:800; font-size:var(--fp-text-display); letter-spacing:var(--fp-track-tight); line-height:var(--fp-leading-tight); }
-  .fp-h1{ font-weight:800; font-size:var(--fp-text-h1); letter-spacing:var(--fp-track-tight); line-height:1.15; }
-  .fp-h2{ font-weight:700; font-size:var(--fp-text-h2); letter-spacing:-.01em; line-height:1.2; }
-  .fp-h3{ font-weight:600; font-size:var(--fp-text-h3); line-height:1.3; }
-  .fp-body{ font-size:var(--fp-text-base); line-height:var(--fp-leading); color:var(--fp-body); }
-  .fp-mono{ font-family:var(--fp-font-mono); }
-  .fp-label{ font-family:var(--fp-font-mono); font-weight:500; font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-muted); }
-  .fp-kicker{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-sage); }
-  .fp-wordmark{ font-family:var(--fp-font-sans); font-weight:800; letter-spacing:var(--fp-track-tight); line-height:1; }
-
-  /* accent rule under a heading */
-  .fp-rule{ display:block; height:3px; width:48px; background:var(--fp-rule); border:0; }
-
-  /* monogram / mark plate (square, #CBCBCB by default) */
-  .fp-plate{ display:inline-grid; place-items:center; aspect-ratio:1; background:var(--fp-gray); color:var(--fp-ink); border-radius:var(--fp-radius); }
-  .fp-plate--sage{ background:var(--fp-sage); color:#fff; }
-
-  /* buttons */
-  .fp-btn{ display:inline-block; font-family:var(--fp-font-sans); font-weight:700; font-size:.8125rem; letter-spacing:.01em;
-           padding:.62em 1.05em; border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius);
-           background:var(--fp-bg); color:var(--fp-ink); cursor:pointer; text-decoration:none; line-height:1; }
-  .fp-btn--solid{ background:var(--fp-sage); border-color:var(--fp-sage); color:#fff; }
-  .fp-btn--terra{ background:var(--fp-terra); border-color:var(--fp-terra); color:#fff; }
-  .fp-btn--ghost{ background:transparent; }
-
-  /* chips & topical tags (chip + icon) */
-  .fp-chip{ display:inline-flex; align-items:center; gap:.45em; font-family:var(--fp-font-mono); font-weight:600;
-            font-size:.65rem; letter-spacing:.06em; text-transform:uppercase;
-            padding:.32em .62em; border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); }
-  .fp-chip--sage{ background:var(--fp-sage-tint); }
-  .fp-chip--terra{ background:var(--fp-terra-tint); }
-  .fp-chip--gray{ background:var(--fp-gray); }
-  .fp-chip svg{ width:1.05em; height:1.05em; }
-  .fp-tag{ /* alias for a chip used as a category tag with an icon */ }
-
-  /* card & panel */
-  .fp-card{ background:var(--fp-bg); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); padding:var(--fp-space-4); }
-  .fp-panel{ background:var(--fp-surface); border:var(--fp-hairline) solid var(--fp-border); border-radius:var(--fp-radius); padding:var(--fp-space-4); }
-
-  /* segmented control */
-  .fp-seg{ display:inline-flex; border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); }
-  .fp-seg > *{ font-family:var(--fp-font-mono); font-size:.75rem; padding:.42em .82em; border-right:var(--fp-keyline) solid var(--fp-ink); background:transparent; }
-  .fp-seg > *:last-child{ border-right:0; }
-  .fp-seg > .is-on, .fp-seg > [aria-selected="true"]{ background:var(--fp-ink); color:#fff; }
-
-  /* dividers */
-  .fp-hr{ border:0; border-top:2px solid var(--fp-ink); }
-  .fp-hr--dashed{ border:0; border-top:2px dashed var(--fp-ink); }
-  .fp-hr--gray{ border:0; border-top:var(--fp-hairline) solid var(--fp-gray); }
-
-  /* link */
-  .fp-link{ color:var(--fp-sage-deep); font-weight:600; text-decoration:none; border-bottom:2px solid var(--fp-sage-tint); }
-
-  /* intensity bands (reversed surfaces for registers 03/04) */
-  .fp-band{ background:var(--fp-sage); color:#fff; }
-  .fp-band--terra{ background:var(--fp-terra); color:#fff; }
-  .fp-band--ink{ background:var(--fp-ink); color:#fff; }
-}
-
-/* ============================================================ UTILITIES */
-@layer fp.utilities {
-  .fp-square{ border-radius:0 !important; }
-  .fp-c-ink{ color:var(--fp-ink); }   .fp-c-sage{ color:var(--fp-sage); }   .fp-c-terra{ color:var(--fp-terra); }
-  .fp-c-muted{ color:var(--fp-muted); } .fp-c-body{ color:var(--fp-body); }
-  .fp-bg-sage{ background:var(--fp-sage); color:#fff; }
-  .fp-bg-gray{ background:var(--fp-gray); color:var(--fp-ink); }
-  .fp-bg-surface{ background:var(--fp-surface); }
-}"""
-
-_FAVICON_SVG = r"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Christopher Biel favicon">
-  <!-- Favicon: sage step-response curve on transparent. Setpoint line dropped for clarity at tiny sizes. -->
-  <path d="M 8.00,52.00 L 15.68,52.00 L 16.32,51.84 L 16.96,51.12 L 17.60,49.92 L 18.24,48.32 L 18.88,46.42 L 19.52,44.29 L 20.16,42.00 L 20.80,39.63 L 21.44,37.23 L 22.08,34.85 L 22.72,32.54 L 23.36,30.34 L 24.00,28.26 L 24.64,26.35 L 25.28,24.61 L 25.92,23.06 L 26.56,21.69 L 27.20,20.52 L 27.84,19.54 L 28.48,18.74 L 29.12,18.12 L 29.76,17.65 L 30.40,17.34 L 31.04,17.16 L 31.68,17.11 L 32.32,17.16 L 32.96,17.30 L 33.60,17.51 L 34.24,17.79 L 34.88,18.11 L 35.52,18.46 L 36.16,18.84 L 36.80,19.23 L 37.44,19.62 L 38.08,20.01 L 38.72,20.38 L 39.36,20.73 L 40.00,21.06 L 40.64,21.37 L 41.28,21.64 L 41.92,21.89 L 42.56,22.10 L 43.20,22.29 L 43.84,22.44 L 44.48,22.56 L 45.12,22.66 L 45.76,22.72 L 46.40,22.77 L 47.04,22.79 L 47.68,22.80 L 48.32,22.78 L 48.96,22.76 L 49.60,22.72 L 50.24,22.67 L 50.88,22.62 L 51.52,22.56 L 52.16,22.50 L 52.80,22.43 L 53.44,22.37 L 54.08,22.31 L 54.72,22.25 L 55.36,22.19 L 56.00,22.14"
-        fill="none" stroke="#5E7A50" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="56" cy="22.14" r="3.6" fill="#5E7A50"/>
-</svg>"""
+# Only the stylesheets are served. The vendored package also carries Layer 2 --
+# the step-response mark, the wordmark lockup, the monogram plate, the favicon --
+# and this project does not represent its author, so those must not be published
+# from here. The tree keeps them (MANIFEST covers every shipped file); the route
+# does not hand them out.
+_FACEPLATE_PUBLIC = frozenset({"faceplate.tokens.css", "faceplate.components.css"})
 
 
-@app.route("/faceplate.css")
-def faceplate_css():
-    return Response(
-        _FACEPLATE_CSS,
-        mimetype="text/css",
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+@app.route("/faceplate/<path:filename>")
+def faceplate_asset(filename):
+    if filename not in _FACEPLATE_PUBLIC:
+        abort(404)
+    return send_from_directory(_FACEPLATE_DIR, filename, max_age=86400)
 
 
 @app.route("/favicon.svg")
 def favicon_svg():
-    return Response(
-        _FAVICON_SVG,
-        mimetype="image/svg+xml",
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+    return send_from_directory(app.static_folder, "favicon.svg", max_age=86400)
 
 
 @app.route("/api/stats")
@@ -430,169 +293,18 @@ _HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LH Fleet Monitor</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/home.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css).
-     Sage primary, terracotta complement, ochre/teal/clay for categorical data. */
-  --bg:var(--fp-surface);          /* soft off-white page; cards sit on white   */
-  --surface:var(--fp-bg);          /* #fff cards / panels                        */
-  --surface2:var(--fp-sage-xl);    /* faint sage wells, tracks, hovers           */
-  --border:var(--fp-border);
-  --line:var(--fp-gray);           /* #CBCBCB structural keyline (CB·CB·CB)      */
-  --text:var(--fp-body);
-  --text-bright:var(--fp-ink);
-  --muted:var(--fp-muted);
-  /* solid key fills — Faceplate accents */
-  --accent:var(--fp-sage);         /* sage — primary / info / B748              */
-  --green:var(--fp-dv-4);          /* teal — ok / A388                          */
-  --amber:var(--fp-dv-3);          /* ochre — warn / watch                      */
-  --red:var(--fp-terra);           /* terracotta — error / deviation            */
-  --purple:var(--fp-dv-5);         /* clay — A359                               */
-  --cyan:var(--fp-dv-4);           /* teal — extra                              */
-  /* pale fills */
-  --accent-dim:var(--fp-sage-tint);
-  --green-dim:color-mix(in srgb, var(--fp-dv-4) 16%, var(--fp-bg));
-  --amber-dim:color-mix(in srgb, var(--fp-dv-3) 22%, var(--fp-bg));
-  --red-dim:var(--fp-terra-tint);
-  --purple-dim:color-mix(in srgb, var(--fp-dv-5) 18%, var(--fp-bg));
-  --radius:var(--fp-radius);
-  --radius-sm:var(--fp-radius);
-  --mono:var(--fp-font-mono);
-  --sans:var(--fp-font-sans);
-}
-
-* { box-sizing:border-box; margin:0; padding:0; }
-
-body {
-  background:var(--bg);
-  color:var(--text);
-  font-family:var(--sans);
-  font-size:14px;
-  line-height:1.5;
-  -webkit-font-smoothing:antialiased;
-  counter-reset:sec;
-}
-
-.container { max-width:480px; margin:0 auto; padding:0 16px 40px; }
-
-/* ── Header / device label ──────────────────────────────── */
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
-
-/* ── Health strip ───────────────────────────────────────── */
-.health-strip { display:flex; gap:9px; margin-bottom:26px; flex-wrap:wrap; counter-reset:hk; }
-.health-item { flex:1; min-width:86px; background:var(--surface); border:1.5px solid var(--fp-ink);
-  border-radius:0; padding:12px 12px 11px; text-align:left; }
-.health-item .label { font-family:var(--sans); font-size:9px; text-transform:uppercase; letter-spacing:.7px;
-  color:var(--muted); margin-bottom:8px; }
-.health-item .label::before { counter-increment:hk; content:counter(hk,decimal-leading-zero)" "; color:var(--accent); }
-.health-item .dot { display:inline-block; width:8px; height:8px; border-radius:0; margin-right:6px; vertical-align:middle; }
-.health-item .info { font-family:var(--sans); font-size:12px; color:var(--text); }
-
-/* ── Section ────────────────────────────────────────────── */
-.section { margin-bottom:24px; }
-.section-label { font-family:var(--sans); font-size:10px; font-weight:700; text-transform:uppercase;
-  letter-spacing:1px; color:var(--muted); margin-bottom:12px; display:flex; align-items:center; gap:9px;
-  counter-increment:sec; }
-.section-label::before { content:counter(sec,decimal-leading-zero); font-size:9px; color:var(--text-bright);
-  background:var(--accent-dim); border-radius:0; padding:3px 6px; letter-spacing:.5px; }
-
-/* ── Metric keys ────────────────────────────────────────── */
-.metrics { display:grid; grid-template-columns:1fr 1fr 1fr; gap:9px; margin-bottom:24px; counter-reset:key; }
-.metric { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0;
-  padding:14px 13px 13px; position:relative; }
-.metric::after { content:''; position:absolute; top:13px; right:13px; width:7px; height:7px; border-radius:0; background:var(--accent); }
-.metric:nth-child(3n+1)::after { background:var(--green); }
-.metric:nth-child(3n+2)::after { background:var(--accent); }
-.metric:nth-child(3n+3)::after { background:var(--purple); }
-.metric .label { font-family:var(--sans); font-size:9px; text-transform:uppercase; letter-spacing:.6px;
-  color:var(--muted); margin-bottom:7px; }
-.metric .label::before { counter-increment:key; content:counter(key,decimal-leading-zero)" "; color:var(--accent); }
-.metric .value { font-family:var(--mono); font-size:26px; font-weight:700; color:var(--text-bright); letter-spacing:-1px; line-height:1; }
-.metric .sub { font-size:10px; color:var(--muted); margin-top:4px; }
-
-/* ── Cards ──────────────────────────────────────────────── */
-.card { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0; padding:16px; margin-bottom:14px; }
-
-/* ── Chart bars ─────────────────────────────────────────── */
-.chart-bars { display:flex; align-items:flex-end; gap:3px; height:64px; }
-.chart-bars .bar { flex:1; border-radius:0; min-height:2px; transition:height .3s ease; position:relative; }
-.chart-bars .bar:hover { opacity:1 !important; }
-.chart-labels { display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px; color:var(--muted); margin-top:6px; }
-.chart-legend { display:flex; gap:14px; margin-bottom:10px; font-family:var(--sans); font-size:9.5px;
-  color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
-.chart-legend .swatch { display:inline-block; width:9px; height:9px; border-radius:0; margin-right:5px; vertical-align:middle; }
-
-/* ── Horizontal bars ────────────────────────────────────── */
-.hbar-row { display:flex; align-items:center; gap:9px; margin-bottom:6px; }
-.hbar-row:last-child { margin-bottom:0; }
-.hbar-label { width:46px; text-align:right; font-family:var(--mono); font-size:12px; font-weight:700;
-  color:var(--text); flex-shrink:0; font-variant-numeric:tabular-nums; }
-.hbar-track { flex:1; background:var(--surface2); border-radius:0; height:20px; overflow:hidden; }
-.hbar-fill { height:100%; border-radius:0; transition:width .4s ease; }
-.hbar-count { width:28px; font-family:var(--mono); font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
-.hbar-flew { width:28px; font-family:var(--mono); font-size:11px; color:var(--green); text-align:right; font-variant-numeric:tabular-nums; }
-
-/* ── Batch rows ─────────────────────────────────────────── */
-.batch-row { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1.5px solid var(--border); font-size:12px; }
-.batch-row:last-child { border-bottom:none; }
-.batch-type { font-weight:600; color:var(--text); width:90px; flex-shrink:0; font-size:11px; text-transform:capitalize; }
-.batch-time { font-family:var(--mono); color:var(--muted); font-size:11px; width:56px; flex-shrink:0; }
-.batch-detail { flex:1; font-size:11px; color:var(--muted); }
-/* status badges = Faceplate .fp-chip + a semantic tint */
-.badge-ok { background:var(--green-dim); color:var(--green); }
-.badge-error { background:var(--red-dim); color:var(--fp-terra-deep); }
-.badge-running { background:var(--accent-dim); color:var(--fp-sage-deep); }
-
-/* ── Route table ────────────────────────────────────────── */
-.route-row { display:flex; align-items:center; padding:7px 0; border-bottom:1.5px solid var(--border); font-size:12px; }
-.route-row:last-child { border-bottom:none; }
-.route-pair { flex:1; color:var(--text); font-weight:500; }
-.route-pair .arrow { color:var(--accent); margin:0 6px; font-family:var(--mono); }
-.route-count { color:var(--muted); font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:11px; }
-
-/* ── Misc ───────────────────────────────────────────────── */
-#error-banner { display:none; background:var(--red-dim); border:1.5px solid var(--red); border-radius:0;
-  padding:11px 14px; margin-bottom:16px; color:var(--fp-terra-deep); font-size:12px; }
-.tooltip { position:fixed; background:var(--text-bright); border:none; border-radius:0; padding:5px 9px;
-  font-family:var(--sans); font-size:11px; color:#fff; pointer-events:none; z-index:100; white-space:nowrap; display:none; }
-.err-text { font-size:10px; color:var(--red); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-
-@media (min-width:600px) { .container { max-width:560px; } }
-@media (min-width:900px) {
-  .container { max-width:760px; padding:0 24px 48px; }
-  .metrics { grid-template-columns:repeat(3,1fr); }
-  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  .two-col > .card { margin-bottom:0; }
-}
-</style>
 </head>
-<body class="fp">
+<body class="fp" data-fp-intensity="02">
 <div class="container">
 
-  <div class="header fp-band">
+  <div class="header">
     <div class="brand">
-      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>LH&middot;Fleet <span>Monitor</span></h1>
         <div class="fp-label model">FLT-MON &middot; Fleet Telemetry</div>
@@ -640,11 +352,11 @@ body {
   <!-- Fleet by type -->
   <div class="section">
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--fp-space-2)">
         <div class="section-label" style="margin-bottom:0">Aircraft by type</div>
-        <div style="font-size:10px;color:var(--muted)">
+        <div style="font-size:var(--fp-text-xxs);color:var(--muted)">
           <span style="color:var(--fp-dv-6)">In DB</span>
-          <span style="margin:0 4px">/</span>
+          <span style="margin:0 var(--fp-space-1)">/</span>
           <span style="color:var(--fp-dv-1)">Flew 7d</span>
         </div>
       </div>
@@ -670,7 +382,7 @@ body {
 
   <!-- System -->
   <div class="section">
-    <div class="card" id="system-info" style="font-size:12px;color:var(--muted)"></div>
+    <div class="card" id="system-info" style="font-size:var(--fp-text-xs);color:var(--muted)"></div>
   </div>
 
 </div>
@@ -766,7 +478,7 @@ async function refresh() {
     else if (type === 'fleet_discovery') detail = fmt(run.aircraft_ok) + ' discovered';
     else if (type === 'flightstatus') detail = fmt(run.aircraft_ok) + ' found, ' + fmt(run.aircraft_error) + ' blocked';
     else detail = fmt(run.aircraft_ok) + '/' + fmt(run.aircraft_total) + ' updated';
-    return '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + detail + '</div>';
+    return '<div style="font-size:var(--fp-text-xxs);color:var(--muted);margin-top:var(--fp-space-1)">' + detail + '</div>';
   }
 
   $('health-strip').innerHTML =
@@ -802,7 +514,7 @@ async function refresh() {
     '</div>' +
     '<div class="health-item">' +
       '<div class="label">Airborne Now</div>' +
-      '<div class="info" style="font-weight:600;font-size:15px">' + fmt(data.aircraft_airborne) + ' <span style="font-weight:400;font-size:10px;color:var(--muted)">aircraft</span></div>' +
+      '<div class="info" style="font-weight:600;font-size:var(--fp-text-base)">' + fmt(data.aircraft_airborne) + ' <span style="font-weight:400;font-size:var(--fp-text-xxs);color:var(--muted)">aircraft</span></div>' +
     '</div>';
 
   // Fleet metrics
@@ -894,9 +606,9 @@ async function refresh() {
   // System info
   $('system-info').innerHTML =
     'DB size: <span style="color:var(--text)">' + (data.db_size || '\u2014') + '</span>' +
-    '<span style="margin:0 10px;color:var(--border)">\u00b7</span>' +
+    '<span style="margin:0 var(--fp-space-2);color:var(--border)">\u00b7</span>' +
     'Aircraft: <span style="color:var(--text)">' + fmt(data.aircraft_total) + '</span>' +
-    '<span style="margin:0 10px;color:var(--border)">\u00b7</span>' +
+    '<span style="margin:0 var(--fp-space-2);color:var(--border)">\u00b7</span>' +
     'Flights: <span style="color:var(--text)">' + fmt(data.flights_total) + '</span>';
 
   $('last-updated').textContent = new Date().toLocaleTimeString();
@@ -905,9 +617,9 @@ async function refresh() {
 refresh();
 setInterval(refresh, 30000);
 </script>
-<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
   <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 6px">&middot;</span>
+  <span style="margin:0 var(--fp-space-2)">&middot;</span>
   <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
 </footer>
 </body>
@@ -923,47 +635,11 @@ def index():
 # ── Legal Pages ─────────────────────────────────────────────────────
 
 _LEGAL_CSS = """
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/legal.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --border:var(--fp-border);
-  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted); --accent:var(--fp-sage-deep);
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: var(--bg); color: var(--text);
-  font-family: var(--fp-font-sans);
-  font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased;
-}
-.container { max-width: 480px; margin: 0 auto; padding: 24px 16px 32px; }
-h1 { color: var(--text-bright); font-size: 20px; margin-bottom: 16px; }
-h2 { color: var(--text-bright); font-size: 15px; margin: 20px 0 8px; }
-p, li { margin-bottom: 8px; }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; margin-bottom:0; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-</style>
 """
 
 _IMPRESSUM_HTML = (
@@ -971,10 +647,10 @@ _IMPRESSUM_HTML = (
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
     "<title>Impressum</title>"
     + _LEGAL_CSS
-    + """</head><body class="fp"><div class="container">
-<div class="header fp-band">
+    + """</head><body class="fp" data-fp-intensity="02"><div class="container">
+<div class="header">
   <div class="brand">
-    <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+    <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
     <div>
       <h1>LH&middot;Fleet <span>Monitor</span></h1>
       <div class="fp-label model">LEGAL &middot; Impressum</div>
@@ -995,10 +671,10 @@ _DATENSCHUTZ_HTML = (
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
     "<title>Datenschutzerkl&auml;rung</title>"
     + _LEGAL_CSS
-    + """</head><body class="fp"><div class="container">
-<div class="header fp-band">
+    + """</head><body class="fp" data-fp-intensity="02"><div class="container">
+<div class="header">
   <div class="brand">
-    <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+    <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
     <div>
       <h1>LH&middot;Fleet <span>Monitor</span></h1>
       <div class="fp-label model">LEGAL &middot; Datenschutz</div>
@@ -1240,128 +916,18 @@ _FLEET_HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LH Fleet Database</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/fleet.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl);
-  --border:var(--fp-border); --line:var(--fp-gray); --text:var(--fp-body); --text-bright:var(--fp-ink);
-  --muted:var(--fp-muted); --accent:var(--fp-sage); --accent-dim:var(--fp-sage-tint);
-  --green:var(--fp-dv-4); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg));
-  --red:var(--fp-terra); --red-dim:var(--fp-terra-tint);
-  --amber:var(--fp-dv-3); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --radius:var(--fp-radius);
-  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
-}
-/* Faceplate: hard square edges + mono instrument labels */
-/* square native form controls — divs/spans set radius:0 in their own rules */
-input, select, button, textarea { border-radius: 0 !important; }
-th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-sans); }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: var(--bg); color: var(--text);
-  font-family: var(--fp-font-sans);
-  font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
-}
-.container { max-width: 1200px; margin: 0 auto; padding: 0 16px 40px; }
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
-
-/* Toolbar */
-.toolbar {
-  display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
-}
-.toolbar input[type="text"] {
-  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 0;
-  color: var(--text-bright); padding: 7px 12px; font-size: 13px; flex: 1; min-width: 200px;
-  outline: none;
-}
-.toolbar input[type="text"]:focus { border-color: var(--accent); }
-.toolbar select {
-  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 0;
-  color: var(--text); padding: 7px 10px; font-size: 12px; outline: none; cursor: pointer;
-}
-.toolbar .count { font-size: 12px; color: var(--muted); margin-left: auto; }
-
-/* status filter = Faceplate .fp-seg; .toggle-btn kept as JS hook, reset <button> UA */
-.fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
-.fp-seg > .active { background:var(--fp-ink); color:#fff; }
-
-/* Table */
-.fleet-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.fleet-table th {
-  text-align: left; padding: 8px 10px; font-size: 10px; font-weight: 700;
-  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
-  border-bottom: 2px solid var(--border); cursor: pointer; user-select: none;
-  white-space: nowrap;
-}
-.fleet-table th:hover { color: var(--accent); }
-.fleet-table th .sort-arrow { font-size: 9px; margin-left: 3px; opacity: 0.5; }
-.fleet-table th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
-.fleet-table td {
-  padding: 7px 10px; border-bottom: 1px solid var(--border);
-  color: var(--text); white-space: nowrap;
-}
-.fleet-table tr { cursor: pointer; transition: background 0.1s; }
-.fleet-table tbody tr:hover { background: var(--surface); }
-.fleet-table .reg { font-weight: 700; color: var(--text-bright); font-size: 13px; }
-.fleet-table .hex { font-family: var(--fp-font-mono); font-size: 11px; color: var(--muted); }
-.fleet-table .type { color: var(--accent); font-weight: 600; }
-.fleet-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.review-toggle {
-  font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
-}
-/* square check (no native checkbox) — hollow = off, ink-filled = on */
-.review-toggle .box { width: 13px; height: 13px; border: 1.5px solid var(--fp-ink); background: transparent; flex-shrink: 0; }
-.review-toggle.on .box { background: var(--fp-ink); }
-.review-toggle.on { color: var(--text-bright); }
-.review-toggle:hover .box { outline: 2px solid var(--fp-gray); outline-offset: 1px; }
-.review-toggle:focus-visible { outline: 2px solid var(--fp-ink); outline-offset: 2px; }
-.fleet-table tr.review-row { background: color-mix(in srgb,var(--fp-dv-3) 12%,var(--fp-bg)); }
-.fleet-table tr.review-row:hover { background: var(--amber-dim); }
-/* status badges = Faceplate .fp-chip + a semantic tint */
-.badge-review { background: var(--amber-dim); color: var(--amber); }
-.badge-active { background: var(--green-dim); color: var(--green); }
-.badge-retired { background: var(--red-dim); color: var(--red); }
-.badge-tracking { background: var(--green-dim); color: var(--green); }
-
-.loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
-.error-banner {
-  display: none; background: var(--red-dim); border: 1.5px solid var(--red);
-  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
-  color: var(--red); font-size: 12px;
-}
-
-@media (max-width: 800px) {
-  .fleet-table { font-size: 11px; }
-  .fleet-table th, .fleet-table td { padding: 5px 6px; }
-}
-</style>
 </head>
-<body class="fp">
+<body class="fp" data-fp-intensity="02">
 <div class="container">
 
-  <div class="header fp-band">
+  <div class="header">
     <div class="brand">
-      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>LH Fleet <span>Database</span></h1>
         <div class="fp-label model">FLEET DB &middot; Aircraft Registry</div>
@@ -1561,9 +1127,9 @@ document.querySelectorAll('.toggle-btn').forEach(btn => {
 
 init();
 </script>
-<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
   <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 6px">&middot;</span>
+  <span style="margin:0 var(--fp-space-2)">&middot;</span>
   <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
 </footer>
 </body>
@@ -1578,137 +1144,18 @@ _FLEET_DETAIL_HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aircraft Detail</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/fleet-detail.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl);
-  --border:var(--fp-border); --line:var(--fp-gray); --text:var(--fp-body); --text-bright:var(--fp-ink);
-  --muted:var(--fp-muted); --accent:var(--fp-sage); --accent-dim:var(--fp-sage-tint);
-  --green:var(--fp-dv-4); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg));
-  --red:var(--fp-terra); --red-dim:var(--fp-terra-tint);
-  --amber:var(--fp-dv-3); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --radius:var(--fp-radius);
-  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
-}
-/* Faceplate: hard square edges + mono instrument labels */
-/* square native form controls — divs/spans set radius:0 in their own rules */
-input, select, button, textarea { border-radius: 0 !important; }
-th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-sans); }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: var(--bg); color: var(--text);
-  font-family: var(--fp-font-sans);
-  font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
-}
-.container { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; }
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
-
-.card {
-  background: var(--surface); border: 1.5px solid var(--fp-ink);
-  border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
-}
-.card-title {
-  font-size: 13px; font-weight: 600; color: var(--text-bright); margin-bottom: 12px;
-}
-
-/* Info grid */
-.info-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px;
-}
-.info-item .label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
-  color: var(--muted); margin-bottom: 2px;
-}
-.info-item .value { font-size: 16px; font-weight: 700; color: var(--text-bright); }
-.info-item .value.small { font-size: 14px; }
-
-/* Metrics */
-.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
-.metric {
-  background: var(--surface); border: 1.5px solid var(--fp-ink);
-  border-radius: var(--radius); padding: 12px; text-align: center;
-}
-.metric .label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
-  color: var(--muted); margin-bottom: 4px;
-}
-.metric .value { font-size: 22px; font-weight: 700; color: var(--text-bright); }
-
-/* status badges = Faceplate .fp-chip + a semantic tint */
-.badge-active { background: var(--green-dim); color: var(--green); }
-.badge-retired {
-  background: var(--red-dim); color: var(--red);
-}
-
-/* Route bars */
-.route-bar-row {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
-}
-.route-label { width: 90px; text-align: right; font-size: 12px; color: var(--text); font-weight: 500; }
-.route-track { flex: 1; height: 18px; background: var(--surface2); border-radius: 0; overflow: hidden; }
-.route-fill { height: 100%; border-radius: 0; background: var(--fp-dv-1); }
-.route-count { width: 30px; font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
-
-/* Activity chart */
-.chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 60px; }
-.chart-bar {
-  flex: 1; border-radius: 0; min-height: 0; background: var(--fp-dv-1);
-}
-.chart-labels {
-  display: flex; justify-content: space-between; font-size: 10px;
-  color: var(--muted); margin-top: 4px;
-}
-
-/* Flight table */
-.flight-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.flight-table th {
-  text-align: left; padding: 6px 8px; font-size: 10px; font-weight: 700;
-  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
-  border-bottom: 2px solid var(--border);
-}
-.flight-table td {
-  padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text);
-}
-.flight-table .cs { font-weight: 600; color: var(--text-bright); }
-
-.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
-.error-banner {
-  display: none; background: var(--red-dim); border: 1.5px solid var(--red);
-  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
-  color: var(--red); font-size: 12px;
-}
-
-@media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
-</style>
 </head>
-<body class="fp">
+<body class="fp" data-fp-intensity="02">
 <div class="container">
 
-  <div class="header fp-band">
+  <div class="header">
     <div class="brand">
-      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1 id="page-title">Aircraft <span>Detail</span></h1>
         <div class="fp-label model">AIRCRAFT &middot; Tail Detail</div>
@@ -1744,7 +1191,7 @@ body {
     </div>
 
     <!-- Flight history -->
-    <div class="card" style="margin-top:16px">
+    <div class="card" style="margin-top:var(--fp-space-3)">
       <div class="card-title">Recent Flights (last 100)</div>
       <div style="overflow-x:auto">
         <table class="flight-table">
@@ -1866,9 +1313,9 @@ function esc(s) {
 
 init();
 </script>
-<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
   <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 6px">&middot;</span>
+  <span style="margin:0 var(--fp-space-2)">&middot;</span>
   <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
 </footer>
 </body>
@@ -2396,159 +1843,17 @@ if ADMIN_PATH_PREFIX:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LH Admin</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/admin.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl);
-  --border:var(--fp-border); --line:var(--fp-gray); --text:var(--fp-body); --text-bright:var(--fp-ink);
-  --muted:var(--fp-muted); --accent:var(--fp-sage); --accent-dim:var(--fp-sage-tint);
-  --green:var(--fp-dv-4); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg));
-  --red:var(--fp-terra); --red-dim:var(--fp-terra-tint);
-  --amber:var(--fp-dv-3); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --radius:var(--fp-radius);
-  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
-}
-/* Faceplate: hard square edges + mono instrument labels */
-/* square native form controls — divs/spans set radius:0 in their own rules */
-input, select, button, textarea { border-radius: 0 !important; }
-th, .label, .metric .label, .info-item .label, .modal label { font-family: var(--fp-font-sans); }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: var(--bg); color: var(--text);
-  font-family: var(--fp-font-sans);
-  font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
-}
-.container { max-width: 1100px; margin: 0 auto; padding: 0 16px 32px; }
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
-
-/* Tabs */
-.tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
-.tab {
-  padding: 10px 20px; cursor: pointer; color: var(--muted); font-size: 13px;
-  font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.2s;
-}
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-content { display: none; }
-.tab-content.active { display: block; }
-
-/* Controls */
-.controls {
-  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center;
-}
-input, select {
-  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: 0;
-  padding: 7px 10px; color: var(--text); font-size: 13px; outline: none;
-}
-input:focus, select:focus { border-color: var(--accent); }
-input::placeholder { color: var(--muted); }
-select { cursor: pointer; }
-
-/* Buttons */
-/* buttons use the Faceplate .fp-btn component; these add hover + a small size */
-.fp-btn { transition: opacity 0.2s; white-space: nowrap; }
-.fp-btn:hover { opacity: 0.85; }
-.btn-sm { padding: 4px 10px; font-size: 11px; }
-
-/* Table */
-table {
-  width: 100%; border-collapse: collapse; font-size: 12px;
-}
-th {
-  text-align: left; padding: 8px 6px; color: var(--muted); font-size: 10px;
-  text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600;
-  border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer;
-  user-select: none;
-}
-th:hover { color: var(--text); }
-td {
-  padding: 6px; border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-tr:hover td { background: var(--surface); }
-tr.review td { background: var(--amber-dim); }
-.editable {
-  cursor: text; padding: 2px 4px; border-radius: 0; min-width: 30px;
-  display: inline-block;
-}
-.editable:hover { background: var(--surface2); }
-.editable:focus {
-  outline: 1px solid var(--accent); background: var(--surface2);
-}
-.actions { white-space: nowrap; display: flex; gap: 4px; }
-
-/* Modal */
-.modal-bg {
-  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;
-}
-.modal-bg.show { display: flex; }
-.modal {
-  background: var(--surface); border: 1.5px solid var(--fp-ink); border-radius: var(--radius);
-  padding: 24px; width: 90%; max-width: 440px;
-}
-.modal h3 { font-size: 15px; color: var(--text-bright); margin-bottom: 16px; }
-.modal label {
-  display: block; font-size: 11px; color: var(--muted); text-transform: uppercase;
-  letter-spacing: 0.5px; margin-bottom: 4px; margin-top: 10px;
-}
-.modal input { width: 100%; }
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-
-/* Pagination */
-.pagination {
-  display: flex; gap: 8px; align-items: center; justify-content: center;
-  margin-top: 16px; font-size: 12px; color: var(--muted);
-}
-
-/* Status badges */
-/* status badges = Faceplate .fp-chip + a semantic tint */
-.badge-active { background: var(--green-dim); color: var(--green); }
-.badge-retired { background: var(--red-dim); color: var(--red); }
-.badge-review { background: var(--amber-dim); color: var(--amber); }
-
-/* Toast */
-.toast {
-  position: fixed; bottom: 24px; right: 24px; padding: 10px 18px;
-  border-radius: 0; font-size: 13px; font-weight: 500; z-index: 200;
-  transition: opacity 0.3s; pointer-events: none;
-}
-.toast-ok { background: var(--green); color: #fff; }
-.toast-err { background: var(--red); color: #fff; }
-/* square check (no native checkbox) — hollow = off, ink-filled = on */
-.review-toggle { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text); user-select:none; }
-.review-toggle .box { width:13px; height:13px; border:1.5px solid var(--fp-ink); background:transparent; flex-shrink:0; }
-.review-toggle.on .box { background:var(--fp-ink); }
-.review-toggle.on { color:var(--text-bright); }
-.review-toggle:hover .box { outline:2px solid var(--fp-gray); outline-offset:1px; }
-.review-toggle:focus-visible { outline:2px solid var(--fp-ink); outline-offset:2px; }
-</style>
 </head>
-<body class="fp">
+<body class="fp" data-fp-intensity="02">
 <div class="container">
-  <div class="header fp-band">
+  <div class="header">
     <div class="brand">
-      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1><span>LH</span> Admin</h1>
         <div class="fp-label model">ADMIN &middot; Fleet Editor</div>
@@ -2587,7 +1892,7 @@ tr.review td { background: var(--amber-dim); }
         <tbody id="ac-body"></tbody>
       </table>
     </div>
-    <div id="ac-count" style="margin-top:8px;font-size:11px;color:var(--muted)"></div>
+    <div id="ac-count" style="margin-top:var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)"></div>
   </div>
 
   <!-- ── Flights Tab ── -->
@@ -2947,9 +2252,9 @@ wireReview('fl-review', loadFlights);
 // Init
 loadAircraft();
 </script>
-<footer style="text-align:center;padding:24px 0 8px;font-size:11px;color:var(--muted)">
+<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
   <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 6px">&middot;</span>
+  <span style="margin:0 var(--fp-space-2)">&middot;</span>
   <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
 </footer>
 </body>
@@ -4863,202 +4168,17 @@ _SCHEDULE_HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Upcoming Schedule | LH Fleet</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/schedule.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  /* Faceplate v1.0 — semantic tokens aliased onto --fp-* (see /faceplate.css) */
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
-  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
-  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
-  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
-  --radius:0; --radius-sm:0;
-  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
-}
-* { box-sizing:border-box; margin:0; padding:0; }
-body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
-  font-family:var(--sans); -webkit-font-smoothing:antialiased; }
-.container { width:96vw; max-width:2000px; margin:0 auto; padding:0 18px 48px; }
-
-/* header / device label */
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
-
-.meta { font-family:var(--sans); font-size:11px; color:var(--muted); margin-bottom:14px; line-height:1.6; }
-.meta b { color:var(--text); font-weight:700; }
-
-.controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
-.controls input { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0;
-  color:var(--text-bright); padding:8px 14px; font-size:13px; width:300px; font-family:var(--sans); }
-.controls input:focus { outline:none; border-color:var(--accent); }
-.controls input::placeholder { color:var(--muted); }
-/* grouped legend — one labelled row per group (Filter / Bars / Marks) reads better than one long line */
-.legend { display:flex; flex-direction:column; gap:7px; font-family:var(--sans); font-size:10px; color:var(--muted);
-  text-transform:uppercase; letter-spacing:.3px; margin-bottom:16px; }
-.legend--key { margin:14px 0 6px; }   /* read-only key: bar & mark meanings, below the chart */
-.legrp { display:flex; align-items:baseline; gap:9px 14px; flex-wrap:wrap; }
-.leglbl { flex:0 0 42px; font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.1em; color:var(--fp-ink); }
-.legrp .items { display:flex; align-items:center; gap:8px 14px; flex-wrap:wrap; }
-.legend .sw { display:inline-block; width:12px; height:12px; border-radius:0; vertical-align:middle; margin-right:5px; }
-
-/* gantt */
-.gantt { overflow-x:auto; border:1.5px solid var(--fp-ink); border-radius:0; background:var(--surface); padding:14px 14px 6px; }
-.gantt-inner { min-width:820px; }
-.gantt-axis-row { display:flex; align-items:center; margin-bottom:10px; }
-.gantt-axis { flex:1; position:relative; height:13px; }
-.gantt-axis .gantt-day { position:absolute; font-family:var(--mono); font-size:10px; color:var(--muted);
-  text-transform:uppercase; letter-spacing:.4px; padding-left:7px; border-left:1.5px solid var(--line); white-space:nowrap; }
-.gantt-rows { position:relative; }
-.gantt-grid { position:absolute; inset:0; pointer-events:none; z-index:4; }
-.grid-line { position:absolute; top:0; bottom:0; width:1px; background:var(--line); opacity:.7; }
-.gantt-row { display:flex; align-items:center; margin-bottom:6px; height:24px; }
-.gantt-row.dim { opacity:.22; }
-.gantt-row.typehide { display:none; }   /* type unchecked (watched rows are exempt) */
-/* watched tails sort to the top; one dashed rule marks where that group ends — rows themselves render like any other */
-.gantt-row.watch:has(+ .gantt-row:not(.watch)) { border-bottom:1.5px dashed var(--fp-ink); }
-.gantt-label .star { color:var(--fp-ink); font-size:10px; margin-right:1px; }
-.gantt-label { width:122px; flex-shrink:0; font-family:var(--mono); font-size:11px; font-weight:700;
-  color:var(--text-bright); padding-right:8px; display:flex; align-items:center; gap:5px; text-decoration:none; }
-a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; }
-.tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; border-radius:0; color:#fff; }
-.abadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px; border-radius:0;
-  background:var(--fp-ink); color:#fff; letter-spacing:.4px; }   /* Allegris cabin */
-.t748 .tbadge, .tbadge.t748 { background:var(--accent); }
-.t388 .tbadge, .tbadge.t388 { background:var(--fp-dv-2); }
-.t789 .tbadge, .tbadge.t789 { background:var(--fp-dv-4); }
-.t359 .tbadge, .tbadge.t359 { background:var(--fp-dv-3); color:var(--fp-ink); }
-.tbadge.tother { background:var(--surface2); color:var(--muted); }
-/* type checkboxes — double as the type legend; watched tails ignore hiding */
-.tchk { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-family:var(--mono);
-  font-size:10px; font-weight:700; color:var(--fp-ink); text-transform:uppercase; user-select:none; }
-.tchk:focus-visible { outline:2px solid var(--fp-ink); outline-offset:2px; }
-.tchk:hover .sw { outline:2px solid var(--fp-gray); outline-offset:1px; }   /* hover ring hints the square is a toggle */
-/* the colour square IS the control — filled = shown, hollow outline = filtered out (no checkbox) */
-.tchk .sw { width:12px; height:12px; border:1.5px solid var(--_c,var(--fp-ink)); background:var(--_c,var(--fp-ink)); }
-.tchk .sw.t748 { --_c:var(--accent); } .tchk .sw.t388 { --_c:var(--fp-dv-2); }
-.tchk .sw.t789 { --_c:var(--fp-dv-4); } .tchk .sw.t359 { --_c:var(--fp-dv-3); }
-.tchk .sw.tother { --_c:var(--fp-gray); }
-.tchk.off { color:var(--muted); }
-.tchk.off .sw { background:transparent; }
-.tchk.off .abadge { background:transparent; color:var(--muted); box-shadow:inset 0 0 0 1.5px var(--muted); }
-.gantt-track { flex:1; position:relative; height:22px; background:color-mix(in srgb,var(--fp-gray) 26%,#fff); border-radius:0; overflow:visible; }
-/* per-type colour tokens — saturated hue / light tint / deep text (white text on hue, deep on tint).
-   One hue per family: 787 variants share t789, A350 variants share t359; the badge names the variant. */
-.gantt-flight.t748, .tie.t748 { --_s:var(--fp-sage); --_t:var(--fp-sage-tint); --_d:color-mix(in srgb,var(--fp-sage) 72%,#000); }
-.gantt-flight.t388, .tie.t388 { --_s:var(--fp-dv-2);  --_t:color-mix(in srgb,var(--fp-dv-2) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-2) 74%,#000); }
-.gantt-flight.t789, .tie.t789 { --_s:var(--fp-dv-4);  --_t:color-mix(in srgb,var(--fp-dv-4) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-4) 74%,#000); }
-.gantt-flight.t359, .tie.t359 { --_s:var(--fp-dv-3);  --_t:color-mix(in srgb,var(--fp-dv-3) 20%,#fff); --_d:color-mix(in srgb,var(--fp-dv-3) 74%,#000); }
-.gantt-flight.tother, .tie.tother { --_s:var(--fp-gray); --_t:color-mix(in srgb,var(--fp-gray) 34%,#fff); --_d:var(--fp-body); }
-
-.gantt-flight { position:absolute; top:1px; height:20px; border-radius:0; overflow:hidden; display:flex;
-  align-items:center; opacity:1; transition:opacity .15s, box-shadow .15s; }
-.gantt-flight.dim { opacity:.12; }
-.gantt-flight .lbl { font-family:var(--mono); font-size:10.5px; font-weight:700; white-space:nowrap; padding:0 7px;
-  letter-spacing:.2px; display:flex; align-items:baseline; gap:5px; }
-.gantt-flight .lbl .fl { font-weight:500; font-size:9.5px; opacity:.85; }
-.clk { cursor:pointer; }
-.clk:hover { z-index:3; outline:2px solid var(--fp-ink); outline-offset:-2px; }   /* outline composes with status box-shadows */
-
-/* PAST — saturated fill + bold white label (incl. flight #) */
-.gantt-flight.st-tracked, .gantt-flight.st-actual, .gantt-flight.st-extra { background:var(--_s); }
-.gantt-flight.st-tracked .lbl, .gantt-flight.st-actual .lbl, .gantt-flight.st-extra .lbl {
-  color:#fff; text-shadow:0 1px 1.5px rgba(0,0,0,.45); }
-/* ochre (A350/t359) is light — its past-bar labels go ink for contrast */
-.gantt-flight.t359.st-tracked .lbl, .gantt-flight.t359.st-actual .lbl, .gantt-flight.t359.st-extra .lbl {
-  color:var(--fp-ink); text-shadow:none; }
-/* a deviation (what actually flew) now renders as a normal solid bar — no colour cap */
-.gantt-flight.st-extra  { background:repeating-linear-gradient(45deg,var(--_s) 0 6px,color-mix(in srgb,var(--_s) 60%,#fff) 6px 11px); }
-
-/* FUTURE — light tint + bold deep label */
-.gantt-flight.st-planned { background:var(--_t); }
-.gantt-flight.st-planned .lbl { color:var(--_d); }
-
-/* PLANNED SLOT — a scheduled slot not yet tracked, or one vacated by a deviation. Light grey dashed */
-.gantt-flight.st-missing, .gantt-flight.st-ghost { background:color-mix(in srgb,var(--fp-gray) 20%,#fff); border:1.5px dashed var(--fp-gray); }
-.gantt-flight.st-missing .lbl, .gantt-flight.st-ghost .lbl { color:var(--fp-muted); }
-
-/* SWAP / reassignment */
-.gantt-flight.is-swap { box-shadow:inset 0 0 0 2px var(--fp-dv-6); }
-.gantt-flight .swapchip { position:absolute; right:0; top:0; height:100%; text-align:center; line-height:1;
-  writing-mode:vertical-rl; transform:rotate(180deg);   /* "SWAP" reads bottom-to-top: a thin vertical strip */
-  font-family:var(--sans); font-size:6px; font-weight:700; letter-spacing:-.02em; color:var(--fp-ink); background:var(--fp-dv-6); padding:0 2px; }
-
-/* rotation tie — the "stay" parked away from base; hover-only, drawn behind bars */
-.tie { position:absolute; top:10px; height:3px; background:var(--_s); opacity:.4; z-index:0; cursor:help; }
-.tie::before, .tie::after { content:''; position:absolute; top:-2px; width:2px; height:7px; background:var(--_s); opacity:.75; }
-.tie::before { left:0; } .tie::after { right:0; }
-.tielab { position:absolute; top:-7px; left:50%; transform:translateX(-50%); font-family:var(--mono);
-  font-size:10px; font-weight:800; letter-spacing:.2px; color:var(--_d); background:var(--surface); padding:0 5px; white-space:nowrap; }
-.now-line { position:absolute; top:0; bottom:0; width:2px; background:var(--fp-ink); z-index:6; pointer-events:none; }
-.now-line::after { content:'NOW'; position:absolute; top:-13px; left:50%; transform:translateX(-50%); background:var(--fp-ink); color:#fff;
-  font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.08em; line-height:1; padding:1px 3px; white-space:nowrap; }
-/* phone: don't compact — keep the timeline wide & scroll sideways; pin the reg column */
-@media (max-width:640px){
-  .gantt-inner { min-width:1040px; }
-  .gantt-row { height:40px; align-items:flex-start; padding-top:2px; }
-  .gantt-label { position:sticky; left:0; z-index:7; background:var(--surface); align-self:stretch; align-items:center; }
-  .gantt-row.watch .gantt-label { background:var(--surface); }
-  .gantt-axis-row .gantt-label { background:var(--surface); }
-  .gantt-flight .lbl .fl { display:none; }     /* drop flight numbers on phone */
-  .tie { top:25px; }                            /* connecting line moved below the bars */
-  .tielab { top:3px; font-size:9.5px; }
-}
-.empty { color:var(--muted); padding:30px; text-align:center; font-family:var(--sans); font-size:12px; }
-footer { text-align:center; padding:26px 0 10px; font-family:var(--sans); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
-footer a { color:var(--muted); text-decoration:none; }
-footer a:hover { color:var(--text); }
-
-/* flight detail modal */
-.modal-bg { display:none; position:fixed; inset:0; background:rgba(36,33,27,0.5); z-index:100; justify-content:center; align-items:center; padding:16px; }
-.modal-bg.show { display:flex; }
-.modal { background:var(--surface); border:1.5px solid var(--fp-ink); border-radius:0; padding:22px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
-.modal h3 { font-size:15px; color:var(--text-bright); margin-bottom:3px; padding-right:24px; }
-.modal .sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
-.modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
-.modal .close:hover { color:var(--text-bright); }
-.reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); border-radius:0; padding:9px 11px; font-size:12px; margin-bottom:16px; }
-.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--fp-ink); border-radius:0; padding:10px 12px; margin-bottom:16px; }
-.conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
-.conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
-.conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--sans); }
-/* confidence tiers are monochrome — the % and wording carry the level (no traffic-light hue) */
-.conf-chip.cg, .conf-chip.ca, .conf-chip.cr { background:var(--surface); }
-.conf-chip.cg .cp, .conf-chip.ca .cp, .conf-chip.cr .cp { color:var(--fp-ink); }
-.det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
-.det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--sans); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
-.det-grid .v { color:var(--text-bright); }
-.hist-title { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 10px; }
-.hist-row { display:flex; align-items:center; gap:10px; font-size:12px; padding:6px 0; border-bottom:1.5px solid var(--border); }
-.hist-row:last-child { border-bottom:none; }
-.hist-row .obs { width:96px; color:var(--muted); flex-shrink:0; font-family:var(--mono); font-size:11px; }
-.hist-row .reg { font-family:var(--mono); font-weight:700; color:var(--text-bright); min-width:64px; }
-.hist-row.changed .reg { color:var(--amber); }
-.hist-row .tag { font-size:10px; color:var(--muted); }
-</style>
 </head>
-<body class="fp">
+<body class="fp" data-fp-intensity="02">
 <div class="container">
-  <div class="header fp-band">
+  <div class="header">
     <div class="brand">
-      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>Upcoming <span>Schedule</span></h1>
         <div class="fp-label model">SCHED &middot; Airframe Rotation</div>
@@ -5085,20 +4205,20 @@ footer a:hover { color:var(--text); }
   <div class="legend legend--key">
     <div class="legrp"><span class="leglbl">Bars</span><div class="items">
       <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
-      <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,color-mix(in srgb,var(--accent) 60%,#fff) 4px 7px)"></span>unplanned</span>
-      <span><span class="sw" style="background:var(--accent-dim)"></span>planned (future)</span>
-      <span><span class="sw" style="background:color-mix(in srgb,var(--line) 20%,#fff);border:1.5px dashed var(--line)"></span>planned slot</span>
+      <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,var(--fp-surface) 4px 7px)"></span>unplanned</span>
+      <span><span class="sw" style="background:var(--fp-bg);border:var(--fp-hairline) solid var(--border);border-left:var(--fp-keyline) solid var(--accent)"></span>planned (future)</span>
+      <span><span class="sw" style="background:var(--fp-bg);border:var(--fp-hairline) dashed var(--line)"></span>planned slot</span>
     </div></div>
     <div class="legrp"><span class="leglbl">Marks</span><div class="items">
-      <span><span class="sw" style="background:var(--accent);box-shadow:inset 0 0 0 2px var(--fp-dv-6)"></span>swap</span>
+      <span><span class="sw" style="background:var(--accent);box-shadow:inset 0 0 0 var(--fp-keyline) var(--fp-dv-6)"></span>swap</span>
       <span><span class="star" style="color:var(--fp-ink)">&#9733;</span>watched</span>
     </div></div>
   </div>
-  <div class="meta" style="margin-top:10px">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, pale bars are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
+  <div class="meta" style="margin-top:var(--fp-space-2)">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars edged in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
-  <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
 </footer>
 <script>
 const $ = id => document.getElementById(id);
@@ -5414,191 +4534,17 @@ _BOOK_HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Catch a Tail | LH Fleet</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/book.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
-  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
-  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
-  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
-  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
-}
-* { box-sizing:border-box; margin:0; padding:0; }
-body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
-.container { width:96vw; max-width:1100px; margin:0 auto; padding:0 18px 48px; }
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
-.meta { font-family:var(--sans); font-size:11px; color:var(--muted); margin-bottom:14px; line-height:1.6; }
-.meta b { color:var(--text); font-weight:700; }
-/* segmented control = Faceplate .fp-seg; reset <button> UA borders + map .active */
-.fp-seg { margin-bottom:12px; }
-.fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
-.fp-seg > .active { background:var(--fp-ink); color:#fff; }
-.searchbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; align-items:stretch; }
-.searchbar > input { background:var(--surface); border:1.5px solid var(--fp-ink); padding:9px 14px; font-size:14px; font-family:var(--sans); color:var(--text-bright); width:200px; text-transform:uppercase; }
-.searchbar > input::placeholder { color:var(--muted); text-transform:none; }
-.searchbar > input:focus { outline:none; border-color:var(--accent); }
-.fp-btn:hover { opacity:.88; }  /* search button uses .fp-btn--solid */
-/* buttons stretch with the row so they match the input/tokbox height */
-.searchbar .fp-btn { display:inline-flex; align-items:center; padding-top:0; padding-bottom:0; }
-/* filter drawer — tucked behind the Filters button */
-.filterbar { display:none; align-items:center; flex-wrap:wrap; gap:9px 14px; border:1.5px solid var(--fp-ink);
-  background:var(--surface); padding:10px 14px; margin-bottom:8px; }
-.filterbar.show { display:flex; }
-.filterbar .fp-seg { margin-bottom:0; }
-.filterbar .fp-btn { font-size:.72rem; padding:.45em .8em; }
-.flabel { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
-.fchk { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-family:var(--mono); font-size:11px; font-weight:700; color:var(--fp-ink); user-select:none; }
-.fchk:focus-visible { outline:2px solid var(--fp-ink); outline-offset:2px; }
-/* colour square is the toggle — filled = shown, hollow = filtered out (no checkbox) */
-.fchk .sw { width:12px; height:12px; border:1.5px solid var(--_c,var(--fp-ink)); background:var(--_c,var(--fp-ink)); }
-.fchk .sw.t748 { --_c:var(--accent); } .fchk .sw.t388 { --_c:var(--fp-dv-2); }
-.fchk .sw.t789 { --_c:var(--fp-dv-4); } .fchk .sw.t359 { --_c:var(--fp-dv-3); }
-.fchk.off { color:var(--muted); }
-.fchk.off .sw { background:transparent; }
-.fchk:hover .sw { outline:2px solid var(--fp-gray); outline-offset:1px; }
-.fsep { width:1.5px; height:18px; background:var(--border); }
-.fnote { font-family:var(--sans); font-size:11px; color:var(--muted); padding:8px 2px 0; }
-/* multi-airport token inputs (route mode) — chips + inline input + suggestions */
-.tokbox { display:flex; align-items:center; flex-wrap:wrap; gap:5px; background:var(--surface);
-  border:1.5px solid var(--fp-ink); padding:5px 8px; width:280px; position:relative; cursor:text; }
-.tokbox:focus-within { border-color:var(--accent); }
-.tokbox .boxlbl { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-right:2px; }
-.tok { display:inline-flex; align-items:center; gap:5px; background:var(--fp-ink); color:#fff;
-  font-family:var(--mono); font-size:11px; font-weight:700; padding:3px 7px; }
-.tok button { border:none; background:none; color:rgba(255,255,255,.7); cursor:pointer; font-size:13px; line-height:1; padding:0; }
-.tok button:hover { color:#fff; }
-.tokbox input { flex:1; min-width:76px; border:none; background:none; padding:4px 2px; font-size:14px;
-  font-family:var(--sans); color:var(--text-bright); text-transform:uppercase; }
-.tokbox input:focus { outline:none; }
-.tokbox input::placeholder { color:var(--muted); text-transform:none; }
-.sugg { display:none; position:absolute; top:calc(100% + 1.5px); left:-1.5px; right:-1.5px; z-index:60;
-  background:var(--surface); border:1.5px solid var(--fp-ink); max-height:264px; overflow-y:auto; }
-.sugg.show { display:block; }
-.sugg .sitem { display:flex; align-items:baseline; gap:9px; padding:7px 11px; cursor:pointer; }
-.sugg .sitem .code { font-family:var(--mono); font-weight:700; font-size:12px; color:var(--text-bright); }
-.sugg .sitem .nm { font-size:11px; color:var(--muted); }
-.sugg .sitem:hover, .sugg .sitem.active { background:var(--surface2); }
-/* ── Map mode ── the basemap is an inline equirectangular SVG (x=lon, y=-lat),
-   so pan/zoom is just the viewBox and no tile server ever sees a visitor.
-   Marker radius and label size are set in JS: CSS px inside a scaled viewBox
-   are user units, which would grow with zoom. Strokes use non-scaling-stroke. */
-.mapwrap { display:none; position:relative; border:1.5px solid var(--fp-ink); background:var(--surface); margin-bottom:8px; }
-.mapwrap.show { display:block; }
-.maphead { display:flex; align-items:center; gap:6px 12px; flex-wrap:wrap; padding:8px 12px; border-bottom:1.5px solid var(--fp-ink); }
-.maphead .t { font-family:var(--sans); font-size:11px; color:var(--muted); }
-.maphead .pick { font-family:var(--mono); font-size:12px; font-weight:700; color:var(--text-bright); }
-/* figure/ground: sea takes the page grey, land the sage tint, so the coastline
-   reads at a glance and a sage marker still sits clearly on top of it */
-.mapsvg { display:block; width:100%; height:clamp(300px,52vh,470px); touch-action:none;
-  cursor:grab; background:var(--bg); }
-/* a portrait canvas would fit the world's width into a sliver and pad it with
-   empty ocean — keep the map box landscape on narrow screens */
-@media (max-width:640px){ .mapsvg { height:clamp(230px,62vw,320px); } }
-.mapsvg.grabbing { cursor:grabbing; }
-.land { fill:var(--fp-sage-tint); stroke:color-mix(in srgb,var(--fp-sage) 42%,var(--fp-sage-tint));
-  stroke-width:.8; vector-effect:non-scaling-stroke; }
-.mk { fill:var(--accent); stroke:var(--fp-bg); stroke-width:1.3; vector-effect:non-scaling-stroke; cursor:pointer; }
-.mk:hover { fill:var(--fp-ink); }
-.mk.sel { fill:var(--fp-terra); stroke:var(--fp-ink); stroke-width:1.8; }
-/* the UA focus ring is an `outline:auto` drawn in SVG user space, so it blows up
-   with the zoom — replace it with a stroke, which honours non-scaling-stroke */
-.mk:focus { outline:none; }
-.mk:focus-visible { stroke:var(--fp-ink); stroke-width:2.6; }
-.mklbl { font-family:var(--mono); font-weight:700; fill:var(--text-bright); pointer-events:none;
-  paint-order:stroke; stroke:var(--surface); stroke-linejoin:round; }
-.mapctl { position:absolute; top:52px; right:10px; display:flex; flex-direction:column; gap:5px; }
-.mapctl button { width:29px; height:29px; padding:0; border:1.5px solid var(--fp-ink); background:var(--surface);
-  color:var(--text-bright); font-family:var(--mono); font-size:14px; font-weight:700; line-height:1; cursor:pointer; }
-.mapctl button:hover { background:var(--surface2); }
-.mapctl button.sm { font-size:8.5px; letter-spacing:.4px; }
-.maptip { display:none; position:absolute; z-index:20; pointer-events:none; max-width:215px;
-  background:var(--fp-ink); color:#fff; padding:6px 9px; font-family:var(--sans); font-size:11px; line-height:1.5; }
-.maptip.show { display:block; }
-.maptip b { font-family:var(--mono); font-size:11.5px; }
-.maptip .d { color:rgba(255,255,255,.72); }
-.mapnote { font-family:var(--sans); font-size:11px; color:var(--muted); padding:7px 12px; border-top:1.5px solid var(--border); }
-.hint { font-family:var(--sans); font-size:11px; color:var(--muted); margin-bottom:18px; }
-.results { display:flex; flex-direction:column; gap:8px; }
-.fcard { display:flex; align-items:center; gap:14px; border:1.5px solid var(--fp-ink); background:var(--surface); padding:12px 14px; cursor:pointer; transition:border-color .12s; }
-.fcard:hover { border-color:var(--accent); }
-.fcard .when { width:96px; font-family:var(--mono); font-size:11px; color:var(--muted); flex-shrink:0; line-height:1.5; }
-.fcard .when b { display:block; color:var(--text-bright); font-size:13px; }
-.fcard .route { flex:1; min-width:0; }
-.fcard .route .pair { font-size:15px; font-weight:700; color:var(--text-bright); }
-.fcard .route .sub { font-family:var(--sans); font-size:11px; color:var(--muted); margin-top:1px; }
-.fcard .tail { font-family:var(--mono); font-weight:700; font-size:13px; color:var(--text-bright); display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-width:90px; }
-.fcard .tail .star { color:var(--amber); }
-.tbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 5px; color:#fff; }
-.tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--fp-dv-2); }
-.tbadge.t789 { background:var(--fp-dv-4); }
-.tbadge.t359 { background:var(--fp-dv-3); color:var(--fp-ink); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
-.abadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px;
-  background:var(--fp-ink); color:#fff; letter-spacing:.4px; }   /* Allegris cabin */
-/* cabin-config badges: F<n> = First (amber, the catch), C<n> = Business */
-.cbadge { font-family:var(--mono); font-size:9px; font-weight:700; padding:1px 4px; letter-spacing:.4px;
-  border:1.5px solid var(--line); color:var(--text); background:var(--surface); }
-.cbadge.cf { border-color:var(--amber); background:var(--amber-dim); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
-.miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:5px 8px; border:1.5px solid var(--fp-ink); flex-shrink:0; }
-.miniconf .p { font-family:var(--mono); font-weight:700; font-size:17px; line-height:1; }
-.miniconf .cn { font-family:var(--sans); font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:3px; }
-/* confidence tiers are monochrome — the % carries the level (no traffic-light hue) */
-.miniconf.cg, .miniconf.ca, .miniconf.cr { background:var(--surface); }
-.miniconf.cg .p, .miniconf.ca .p, .miniconf.cr .p { color:var(--fp-ink); }
-.empty { color:var(--muted); padding:30px; text-align:center; font-family:var(--sans); font-size:12px; border:1.5px dashed var(--border); }
-footer { text-align:center; padding:26px 0 10px; font-family:var(--sans); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
-footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
-.modal-bg { display:none; position:fixed; inset:0; background:rgba(36,33,27,0.5); z-index:100; justify-content:center; align-items:center; padding:16px; }
-.modal-bg.show { display:flex; }
-.modal { background:var(--surface); border:1.5px solid var(--fp-ink); padding:22px; width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
-.modal h3 { font-size:15px; color:var(--text-bright); margin-bottom:3px; padding-right:24px; }
-.modal .sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
-.modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:22px; line-height:1; border:none; background:none; }
-.modal .close:hover { color:var(--text-bright); }
-.reassign-banner { background:var(--amber-dim); border:1.5px solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); padding:9px 11px; font-size:12px; margin-bottom:16px; }
-.conf-chip { display:flex; align-items:center; gap:12px; border:1.5px solid var(--fp-ink); padding:10px 12px; margin-bottom:16px; }
-.conf-chip .cp { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; flex-shrink:0; }
-.conf-chip .ct { font-size:12px; color:var(--text-bright); line-height:1.45; }
-.conf-chip .cn { color:var(--muted); font-size:11px; font-family:var(--sans); }
-/* confidence tiers are monochrome — the % and wording carry the level (no traffic-light hue) */
-.conf-chip.cg, .conf-chip.ca, .conf-chip.cr { background:var(--surface); }
-.conf-chip.cg .cp, .conf-chip.ca .cp, .conf-chip.cr .cp { color:var(--fp-ink); }
-.det-grid { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:12px; margin-bottom:18px; }
-.det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--sans); font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
-.det-grid .v { color:var(--text-bright); }
-.hist-title { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 10px; }
-.hist-row { display:flex; align-items:center; gap:10px; font-size:12px; padding:6px 0; border-bottom:1.5px solid var(--border); }
-.hist-row:last-child { border-bottom:none; }
-.hist-row .obs { width:96px; color:var(--muted); flex-shrink:0; font-family:var(--mono); font-size:11px; }
-.hist-row .reg { font-family:var(--mono); font-weight:700; color:var(--text-bright); min-width:64px; }
-.hist-row.changed .reg { color:var(--amber); }
-.hist-row .tag { font-size:10px; color:var(--muted); }
-</style>
 </head>
-<body class="fp">
+<body class="fp" data-fp-intensity="02">
 <div class="container">
-  <div class="header fp-band">
+  <div class="header">
     <div class="brand">
-      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>Catch a <span>Tail</span></h1>
         <div class="fp-label model">BOOK &middot; Airframe Finder</div>
@@ -5668,7 +4614,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
-  <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
 </footer>
 <script>
 const $ = id => document.getElementById(id);
@@ -6194,87 +5140,17 @@ _INSIGHTS_HTML = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fleet Insights | LH Fleet</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/faceplate.css">
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/insights.css">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root {
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
-  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
-  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
-  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
-  --mono:var(--fp-font-mono); --sans:var(--fp-font-sans);
-}
-* { box-sizing:border-box; margin:0; padding:0; }
-body { background:var(--bg); color:var(--text); font-size:14px; line-height:1.5; font-family:var(--sans); -webkit-font-smoothing:antialiased; }
-.container { width:96vw; max-width:1180px; margin:0 auto; padding:0 18px 48px; }
-/* ── Header · Faceplate band (intensity 03): plate + wordmark + label ─────── */
-.header { display:flex; align-items:center; gap:14px 22px; flex-wrap:wrap;
-  padding:16px 22px; margin:18px 0 24px; }  /* sage band + #fff come from .fp-band */
-.brand { display:flex; align-items:center; gap:14px; }
-.brand .fp-plate { width:46px; height:46px; flex-shrink:0; }
-.brand .fp-plate svg { width:27px; height:27px; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:22px; font-weight:800; letter-spacing:-.02em;
-  color:#fff; text-transform:uppercase; line-height:1; }
-.header h1 span { color:var(--fp-sage-tint); }
-.model { font-family:var(--fp-font-sans); font-size:10px; letter-spacing:.12em;
-  color:rgba(255,255,255,.82); text-transform:uppercase; margin-top:5px; }
-.nav { display:flex; gap:18px; flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:11px; font-weight:500; letter-spacing:.1em;
-  text-transform:uppercase; color:rgba(255,255,255,.82); text-decoration:none;
-  padding:3px 0; border-bottom:2px solid transparent; transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:#fff; border-bottom-color:#fff; text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:10.5px; color:rgba(255,255,255,.82); }
-.controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
-/* segmented control = Faceplate .fp-seg; <a> children just need link resets */
-.fp-seg > a { color:var(--fp-ink); text-decoration:none; }
-.fp-seg > .active { background:var(--fp-ink); color:#fff; }
-.controls input { background:var(--surface); border:1.5px solid var(--fp-ink); padding:8px 14px; font-size:13px; font-family:var(--sans); color:var(--text-bright); width:190px; text-transform:uppercase; }
-.controls input::placeholder { color:var(--muted); text-transform:none; }
-.controls input:focus { outline:none; border-color:var(--accent); }
-.meta { font-family:var(--sans); font-size:11px; color:var(--muted); margin-bottom:16px; line-height:1.6; }
-.meta b { color:var(--text); font-weight:700; }
-.module { border:1.5px solid var(--fp-ink); background:var(--surface); margin-bottom:16px; }
-.modhead { font-family:var(--sans); font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--text-bright); padding:11px 14px; border-bottom:1.5px solid var(--border); background:var(--surface2); }
-.modhead .sub { color:var(--muted); text-transform:none; letter-spacing:0; font-size:10px; margin-left:8px; }
-.modbody { padding:14px; }
-.cols { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
-@media (max-width:760px){ .cols { grid-template-columns:1fr; } }
-table { width:100%; border-collapse:collapse; font-size:12px; }
-th { text-align:left; font-family:var(--sans); font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:5px 8px; border-bottom:1.5px solid var(--border); }
-td { padding:5px 8px; border-bottom:1px solid var(--surface2); color:var(--text-bright); }
-td.r, th.r { text-align:right; }
-tr:last-child td { border-bottom:none; }
-.tail-reg { font-family:var(--mono); font-weight:700; }
-.star { color:var(--amber); }
-.subhead { font-family:var(--sans); font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:4px 0 9px; }
-/* reschedulings chart */
-.rs-note { font-family:var(--sans); font-size:10px; color:var(--muted); margin-bottom:12px; }
-.rs-chart { display:flex; align-items:flex-end; gap:8px; padding:4px 2px; }
-.rs-col { flex:1; text-align:center; min-width:34px; }
-.rs-n { font-family:var(--mono); font-size:11px; font-weight:700; color:var(--text-bright); margin-bottom:4px; }
-.rs-barwrap { height:150px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; }
-.rs-bar { width:62%; max-width:46px; background:var(--fp-dv-1); min-height:2px; }
-.rs-date { font-family:var(--mono); font-size:9px; color:var(--muted); margin-top:6px; white-space:nowrap; }
-.rs-base .rs-bar { background:var(--fp-dv-6); }
-.legend { font-family:var(--sans); font-size:10px; color:var(--muted); margin-top:10px; display:flex; gap:14px; flex-wrap:wrap; }
-.legend .sw { display:inline-block; width:10px; height:10px; vertical-align:middle; margin-right:4px; }
-/* on-time stacked bar */
-.ot-bar { display:flex; height:22px; border:1.5px solid var(--fp-ink); margin:4px 0 8px; }
-.ot-seg { height:100%; }
-.ot-list { font-family:var(--sans); font-size:11px; color:var(--muted); }
-.empty { color:var(--muted); padding:22px; text-align:center; font-family:var(--sans); font-size:12px; }
-footer { text-align:center; padding:26px 0 10px; font-family:var(--sans); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
-footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
-</style>
 </head>
-<body class="fp">
+<body class="fp" data-fp-intensity="02">
 <div class="container">
-  <div class="header fp-band">
+  <div class="header">
     <div class="brand">
-      <span class="fp-plate"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>Fleet <span>Insights</span></h1>
         <div class="fp-label model">INSIGHTS &middot; Fleet Analytics</div>
@@ -6300,7 +5176,7 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
   <div id="body"></div>
 </div>
 <footer>
-  <a href="/impressum">Impressum</a> <span style="margin:0 6px">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
 </footer>
 <script>
 const $ = id => document.getElementById(id);
@@ -6369,7 +5245,7 @@ function holdTable(rel){
   if(!hb) return '';
   const leads = Object.keys(hb).map(Number).sort((a,b)=>a-b);
   if(!leads.length) return '';
-  let h='<div class="subhead" style="margin-top:14px">Tail holds by lead (how often the published tail survives to departure)</div>';
+  let h='<div class="subhead" style="margin-top:var(--fp-space-3)">Tail holds by lead (how often the published tail survives to departure)</div>';
   h+='<table><tr><th>Days out</th><th class="r">Holds</th><th class="r">n</th></tr>';
   leads.forEach(l=>{ const c=hb[l]; h+='<tr><td>'+l+'d</td><td class="r">'+Math.round(c.p*100)+'%</td><td class="r">'+c.n+'</td></tr>'; });
   return h+'</table>';
@@ -6393,7 +5269,7 @@ async function init(){
   html += module('Schedule reliability', 'reschedulings',
       '<div class="rs-note">Bars = tails reassigned each day vs the night before. Early days are thin.</div>'
       + reschedChart(d.reliability)
-      + '<div style="margin-top:18px">' + ontimeBar(d.reliability) + holdTable(d.reliability) + '</div>');
+      + '<div style="margin-top:var(--fp-space-3)">' + ontimeBar(d.reliability) + holdTable(d.reliability) + '</div>');
   html += module('Routes &amp; rotation', 'where this '+(REG||d.type)+' flies',
       '<div class="cols"><div><div class="subhead">Top routes</div>'+routesTable(d.routes)+'</div>'
       + '<div><div class="subhead">Typical next leg</div>'+rotationList(d.rotation)+'</div></div>');

@@ -1,0 +1,163 @@
+:root {
+  /* Faceplate v2.0.0 (vendored, dist/) — project semantics aliased onto --fp-*.
+     Sage primary, terracotta complement, ochre/teal/clay for categorical data. */
+  --bg:var(--fp-surface);          /* soft off-white page; cards sit on white   */
+  --surface:var(--fp-bg);          /* white cards / panels                       */
+  --surface2:var(--fp-sage-xl);    /* faint sage wells, tracks, hovers           */
+  --border:var(--fp-border);
+  --line:var(--fp-gray);           /* neutral structural keyline                 */
+  --text:var(--fp-body);
+  --text-bright:var(--fp-ink);
+  --muted:var(--fp-muted);
+  /* solid key fills — Faceplate accents */
+  --accent:var(--fp-sage);         /* sage — primary / info / B748              */
+  --green:var(--fp-dv-4);          /* teal — ok / A388                          */
+  --amber:var(--fp-dv-3);          /* ochre — warn / watch                      */
+  --red:var(--fp-terra);           /* terracotta — error / deviation            */
+  --purple:var(--fp-dv-5);         /* clay — A359                               */
+  --cyan:var(--fp-dv-4);           /* teal — extra                              */
+  /* pale fills */
+  --accent-dim:var(--fp-sage-tint);
+  --green-dim:color-mix(in srgb, var(--fp-dv-4) 16%, var(--fp-bg));
+  --amber-dim:color-mix(in srgb, var(--fp-dv-3) 22%, var(--fp-bg));
+  --red-dim:var(--fp-terra-tint);
+  --purple-dim:color-mix(in srgb, var(--fp-dv-5) 18%, var(--fp-bg));
+}
+
+/* Scoped reset. A universal `* { margin:0; padding:0 }` reaches into
+   @layer fp.components and silently zeroes .fp-btn / .fp-chip / .fp-seg
+   padding -- unlayered CSS beats layered CSS regardless of specificity, which
+   is how a real project shipped a segmented control reading "anyyesno".
+   See dist/docs/using-faceplate.md#a-note-on-resets
+
+   The exclusion is wrapped in :where() on purpose. Bare
+   :not([class*="fp-"]):not([class*="fp-"] *) carries the specificity of its
+   arguments -- two attribute selectors, (0,2,0) -- which outranks every
+   single-class rule in this file and quietly flattens .container's
+   `margin:0 auto`. :where() is always (0,0,0), so this keeps the reach of the
+   old universal reset and none of its weight. */
+* { box-sizing:border-box; }
+*:where(:not([class*="fp-"]):not([class*="fp-"] *)) { margin:0; padding:0; }
+
+body {
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--fp-font-sans);
+  font-size:var(--fp-text-sm);
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  counter-reset:sec;
+}
+
+.container { max-width:480px; margin:0 auto; padding:0 var(--fp-space-3) var(--fp-space-6); }
+
+/* -- Header - structural (intensity 02) ------------------------------------
+   Faceplate unbranded: no band, no monogram plate, no wordmark. Identity is
+   the product glyph plus an ink keyline; colour coverage stays inside 02. */
+.header { display:flex; align-items:center; gap:var(--fp-space-3) var(--fp-space-4); flex-wrap:wrap;
+  padding:0 0 var(--fp-space-3); margin:var(--fp-space-3) 0 var(--fp-space-4);
+  border-bottom:var(--fp-keyline) solid var(--fp-ink); }
+.brand { display:flex; align-items:center; gap:var(--fp-space-3); }
+.brand-mark { width:var(--fp-space-5); height:var(--fp-space-5); flex-shrink:0;
+  display:inline-grid; place-items:center; color:var(--fp-sage); }
+.brand-mark svg { width:100%; height:100%; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:var(--fp-text-h3); font-weight:800;
+  letter-spacing:var(--fp-track-tight); color:var(--fp-ink); text-transform:uppercase;
+  line-height:var(--fp-leading-tight); margin-bottom:0; }
+.header h1 span { color:var(--fp-sage); }
+.model { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label);
+  color:var(--fp-muted); text-transform:uppercase; margin-top:var(--fp-space-1); }
+.nav { display:flex; gap:var(--fp-space-3); flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:500;
+  letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-body); text-decoration:none;
+  padding:var(--fp-space-1) 0; border-bottom:var(--fp-keyline) solid transparent;
+  transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:var(--fp-sage-deep); border-bottom-color:var(--fp-sage); text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--fp-muted); }
+
+/* ── Health strip ───────────────────────────────────────── */
+.health-strip { display:flex; gap:var(--fp-space-2); margin-bottom:var(--fp-space-4); flex-wrap:wrap; counter-reset:hk; }
+.health-item { flex:1; min-width:86px; background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink);
+  border-radius:var(--fp-radius); padding:var(--fp-space-3) var(--fp-space-3) var(--fp-space-2); text-align:left; }
+.health-item .label { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.7px;
+  color:var(--muted); margin-bottom:var(--fp-space-2); }
+.health-item .label::before { counter-increment:hk; content:counter(hk,decimal-leading-zero)" "; color:var(--accent); }
+.health-item .dot { display:inline-block; width:8px; height:8px; border-radius:var(--fp-radius); margin-right:var(--fp-space-2); vertical-align:middle; }
+.health-item .info { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--text); }
+
+/* ── Section ────────────────────────────────────────────── */
+.section { margin-bottom:var(--fp-space-4); }
+.section-label { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); font-weight:700; text-transform:uppercase;
+  letter-spacing:1px; color:var(--muted); margin-bottom:var(--fp-space-3); display:flex; align-items:center; gap:var(--fp-space-2);
+  counter-increment:sec; }
+.section-label::before { content:counter(sec,decimal-leading-zero); font-size:var(--fp-text-xxs); color:var(--text-bright);
+  background:var(--accent-dim); border-radius:var(--fp-radius); padding:var(--fp-space-1) var(--fp-space-2); letter-spacing:.5px; }
+
+/* ── Metric keys ────────────────────────────────────────── */
+.metrics { display:grid; grid-template-columns:1fr 1fr 1fr; gap:var(--fp-space-2); margin-bottom:var(--fp-space-4); counter-reset:key; }
+.metric { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius);
+  padding:var(--fp-space-3) var(--fp-space-3) var(--fp-space-3); position:relative; }
+.metric::after { content:''; position:absolute; top:13px; right:13px; width:7px; height:7px; border-radius:var(--fp-radius); background:var(--accent); }
+.metric:nth-child(3n+1)::after { background:var(--green); }
+.metric:nth-child(3n+2)::after { background:var(--accent); }
+.metric:nth-child(3n+3)::after { background:var(--purple); }
+.metric .label { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.6px;
+  color:var(--muted); margin-bottom:var(--fp-space-2); }
+.metric .label::before { counter-increment:key; content:counter(key,decimal-leading-zero)" "; color:var(--accent); }
+.metric .value { font-family:var(--fp-font-mono); font-size:var(--fp-text-h2); font-weight:700; color:var(--text-bright); letter-spacing:-1px; line-height:1; }
+.metric .sub { font-size:var(--fp-text-xxs); color:var(--muted); margin-top:var(--fp-space-1); }
+
+/* ── Cards ──────────────────────────────────────────────── */
+.card { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius); padding:var(--fp-space-3); margin-bottom:var(--fp-space-3); }
+
+/* ── Chart bars ─────────────────────────────────────────── */
+.chart-bars { display:flex; align-items:flex-end; gap:var(--fp-space-1); height:64px; }
+.chart-bars .bar { flex:1; border-radius:var(--fp-radius); min-height:2px; transition:height .3s ease; position:relative; }
+.chart-bars .bar:hover { opacity:1 !important; }
+.chart-labels { display:flex; justify-content:space-between; font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--muted); margin-top:var(--fp-space-2); }
+.chart-legend { display:flex; gap:var(--fp-space-3); margin-bottom:var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs);
+  color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+.chart-legend .swatch { display:inline-block; width:9px; height:9px; border-radius:var(--fp-radius); margin-right:var(--fp-space-1); vertical-align:middle; }
+
+/* ── Horizontal bars ────────────────────────────────────── */
+.hbar-row { display:flex; align-items:center; gap:var(--fp-space-2); margin-bottom:var(--fp-space-2); }
+.hbar-row:last-child { margin-bottom:0; }
+.hbar-label { width:46px; text-align:right; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700;
+  color:var(--text); flex-shrink:0; font-variant-numeric:tabular-nums; }
+.hbar-track { flex:1; background:var(--surface2); border-radius:var(--fp-radius); height:20px; overflow:hidden; }
+.hbar-fill { height:100%; border-radius:var(--fp-radius); transition:width .4s ease; }
+.hbar-count { width:28px; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--muted); font-variant-numeric:tabular-nums; }
+.hbar-flew { width:28px; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--green); text-align:right; font-variant-numeric:tabular-nums; }
+
+/* ── Batch rows ─────────────────────────────────────────── */
+.batch-row { display:flex; align-items:center; gap:var(--fp-space-2); padding:var(--fp-space-2) 0; border-bottom:var(--fp-keyline) solid var(--border); font-size:var(--fp-text-xs); }
+.batch-row:last-child { border-bottom:none; }
+.batch-type { font-weight:600; color:var(--text); width:90px; flex-shrink:0; font-size:var(--fp-text-xs); text-transform:capitalize; }
+.batch-time { font-family:var(--fp-font-mono); color:var(--muted); font-size:var(--fp-text-xs); width:56px; flex-shrink:0; }
+.batch-detail { flex:1; font-size:var(--fp-text-xs); color:var(--muted); }
+/* status badges = Faceplate .fp-chip + a semantic tint */
+.badge-ok { background:var(--green-dim); color:var(--green); }
+.badge-error { background:var(--red-dim); color:var(--fp-terra-deep); }
+.badge-running { background:var(--accent-dim); color:var(--fp-sage-deep); }
+
+/* ── Route table ────────────────────────────────────────── */
+.route-row { display:flex; align-items:center; padding:var(--fp-space-2) 0; border-bottom:var(--fp-keyline) solid var(--border); font-size:var(--fp-text-xs); }
+.route-row:last-child { border-bottom:none; }
+.route-pair { flex:1; color:var(--text); font-weight:500; }
+.route-pair .arrow { color:var(--accent); margin:0 var(--fp-space-2); font-family:var(--fp-font-mono); }
+.route-count { color:var(--muted); font-family:var(--fp-font-mono); font-variant-numeric:tabular-nums; font-size:var(--fp-text-xs); }
+
+/* ── Misc ───────────────────────────────────────────────── */
+#error-banner { display:none; background:var(--red-dim); border:var(--fp-keyline) solid var(--red); border-radius:var(--fp-radius);
+  padding:var(--fp-space-2) var(--fp-space-3); margin-bottom:var(--fp-space-3); color:var(--fp-terra-deep); font-size:var(--fp-text-xs); }
+.tooltip { position:fixed; background:var(--text-bright); border:none; border-radius:var(--fp-radius); padding:var(--fp-space-1) var(--fp-space-2);
+  font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--fp-text-inverse); pointer-events:none; z-index:100; white-space:nowrap; display:none; }
+.err-text { font-size:var(--fp-text-xxs); color:var(--red); margin-top:var(--fp-space-1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+@media (min-width:600px) { .container { max-width:560px; } }
+@media (min-width:900px) {
+  .container { max-width:760px; padding:0 var(--fp-space-4) var(--fp-space-6); }
+  .metrics { grid-template-columns:repeat(3,1fr); }
+  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:var(--fp-space-3); }
+  .two-col > .card { margin-bottom:0; }
+}

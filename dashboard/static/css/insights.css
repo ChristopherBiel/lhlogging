@@ -1,0 +1,86 @@
+:root {
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
+  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
+  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
+  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
+}
+/* Scoped reset. A universal `* { margin:0; padding:0 }` reaches into
+   @layer fp.components and silently zeroes .fp-btn / .fp-chip / .fp-seg
+   padding -- unlayered CSS beats layered CSS regardless of specificity, which
+   is how a real project shipped a segmented control reading "anyyesno".
+   See dist/docs/using-faceplate.md#a-note-on-resets
+
+   The exclusion is wrapped in :where() on purpose. Bare
+   :not([class*="fp-"]):not([class*="fp-"] *) carries the specificity of its
+   arguments -- two attribute selectors, (0,2,0) -- which outranks every
+   single-class rule in this file and quietly flattens .container's
+   `margin:0 auto`. :where() is always (0,0,0), so this keeps the reach of the
+   old universal reset and none of its weight. */
+* { box-sizing:border-box; }
+*:where(:not([class*="fp-"]):not([class*="fp-"] *)) { margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-size:var(--fp-text-sm); line-height:1.5; font-family:var(--fp-font-sans); -webkit-font-smoothing:antialiased; }
+.container { width:96vw; max-width:1180px; margin:0 auto; padding:0 var(--fp-space-3) var(--fp-space-6); }
+/* -- Header - structural (intensity 02) ------------------------------------
+   Faceplate unbranded: no band, no monogram plate, no wordmark. Identity is
+   the product glyph plus an ink keyline; colour coverage stays inside 02. */
+.header { display:flex; align-items:center; gap:var(--fp-space-3) var(--fp-space-4); flex-wrap:wrap;
+  padding:0 0 var(--fp-space-3); margin:var(--fp-space-3) 0 var(--fp-space-4);
+  border-bottom:var(--fp-keyline) solid var(--fp-ink); }
+.brand { display:flex; align-items:center; gap:var(--fp-space-3); }
+.brand-mark { width:var(--fp-space-5); height:var(--fp-space-5); flex-shrink:0;
+  display:inline-grid; place-items:center; color:var(--fp-sage); }
+.brand-mark svg { width:100%; height:100%; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:var(--fp-text-h3); font-weight:800;
+  letter-spacing:var(--fp-track-tight); color:var(--fp-ink); text-transform:uppercase;
+  line-height:var(--fp-leading-tight); margin-bottom:0; }
+.header h1 span { color:var(--fp-sage); }
+.model { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label);
+  color:var(--fp-muted); text-transform:uppercase; margin-top:var(--fp-space-1); }
+.nav { display:flex; gap:var(--fp-space-3); flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:500;
+  letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-body); text-decoration:none;
+  padding:var(--fp-space-1) 0; border-bottom:var(--fp-keyline) solid transparent;
+  transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:var(--fp-sage-deep); border-bottom-color:var(--fp-sage); text-decoration:none; }
+.updated { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--fp-muted); }
+.controls { display:flex; gap:var(--fp-space-3); align-items:center; flex-wrap:wrap; margin-bottom:var(--fp-space-2); }
+/* segmented control = Faceplate .fp-seg; <a> children just need link resets */
+.fp-seg > a { color:var(--fp-ink); text-decoration:none; }
+.fp-seg > .active { background:var(--fp-ink); color:var(--fp-text-inverse); }
+.controls input { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-2) var(--fp-space-3); font-size:var(--fp-text-sm); font-family:var(--fp-font-sans); color:var(--text-bright); width:190px; text-transform:uppercase; }
+.controls input::placeholder { color:var(--muted); text-transform:none; }
+.controls input:focus { outline:none; border-color:var(--accent); }
+.meta { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); line-height:1.6; }
+.meta b { color:var(--text); font-weight:700; }
+.module { border:var(--fp-keyline) solid var(--fp-ink); background:var(--surface); margin-bottom:var(--fp-space-3); }
+.modhead { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); text-transform:uppercase; letter-spacing:1px; color:var(--text-bright); padding:var(--fp-space-2) var(--fp-space-3); border-bottom:var(--fp-keyline) solid var(--border); background:var(--surface2); }
+.modhead .sub { color:var(--muted); text-transform:none; letter-spacing:0; font-size:var(--fp-text-xxs); margin-left:var(--fp-space-2); }
+.modbody { padding:var(--fp-space-3); }
+.cols { display:grid; grid-template-columns:1fr 1fr; gap:var(--fp-space-4); }
+@media (max-width:760px){ .cols { grid-template-columns:1fr; } }
+table { width:100%; border-collapse:collapse; font-size:var(--fp-text-xs); }
+th { text-align:left; font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:var(--fp-space-1) var(--fp-space-2); border-bottom:var(--fp-keyline) solid var(--border); }
+td { padding:var(--fp-space-1) var(--fp-space-2); border-bottom:var(--fp-hairline) solid var(--surface2); color:var(--text-bright); }
+td.r, th.r { text-align:right; }
+tr:last-child td { border-bottom:none; }
+.tail-reg { font-family:var(--fp-font-mono); font-weight:700; }
+.star { color:var(--amber); }
+.subhead { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:var(--fp-space-1) 0 var(--fp-space-2); }
+/* reschedulings chart */
+.rs-note { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); margin-bottom:var(--fp-space-3); }
+.rs-chart { display:flex; align-items:flex-end; gap:var(--fp-space-2); padding:var(--fp-space-1) var(--fp-space-1); }
+.rs-col { flex:1; text-align:center; min-width:34px; }
+.rs-n { font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700; color:var(--text-bright); margin-bottom:var(--fp-space-1); }
+.rs-barwrap { height:150px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; }
+.rs-bar { width:62%; max-width:46px; background:var(--fp-dv-1); min-height:2px; }
+.rs-date { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--muted); margin-top:var(--fp-space-2); white-space:nowrap; }
+.rs-base .rs-bar { background:var(--fp-dv-6); }
+.legend { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); margin-top:var(--fp-space-2); display:flex; gap:var(--fp-space-3); flex-wrap:wrap; }
+.legend .sw { display:inline-block; width:10px; height:10px; vertical-align:middle; margin-right:var(--fp-space-1); }
+/* on-time stacked bar */
+.ot-bar { display:flex; height:22px; border:var(--fp-keyline) solid var(--fp-ink); margin:var(--fp-space-1) 0 var(--fp-space-2); }
+.ot-seg { height:100%; }
+.ot-list { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); }
+.empty { color:var(--muted); padding:var(--fp-space-4); text-align:center; font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); }
+footer { text-align:center; padding:var(--fp-space-4) 0 var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
