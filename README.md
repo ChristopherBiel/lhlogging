@@ -336,6 +336,46 @@ an upcoming departure but no known coordinates is listed under the map rather
 than dropped, which is the cue to re-run the generator (`--extra <IATA>` forces
 in a non-large field).
 
+### Design system
+
+The dashboard is styled with **Faceplate v2.0.0**, applied **unbranded — Layer 1
+only**. This project does not represent the design system's author, so it uses
+the design system and none of the personal layer: no wordmark, no step-response
+mark, no name or tagline, and `--fp-gray` is simply a neutral rather than the
+`CB·CB·CB` monogram. The vendored package still contains those Layer 2 assets;
+`/faceplate/<file>` serves an allowlist of the two stylesheets so they are never
+published from here.
+
+| Path | |
+|---|---|
+| `dashboard/dist/` | the vendored package, verbatim, with `MANIFEST.sha256`. **Never edit** — a modified vendored copy makes the project agree with itself while diverging from the brand |
+| `dashboard/static/css/` | the project's own stylesheets, one per page |
+| `dashboard/static/fonts/` | self-hosted Manrope + IBM Plex Mono (`.woff2`, SIL OFL, licences alongside) |
+
+The stylesheets live in real `.css` files rather than inline in `app.py` because
+`faceplate check` only reads `.css` / `.html` / `.svg` — embedded in Python they
+would be invisible to it and the gate would pass vacuously.
+
+Fonts are self-hosted rather than loaded from the Google Fonts CDN, which sends
+visitor IPs to Google; a Munich court held in 2022 that this needs consent, and
+this app publishes a German Impressum and Datenschutzerklärung. Same reasoning as
+the map: no third-party request on any page.
+
+Every colour, size, stroke and spacing value resolves to an `--fp-*` token, the
+palette and type scale are treated as closed sets, `border-radius` is `0`
+everywhere, and each page declares one intensity (`data-fp-intensity="02"`,
+Structured — the register for a dense content app).
+
+```bash
+cd dashboard && npm install   # pinned to the v2.0.0 release tag
+npx faceplate check . --strict
+```
+
+CI runs this on every push and pull request (`.github/workflows/faceplate.yml`).
+It reports unknown tokens, off-palette colour, rounded corners, non-Faceplate
+fonts, off-scale spacing, universal resets that would zero `.fp-*` padding,
+intensity drift, and a vendored copy whose checksums no longer match.
+
 ---
 
 ## Local Data Analysis
