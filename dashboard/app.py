@@ -4206,15 +4206,15 @@ _SCHEDULE_HTML = """\
     <div class="legrp"><span class="leglbl">Bars</span><div class="items">
       <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
       <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,var(--fp-surface) 4px 7px)"></span>unplanned</span>
-      <span><span class="sw" style="background:var(--fp-bg);border:var(--fp-hairline) solid var(--border);border-left:var(--fp-keyline) solid var(--accent)"></span>planned (future)</span>
+      <span><span class="sw" style="background:var(--fp-bg);border:var(--fp-keyline) solid var(--accent)"></span>planned (future)</span>
       <span><span class="sw" style="background:var(--fp-bg);border:var(--fp-hairline) dashed var(--line)"></span>planned slot</span>
     </div></div>
     <div class="legrp"><span class="leglbl">Marks</span><div class="items">
-      <span><span class="sw" style="background:var(--accent);box-shadow:inset 0 0 0 var(--fp-keyline) var(--fp-dv-6)"></span>swap</span>
+      <span><span class="sw" style="background:linear-gradient(90deg,var(--fp-bg) 0 58%,var(--fp-dv-6) 58% 100%);border:var(--fp-keyline) solid var(--accent)"></span>swap</span>
       <span><span class="star" style="color:var(--fp-ink)">&#9733;</span>watched</span>
     </div></div>
   </div>
-  <div class="meta" style="margin-top:var(--fp-space-2)">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars edged in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
+  <div class="meta" style="margin-top:var(--fp-space-2)">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>

@@ -4,6 +4,15 @@
   --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
   --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
   --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
+
+  /* EXTENSION -- requires upstream sign-off. See dist/docs/contributing.md.
+     The swap strip sets "SWAP" vertically inside a 20px gantt bar: four
+     characters have ~16px of inline run after the border, so the smallest step
+     on the closed scale (--fp-text-xxs, 10px) overflows and clips to "SW".
+     Declared in the extension namespace so the gap stays visible rather than
+     hidden as a bare `font-size:6px`, which the checker does not inspect.
+     Resolve by proposing a micro step upstream, or by shortening the label. */
+  --fp-ext-gantt-swap:6px;
 }
 /* Scoped reset. A universal `* { margin:0; padding:0 }` reaches into
    @layer fp.components and silently zeroes .fp-btn / .fp-chip / .fp-seg
@@ -123,7 +132,12 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
   align-items:center; opacity:1; transition:opacity .15s, box-shadow .15s; }
 .gantt-flight.dim { opacity:.12; }
 .gantt-flight .lbl { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; white-space:nowrap; padding:0 var(--fp-space-2);
-  letter-spacing:.2px; display:flex; align-items:baseline; gap:var(--fp-space-1); }
+  letter-spacing:.2px; display:flex; align-items:baseline; gap:var(--fp-space-1);
+  /* min-width:0 lets the flex item shrink below its nowrap min-content width, and
+     its own overflow clips at the content box. Without both, the label overflows
+     and the bar's overflow:hidden clips it at the PADDING box -- so reserving
+     space with padding-right on the bar would not move the text at all. */
+  min-width:0; overflow:hidden; }
 .gantt-flight .lbl .fl { font-weight:500; font-size:var(--fp-text-xxs); opacity:.85; }
 .clk { cursor:pointer; }
 .clk:hover { z-index:3; outline:var(--fp-keyline) solid var(--fp-ink); outline-offset:-2px; }   /* outline composes with status box-shadows */
@@ -147,19 +161,31 @@ a.gantt-label:hover { text-decoration:underline; text-decoration-color:var(--acc
 .gantt-flight.st-extra  { background:repeating-linear-gradient(45deg,var(--_s) 0 6px,var(--fp-surface) 6px 11px); }
 .gantt-flight.st-extra .lbl { color:var(--fp-ink); }
 
-/* FUTURE — white bar on the off-white track; the type reads from a left keyline */
-.gantt-flight.st-planned { background:var(--fp-bg); border-left:var(--fp-keyline) solid var(--_s); }
+/* FUTURE — white bar framed in the type hue on all four sides */
+.gantt-flight.st-planned { background:var(--fp-bg); border:var(--fp-keyline) solid var(--_s); }
 .gantt-flight.st-planned .lbl { color:var(--_d); }
 
 /* PLANNED SLOT — a scheduled slot not yet tracked, or one vacated by a deviation. Dashed neutral */
 .gantt-flight.st-missing, .gantt-flight.st-ghost { background:var(--fp-bg); border:var(--fp-hairline) dashed var(--fp-gray); }
 .gantt-flight.st-missing .lbl, .gantt-flight.st-ghost .lbl { color:var(--fp-body); }   /* muted is 3.2:1 on white -- too low for a 10px label */
 
-/* SWAP / reassignment */
-.gantt-flight.is-swap { box-shadow:inset 0 0 0 var(--fp-keyline) var(--fp-dv-6); }
+/* SWAP / reassignment — a neutral strip tucked inside the right-hand edge.
+   It used to be an inset ring around the whole bar, which drowned out the type
+   colour it sat on top of. Absolute positioning resolves against the padding
+   box, so on a planned bar this lands inside the coloured border rather than
+   over it, and the frame stays readable. */
+/* Reserve the strip's width on the bar so the flight number clips before it
+   rather than running under an opaque block. It has to go on the flex
+   container: padding-right on the label itself only adds space after a nowrap
+   run that is already overflowing, which moves nothing. Padding does not shrink
+   the containing block of an absolutely positioned child, so the strip still
+   sits flush inside the border. */
+.gantt-flight.is-swap { padding-right:var(--fp-space-3); }
 .gantt-flight .swapchip { position:absolute; right:0; top:0; height:100%; text-align:center; line-height:1;
   writing-mode:vertical-rl; transform:rotate(180deg);   /* "SWAP" reads bottom-to-top: a thin vertical strip */
-  font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); font-weight:700; letter-spacing:-.02em; color:var(--fp-ink); background:var(--fp-dv-6); padding:0 var(--fp-space-1); }
+  font-family:var(--fp-font-sans); font-size:var(--fp-ext-gantt-swap); font-weight:700;
+  letter-spacing:-.06em;   /* component-scoped: -.02em runs 17px against 16px of space and clips the "AP" */
+  color:var(--fp-ink); background:var(--fp-dv-6); padding:0 var(--fp-space-1); }
 
 /* rotation tie — the "stay" parked away from base; hover-only, drawn behind bars */
 .tie { position:absolute; top:10px; height:3px; background:var(--_s); opacity:.4; z-index:0; cursor:help; }
