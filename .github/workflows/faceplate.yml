@@ -8,6 +8,12 @@ name: Faceplate
 # It runs from dashboard/ so it finds dashboard/dist/MANIFEST.sha256, and it
 # only reads .css/.html/.svg -- which is why the stylesheets live in
 # dashboard/static/css/ rather than inline in app.py.
+#
+# No install step: ChristopherBiel/faceplate is private and the runner has no
+# credentials for it, so the checker itself is vendored at dashboard/bin/. It
+# resolves its values from the checksummed dist/tokens.json, so the brand stays
+# pinned even though the tool is a plain copy. Re-pull bin/faceplate.mjs when
+# bumping the vendored dist.
 
 on:
   push:
@@ -24,19 +30,9 @@ jobs:
         with:
           node-version: "20"
 
-      # npm normalises a GitHub dependency to git+ssh in the lockfile whatever
-      # form package.json uses, and the runner has no SSH key. The repo is
-      # public, so rewrite to HTTPS rather than provisioning a deploy key.
-      - name: Use HTTPS for GitHub git deps
-        run: git config --global url."https://github.com/".insteadOf ssh://git@github.com/
-
-      - name: Install pinned Faceplate
-        working-directory: dashboard
-        run: npm ci --no-audit --no-fund
-
       # --strict fails on warnings too. The project is at zero findings, and
       # --fp-ext-* extensions are meant to be a flare rather than a permit, so
       # anything new should be dealt with rather than accumulated.
       - name: faceplate check
         working-directory: dashboard
-        run: npx faceplate check . --strict
+        run: node bin/faceplate.mjs check . --strict

@@ -1,11 +1,8 @@
 {
   "name": "lhlogging-dashboard",
   "private": true,
-  "description": "Faceplate conformance tooling for the dashboard. The app itself is Python; this exists only so `npx faceplate check` runs against a pinned version.",
+  "description": "Faceplate conformance tooling. The app itself is Python; this only provides `npm run check`. There are no dependencies to install -- bin/faceplate.mjs is vendored from faceplate v2.0.0 (sha256 d66666c10cd2ba006479043e28876ef34bae1f19610073b1189c424df9c863ab) because the upstream repo is private and CI has no credentials for it. It reads its values from the checksummed dist/tokens.json.",
   "scripts": {
-    "check": "faceplate check . --strict"
-  },
-  "devDependencies": {
-    "faceplate": "git+https://github.com/ChristopherBiel/faceplate.git#v2.0.0"
+    "check": "node bin/faceplate.mjs check . --strict"
   }
 }

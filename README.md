@@ -367,9 +367,13 @@ everywhere, and each page declares one intensity (`data-fp-intensity="02"`,
 Structured — the register for a dense content app).
 
 ```bash
-cd dashboard && npm install   # pinned to the v2.0.0 release tag
-npx faceplate check . --strict
+cd dashboard && npm run check          # or: node bin/faceplate.mjs check . --strict
 ```
+
+Nothing to install. The upstream repo is private, so the checker itself is
+vendored at `dashboard/bin/faceplate.mjs`; it reads its values from the
+checksummed `dist/tokens.json`, so the brand stays pinned even though the tool
+is a plain copy. Re-pull that script whenever the vendored `dist/` is bumped.
 
 CI runs this on every push and pull request (`.github/workflows/faceplate.yml`).
 It reports unknown tokens, off-palette colour, rounded corners, non-Faceplate
