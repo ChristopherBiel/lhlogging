@@ -115,20 +115,34 @@ def main() -> int:
             logger.warning(f"Planespotters lookup failed for {aircraft['icao24']}: {e}")
     logger.info(f"Planespotters enriched {ps_enriched}/{len(needs_enrichment)} aircraft types")
 
+    # The serial number (MSN) needs migration 011; until it is applied the
+    # update simply leaves that column out.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'aircraft' AND column_name = 'serial_number'"
+        )
+        serial_sql = (
+            "serial_number    = COALESCE(aircraft.serial_number, %(serial_number)s),"
+            if cur.fetchone() else ""
+        )
+
     # Update existing DB aircraft with enriched CSV + Planespotters data.
     # Use COALESCE so CSV data only fills in blanks — never overwrites
     # manually-reviewed values. Don't re-flag aircraft already reviewed.
     for icao24 in to_update:
         ac = api_by_icao24[icao24]
+        ac.setdefault("serial_number", None)
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     UPDATE aircraft SET
                         registration     = COALESCE(NULLIF(aircraft.registration, aircraft.icao24),
                                                     %(registration)s, aircraft.registration),
                         aircraft_type    = COALESCE(aircraft.aircraft_type, %(aircraft_type)s),
                         aircraft_subtype = COALESCE(aircraft.aircraft_subtype, %(aircraft_subtype)s),
+                        {serial_sql}
                         is_active        = TRUE,
                         updated_at       = NOW()
                     WHERE icao24 = %(icao24)s

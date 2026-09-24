@@ -149,9 +149,13 @@ class OpenSkyFleetClient:
         # model is the fuller name e.g. "Airbus A350-941"
         aircraft_subtype = (row.get("model") or "").strip() or None
 
+        # manufacturer serial number (MSN), e.g. "37843" — shown on /airframe
+        serial_number = (row.get("serialnumber") or "").strip() or None
+
         return {
             "icao24": icao24,
             "registration": registration,
             "aircraft_type": aircraft_type,
             "aircraft_subtype": aircraft_subtype,
+            "serial_number": serial_number,
         }
