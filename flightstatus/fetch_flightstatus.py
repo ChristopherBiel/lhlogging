@@ -587,7 +587,9 @@ _LEG_OBS_SQL = """
            btrim(o.registration) AS registration, fl.aircraft_type AS fleet_type,
            o.aircraft_type AS fis_type, o.dep_airport_iata, o.arr_airport_iata,
            o.dep_scheduled, o.arr_scheduled, o.overall_status,
-           o.raw->'legs'->0->>'flightDuration' AS flight_duration
+           o.raw->'legs'->0->>'flightDuration' AS flight_duration,
+           o.raw->'aircraftInfo'->>'seatConfig' AS seat_config,
+           (o.raw->'aircraftInfo'->>'allegris')::boolean AS allegris
     FROM flight_status_observations o
     LEFT JOIN (
         SELECT DISTINCT ON (btrim(registration)) btrim(registration) AS registration,
@@ -604,13 +606,15 @@ _LEG_COLS = ("flight_date", "airline", "flight_number", "dep_iata", "arr_iata",
              "truth_tail", "truth_status", "cancelled", "latest_tail", "latest_status",
              "latest_observed_at", "first_tail", "first_observed_at", "first_lead_h",
              "n_obs", "n_changes", "n_distinct_tails", "timeline")
+# migration 012 — written only once the columns exist
+_LEG_CABIN_COLS = ("seat_config", "allegris")
 
-_LEG_UPSERT_SQL = (
-    "INSERT INTO fis_legs (" + ", ".join(_LEG_COLS) + ", updated_at) VALUES ("
-    + ", ".join("%(" + c + ")s" for c in _LEG_COLS) + ", NOW()) "
-    "ON CONFLICT (flight_date, airline, flight_number) DO UPDATE SET "
-    + ", ".join(f"{c} = EXCLUDED.{c}" for c in _LEG_COLS[3:]) + ", updated_at = NOW()"
-)
+
+def _leg_upsert_sql(cols):
+    return ("INSERT INTO fis_legs (" + ", ".join(cols) + ", updated_at) VALUES ("
+            + ", ".join("%(" + c + ")s" for c in cols) + ", NOW()) "
+            "ON CONFLICT (flight_date, airline, flight_number) DO UPDATE SET "
+            + ", ".join(f"{c} = EXCLUDED.{c}" for c in cols[3:]) + ", updated_at = NOW()")
 
 _CABIN_UPSERT_SQL = """
     INSERT INTO airframe_cabin (registration, seat_config, allegris, sub_type, first_seen, last_seen)
@@ -633,6 +637,16 @@ def legs_schema(conn: psycopg.Connection) -> bool:
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('fis_legs') IS NOT NULL")
         return bool(cur.fetchone()[0])
+
+
+def legs_cabin_schema(conn: psycopg.Connection) -> bool:
+    """True once migration 012 (fis_legs.seat_config / allegris) is applied."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_name = 'fis_legs' AND column_name IN ('seat_config', 'allegris')
+        """)
+        return cur.fetchone()[0] == 2
 
 
 def _leg_row(row: dict) -> dict:
@@ -659,6 +673,8 @@ def _leg_row(row: dict) -> dict:
         "n_obs": row["n_obs"], "n_changes": row["n_changes"],
         "n_distinct_tails": row["n_distinct_tails"],
         "timeline": Jsonb(row["timeline"]),
+        "seat_config": v("seat_config"),
+        "allegris": None if v("allegris") is None else bool(row["allegris"]),
     }
 
 
@@ -678,9 +694,10 @@ def refresh_legs(conn: psycopg.Connection, since: date, until: date) -> int:
         row, _changes = legs.build_leg(key, groups[key])
         if row is not None:
             rows.append(_leg_row(row))
+    cols = _LEG_COLS + (_LEG_CABIN_COLS if legs_cabin_schema(conn) else ())
     with conn.cursor() as cur:
         if rows:
-            cur.executemany(_LEG_UPSERT_SQL, rows)
+            cur.executemany(_leg_upsert_sql(cols), rows)
         # cabins: the looks taken in this window (a date filter on observed_at
         # rather than flight_date — a retrofit is dated by when it was seen)
         cur.execute(_CABIN_UPSERT_SQL, (datetime.combine(since, datetime.min.time(),

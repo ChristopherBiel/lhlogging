@@ -20,6 +20,8 @@ An observation is a dict with at least:
     fleet_type         ICAO type via the `aircraft` table ('' when unknown)
     fis_type           FIS free-text aircraftType (fallback for fleet_type)
     flight_duration    ISO-8601 block time from the payload ('PT12H40M'), optional
+    seat_config        the layout this flight is sold with ('F8C80E32M244'), optional
+    allegris           bool, optional
 """
 from __future__ import annotations
 
@@ -259,6 +261,16 @@ def build_leg(key, obs):
         else:
             row["settle_lead_h"] = 0  # never published before departure
             row["settle_censored"] = 0
+
+    # --- the cabin it is sold with: the operated look's, else the latest one
+    # that carries a layout (FIS publishes it per flight — a First-equipped
+    # aircraft on a route without First is published with no First cabin, so
+    # it is not a property of the airframe) ---
+    cabin_src = next((r for r in ([truth] if truth else []) + found[::-1]
+                      if r.get("seat_config")), None)
+    row["seat_config"] = cabin_src["seat_config"] if cabin_src else ""
+    row["allegris"] = ("" if cabin_src is None or cabin_src.get("allegris") is None
+                       else int(bool(cabin_src["allegris"])))
 
     # --- storage columns (fis_legs) -----------------------------------------
     # The published-tail history, collapsed to one entry per change: enough to

@@ -45,7 +45,9 @@ SQL="COPY (
          o.aircraft_type AS fis_type, o.dep_airport_iata, o.arr_airport_iata,
          o.dep_scheduled, o.arr_scheduled, o.overall_status,
          o.prev_airline, o.prev_flight_number, o.prev_flight_date,
-         o.raw->'legs'->0->>'flightDuration' AS flight_duration
+         o.raw->'legs'->0->>'flightDuration' AS flight_duration,
+         o.raw->'aircraftInfo'->>'seatConfig' AS seat_config,
+         o.raw->'aircraftInfo'->>'allegris' AS allegris
   FROM flight_status_observations o
   LEFT JOIN batch_runs r ON r.id = o.run_id
   LEFT JOIN (

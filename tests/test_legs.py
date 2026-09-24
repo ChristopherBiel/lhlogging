@@ -84,6 +84,14 @@ class BuildLeg(unittest.TestCase):
         self.assertEqual(legs.tail_at(tl, first, 10), "D-ABYQ")
         self.assertIsNone(legs.tail_at(tl, first, 150))
 
+    def test_sold_layout_comes_from_the_operated_look(self):
+        obs = [dict(o, seat_config="F8C80E32M244", allegris=False) for o in self.obs[:-1]]
+        obs.append(dict(self.obs[-1], seat_config="C88E32M244", allegris=False))
+        row, _ = legs.build_leg(("2026-09-28", "LH", "754"), obs)
+        self.assertEqual((row["seat_config"], row["allegris"]), ("C88E32M244", 0))
+        row, _ = legs.build_leg(("2026-09-28", "LH", "754"), obs[:-1])   # not flown yet
+        self.assertEqual(row["seat_config"], "F8C80E32M244")
+
     def test_leg_never_found_is_skipped(self):
         o = dict(self.obs[0], found=False)
         self.assertEqual(legs.build_leg(("2026-09-28", "LH", "716"), [o]), (None, []))

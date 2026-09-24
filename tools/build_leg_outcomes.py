@@ -99,6 +99,8 @@ def prepare(rows):
         r["arr_scheduled"] = _ts(r.get("arr_scheduled"))
         r["found"] = (r["found"] or "").strip().lower() in ("t", "true", "1")
         r["registration"] = (r["registration"] or "").strip().upper()
+        a = (r.get("allegris") or "").strip().lower()
+        r["allegris"] = None if not a else a in ("t", "true", "1")
     return rows
 
 
