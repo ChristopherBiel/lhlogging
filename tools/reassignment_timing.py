@@ -43,7 +43,8 @@ import random
 import statistics
 from datetime import timedelta
 
-from build_leg_outcomes import (BERLIN, DEFAULT_CSV, WIDEBODY, _d, _ts, build_leg, load)
+from build_leg_outcomes import (BERLIN, DEFAULT_CSV, WIDEBODY, _d, _ts, build_leg, load,
+                                prepare)
 
 # Lead-time bins (hours before scheduled departure), near-first.
 LEAD_BINS = [(0, 3), (3, 6), (6, 12), (12, 24), (24, 36), (36, 48),
@@ -353,12 +354,7 @@ def main():
                     help="constant-rate null simulations (0 to skip)")
     args = ap.parse_args()
 
-    rows = load(args.csv)
-    for r in rows:
-        r["observed_at"] = _ts(r["observed_at"])
-        r["dep_scheduled"] = _ts(r["dep_scheduled"])
-        r["found"] = (r["found"] or "").strip().lower() in ("t", "true", "1")
-        r["registration"] = (r["registration"] or "").strip().upper()
+    rows = prepare(load(args.csv))
 
     legs, changes, seqs = build(rows, _d(args.since) if args.since else None,
                                 [t.upper() for t in args.type], args.all_types)

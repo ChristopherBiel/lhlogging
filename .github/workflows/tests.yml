@@ -1,0 +1,23 @@
+name: Tests
+
+# Unit tests for the two pure modules the booking planner rests on:
+# flightstatus/legs.py (FIS looks -> legs) and dashboard/booking_model.py
+# (P(target tail flies a flight)). Stdlib unittest, no install step.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: unittest
+        run: python -m unittest discover -s tests -v

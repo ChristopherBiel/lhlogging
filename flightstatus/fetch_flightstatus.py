@@ -36,6 +36,9 @@ Run modes:
                                                 #   ~7x/day, so deep-tier brackets stay under ~3h
   python fetch_flightstatus.py --flight LH716 --date 2026-06-25   # ad-hoc single lookup (prints JSON)
   python fetch_flightstatus.py --dry-run       # sweep/watch/far/pulse, print candidate set + plan, no writes
+  python fetch_flightstatus.py --rebuild-legs  # rebuild the fis_legs / airframe_cabin layer from all
+                                                #   observations (no browser); every run refreshes
+                                                #   the recent window on its own
 
 Must be run under a display (Xvfb): `xvfb-run -a python fetch_flightstatus.py`.
 """
@@ -51,6 +54,9 @@ from datetime import date, datetime, timedelta, timezone
 
 import psycopg
 from playwright.sync_api import sync_playwright
+from psycopg.types.json import Jsonb
+
+import legs
 
 # --- config (env-overridable, mirrors the lhlogging config style) -----------
 DB_HOST = os.environ.get("DB_HOST", "db")
@@ -144,6 +150,9 @@ SESSION_LOOKUPS = int(os.environ.get("FIS_SESSION_LOOKUPS", "80"))
 # twice-daily runs, RETIRE=8 ≈ 4 days of no widebody.
 CATALOG_PROBATION_MISSES = int(os.environ.get("FIS_CATALOG_PROBATION_MISSES", "4"))
 CATALOG_RETIRE_MISSES = int(os.environ.get("FIS_CATALOG_RETIRE_MISSES", "8"))
+# Leg layer: after every run, rebuild fis_legs for flight dates from D-N on.
+# N covers the truth pass (D-1/D-2 settle to ARRIVED) plus a day of slack.
+LEGS_REFRESH_DAYS = int(os.environ.get("FIS_LEGS_REFRESH_DAYS", "3"))
 
 BASE = "https://www.lufthansa.com"
 PAGE_URL = f"{BASE}/de/en/timetable-and-flight-status"
@@ -570,6 +579,162 @@ def store_coverage(conn: psycopg.Connection, run_id: int, summary: dict) -> None
     except psycopg.errors.UndefinedColumn:
         conn.rollback()
         log("coverage column absent (apply migration 008) — summary not stored")
+
+
+# --- leg layer (migration 010) ----------------------------------------------
+_LEG_OBS_SQL = """
+    SELECT o.observed_at, o.flight_date, o.airline, o.flight_number, o.seed_type, o.found,
+           btrim(o.registration) AS registration, fl.aircraft_type AS fleet_type,
+           o.aircraft_type AS fis_type, o.dep_airport_iata, o.arr_airport_iata,
+           o.dep_scheduled, o.arr_scheduled, o.overall_status,
+           o.raw->'legs'->0->>'flightDuration' AS flight_duration
+    FROM flight_status_observations o
+    LEFT JOIN (
+        SELECT DISTINCT ON (btrim(registration)) btrim(registration) AS registration,
+               aircraft_type
+        FROM aircraft
+        ORDER BY btrim(registration), is_active DESC, last_seen_date DESC NULLS LAST
+    ) fl ON fl.registration = btrim(o.registration)
+    WHERE o.flight_date >= %s AND o.flight_date < %s
+    ORDER BY o.flight_date, o.airline, o.flight_number, o.observed_at
+"""
+
+_LEG_COLS = ("flight_date", "airline", "flight_number", "dep_iata", "arr_iata",
+             "dep_sched_local", "arr_sched_local", "dep_utc", "duration_min", "fleet_type",
+             "truth_tail", "truth_status", "cancelled", "latest_tail", "latest_status",
+             "latest_observed_at", "first_tail", "first_observed_at", "first_lead_h",
+             "n_obs", "n_changes", "n_distinct_tails", "timeline")
+
+_LEG_UPSERT_SQL = (
+    "INSERT INTO fis_legs (" + ", ".join(_LEG_COLS) + ", updated_at) VALUES ("
+    + ", ".join("%(" + c + ")s" for c in _LEG_COLS) + ", NOW()) "
+    "ON CONFLICT (flight_date, airline, flight_number) DO UPDATE SET "
+    + ", ".join(f"{c} = EXCLUDED.{c}" for c in _LEG_COLS[3:]) + ", updated_at = NOW()"
+)
+
+_CABIN_UPSERT_SQL = """
+    INSERT INTO airframe_cabin (registration, seat_config, allegris, sub_type, first_seen, last_seen)
+    SELECT btrim(registration),
+           COALESCE(raw->'aircraftInfo'->>'seatConfig', ''),
+           COALESCE((raw->'aircraftInfo'->>'allegris')::boolean, FALSE),
+           COALESCE(raw->'aircraftInfo'->>'aircraftSubType', ''),
+           MIN(observed_at), MAX(observed_at)
+    FROM flight_status_observations
+    WHERE found AND registration IS NOT NULL AND raw IS NOT NULL AND observed_at >= %s
+    GROUP BY 1, 2, 3, 4
+    ON CONFLICT (registration, seat_config, allegris, sub_type) DO UPDATE SET
+        first_seen = LEAST(airframe_cabin.first_seen, EXCLUDED.first_seen),
+        last_seen  = GREATEST(airframe_cabin.last_seen, EXCLUDED.last_seen)
+"""
+
+
+def legs_schema(conn: psycopg.Connection) -> bool:
+    """True once migration 010 (fis_legs + airframe_cabin) is applied."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('fis_legs') IS NOT NULL")
+        return bool(cur.fetchone()[0])
+
+
+def _leg_row(row: dict) -> dict:
+    """legs.build_leg output -> fis_legs column values ('' -> NULL). build_leg
+    speaks CSV (ISO strings); hand psycopg real datetimes and a Jsonb."""
+    def v(key):
+        x = row.get(key)
+        return None if x == "" else x
+
+    def ts(key):
+        x = v(key)
+        return datetime.fromisoformat(x) if x else None
+    return {
+        "flight_date": row["flight_date"], "airline": row["airline"],
+        "flight_number": row["flight_number"],
+        "dep_iata": v("dep_airport"), "arr_iata": v("arr_airport"),
+        "dep_sched_local": ts("dep_sched_local"), "arr_sched_local": ts("arr_sched_local"),
+        "dep_utc": ts("dep_scheduled_utc"), "duration_min": v("duration_min"),
+        "fleet_type": v("fleet_type"), "truth_tail": v("truth_tail"),
+        "truth_status": v("truth_status"), "cancelled": bool(row["cancelled"]),
+        "latest_tail": v("latest_tail"), "latest_status": v("latest_status"),
+        "latest_observed_at": ts("latest_observed_at"), "first_tail": v("first_tail"),
+        "first_observed_at": ts("first_observed_at"), "first_lead_h": v("first_lead_h"),
+        "n_obs": row["n_obs"], "n_changes": row["n_changes"],
+        "n_distinct_tails": row["n_distinct_tails"],
+        "timeline": Jsonb(row["timeline"]),
+    }
+
+
+def refresh_legs(conn: psycopg.Connection, since: date, until: date) -> int:
+    """Rebuild fis_legs for flight dates in [since, until) from the observations,
+    and fold those looks into airframe_cabin. Returns the number of legs written."""
+    with conn.cursor() as cur:
+        cur.execute(_LEG_OBS_SQL, (since, until))
+        names = [d.name for d in cur.description]
+        groups = defaultdict(list)
+        for rec in cur.fetchall():
+            r = dict(zip(names, rec))
+            r["registration"] = (r["registration"] or "").upper()
+            groups[(r["flight_date"], r["airline"], r["flight_number"])].append(r)
+    rows = []
+    for key in sorted(groups):
+        row, _changes = legs.build_leg(key, groups[key])
+        if row is not None:
+            rows.append(_leg_row(row))
+    with conn.cursor() as cur:
+        if rows:
+            cur.executemany(_LEG_UPSERT_SQL, rows)
+        # cabins: the looks taken in this window (a date filter on observed_at
+        # rather than flight_date — a retrofit is dated by when it was seen)
+        cur.execute(_CABIN_UPSERT_SQL, (datetime.combine(since, datetime.min.time(),
+                                                         tzinfo=timezone.utc),))
+    conn.commit()
+    return len(rows)
+
+
+def refresh_recent_legs(conn: psycopg.Connection) -> None:
+    """Post-run hook: refresh the leg layer for D-LEGS_REFRESH_DAYS onwards.
+    Derived data only — must never fail the run, and is a no-op until the
+    migration is applied."""
+    try:
+        if not legs_schema(conn):
+            return
+        today = date.today()
+        n = refresh_legs(conn, today - timedelta(days=LEGS_REFRESH_DAYS),
+                         today + timedelta(days=30))
+        log(f"legs: refreshed {n} legs from {today - timedelta(days=LEGS_REFRESH_DAYS)}")
+    except Exception as e:  # noqa: BLE001 - derived layer, never fatal
+        conn.rollback()
+        log(f"legs refresh error (non-fatal): {e}")
+
+
+def rebuild_all_legs() -> int:
+    """--rebuild-legs: rebuild the whole leg layer, a month of flight dates at a time."""
+    conn = connect()
+    try:
+        if not legs_schema(conn):
+            log("fis_legs absent — apply db/init/010_fis_legs.sql first")
+            return 1
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(flight_date), MAX(flight_date) FROM flight_status_observations")
+            lo, hi = cur.fetchone()
+        if lo is None:
+            log("no observations — nothing to rebuild")
+            return 0
+        total = 0
+        start = lo.replace(day=1)
+        while start <= hi:
+            end = (start + timedelta(days=32)).replace(day=1)
+            n = refresh_legs(conn, start, end)
+            total += n
+            log(f"legs: {start}..{end - timedelta(days=1)} -> {n} legs")
+            start = end
+        # the monthly passes only folded looks since each window's start into
+        # airframe_cabin; one pass over everything makes first_seen exact
+        with conn.cursor() as cur:
+            cur.execute(_CABIN_UPSERT_SQL, (datetime(2000, 1, 1, tzinfo=timezone.utc),))
+        conn.commit()
+        log(f"legs: rebuilt {total} legs")
+        return 0
+    finally:
+        conn.close()
 
 
 def per_pass_schema(conn: psycopg.Connection) -> bool:
@@ -1085,6 +1250,7 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
         log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
         if summary is not None:
             store_coverage(conn, run_id, summary)
+        refresh_recent_legs(conn)
         conn.close()
     log(f"done: {total} lookups ({chained} via chain, {resets} session recycles), "
         f"{ok} found, {err} blocked/missing, {upserted} rows upserted")
@@ -1187,6 +1353,7 @@ def run_light_pass(label: str, work: list, conn: psycopg.Connection) -> int:
         log(f"{label} error: {e}")
     finally:
         log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
+        refresh_recent_legs(conn)
         conn.close()
     log(f"{label} done: {total} lookups ({resets} session recycles), "
         f"{ok} found, {err} blocked/missing, {upserted} rows upserted")
@@ -1303,7 +1470,12 @@ def main() -> int:
                     help="sweep/watch/far/pulse: print the planned lookups only, no browser/DB writes")
     ap.add_argument("--audit", action="store_true",
                     help="print the coverage audit for the current window and exit (no browser)")
+    ap.add_argument("--rebuild-legs", action="store_true",
+                    help="rebuild fis_legs + airframe_cabin from all observations and exit (no browser)")
     args = ap.parse_args()
+
+    if args.rebuild_legs:
+        return rebuild_all_legs()
 
     if args.watch is not None:
         if args.flight or args.date or args.far or args.pulse:

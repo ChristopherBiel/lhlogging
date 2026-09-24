@@ -35,15 +35,17 @@ DAYS="${FIS_HISTORY_DAYS:-3650}"
 OUT="$ROOT/tmp/fis_history.csv"
 mkdir -p "$ROOT/tmp"
 
-# No string literals in this query, so it survives the nested ssh/-c quoting
-# (same constraint as pull_fis.sh). Interval arithmetic uses make_interval.
+# The query goes to psql on stdin rather than through -c, so it needs no shell
+# quoting (the JSON path below has string literals). flight_duration is the
+# block time legs.dep_utc needs to put outstation departures on true UTC.
 SQL="COPY (
   SELECT o.run_id, r.started_at AS run_started_at, o.observed_at, o.observed_date,
          o.flight_date, o.airline, o.flight_number, o.seed_type, o.found,
          btrim(o.registration) AS registration, fl.aircraft_type AS fleet_type,
          o.aircraft_type AS fis_type, o.dep_airport_iata, o.arr_airport_iata,
          o.dep_scheduled, o.arr_scheduled, o.overall_status,
-         o.prev_airline, o.prev_flight_number, o.prev_flight_date
+         o.prev_airline, o.prev_flight_number, o.prev_flight_date,
+         o.raw->'legs'->0->>'flightDuration' AS flight_duration
   FROM flight_status_observations o
   LEFT JOIN batch_runs r ON r.id = o.run_id
   LEFT JOIN (
@@ -57,7 +59,7 @@ SQL="COPY (
 
 echo "Pulling FIS per-pass history (last $DAYS days) from ${LHLOGGING_SSH}:${LHLOGGING_REMOTE_DIR} ..."
 ssh "$LHLOGGING_SSH" \
-  "cd $LHLOGGING_REMOTE_DIR && docker compose exec -T db psql -U $DB_USER -d $DB_NAME -c \"$SQL\"" \
-  > "$OUT"
+  "cd $LHLOGGING_REMOTE_DIR && docker compose exec -T db psql -U $DB_USER -d $DB_NAME -X -q" \
+  <<< "$SQL" > "$OUT"
 
 echo "Wrote $OUT ($(($(wc -l < "$OUT") - 1)) observations)"
