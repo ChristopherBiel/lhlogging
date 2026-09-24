@@ -127,7 +127,7 @@ lhlogging/
 | **positions** | 2-minute position snapshots — lat/lon, altitude, on_ground, callsign |
 | **flights** | Route log — airports, callsign, timestamps, auto-calculated duration, `needs_review` flag |
 | **airports** | Static airport lookup — ICAO code, lat/lon (from OurAirports) |
-| **fis_legs** | One row per scheduled flight from the FIS looks — operated (truth) tail, latest/first published tail, change timeline; rebuilt by the collector after every run |
+| **fis_legs** | One row per scheduled flight from the FIS looks — operated (truth) tail, latest/first published tail, change timeline, the layout the flight is sold with; rebuilt by the collector after every run |
 | **airframe_cabin** | Cabin history per tail — each distinct seat layout / Allegris / FIS sub-type and when it was seen |
 | **batch_runs** | Audit trail — every job run with stats and error details |
 
@@ -323,19 +323,45 @@ assignment is to still hold by departure.
   projected from recent weeks). Each card says what its number rests on; the
   model and its benchmark are in [docs/booking_model.md](docs/booking_model.md).
   The lookup modes remain: **by tail** (every leg a registration is published
-  on), **by route**, or **by location** (a departure airport off a world map),
-  each with the published tail, its cabin config (First/Business seat counts,
-  Allegris marker) and hold probability. Tails you plan for are remembered in
-  your browser only (no accounts) and starred/pinned on `/book`, `/schedule`
-  and `/insights`. Deep-linkable: `?target=D-ABYN&dep=FRA&arr=EZE&from=…&to=…`,
-  `?reg=D-ABYN`, `?dep=FRA&arr=HND`, `?loc=KIX`; API: `/api/book/plan`.
+  on), **by route**, or **by location**, each with the published tail, the
+  cabin the flight is *sold* with (First/Business seat counts, Allegris marker)
+  and hold probability. The location map has two layers: **Upcoming** (airports
+  with a published departure) and **Network** (routes flown in the last 8
+  weeks, line width = legs); both follow the type/Allegris/First filters and a
+  one-tail box, and a route line opens that route in Plan (for the tail) or
+  route mode. Tails you plan for are remembered in your browser only (no
+  accounts) and starred/pinned on `/book`, `/schedule` and `/insights`.
+  Deep-linkable: `?target=D-ABYN&dep=FRA&arr=EZE&from=…&to=…`, `?reg=D-ABYN`,
+  `?dep=FRA&arr=HND`, `?loc=KIX`, `?map=net&tail=D-ABYN`; APIs:
+  `/api/book/plan`, `/api/book/network`.
+- **`/airframe/<reg>`** — one tail's profile: its cabin and hard product as
+  Lufthansa's feed publishes it (seat counts, Allegris, Wi-Fi, seatback IFE,
+  USB power, sub-fleet code, special livery, MSN from the OpenSky database),
+  which cabin variant of its fleet it is, the routes where the fleet's First is
+  not on sale, its cabin history, whether it is in service (last operated
+  leg + last ADS-B position), where it flies (share of each route's legs),
+  where it is published next with hold rates, and a click-to-load
+  planespotters.net photo (nothing is requested from them before the click).
+  Linked from every tail on `/book`, `/schedule`, `/insights` and `/fleet`.
 - **`/schedule`** — per-airframe upcoming timeline from the latest snapshot of
   each flight, grouped by tail.
 - **`/insights`** — descriptive, backward-looking analytics per aircraft
-  type/family (747-8, A380, 787, A350): route frequency, rotation transitions,
+  type/family (747-8, A380, 787, A350) from the leg layer (the tail FIS
+  reports as having flown each flight): route frequency, rotation transitions,
   per-airframe profiles, and reassignment reliability.
 - **`/fleet`** — the aircraft database: one row per airframe, drill into a tail's
-  flight log and route history.
+  ADS-B flight log and route history.
+
+**Seat layout is per flight.** FIS's `seatConfig` describes the flight, not
+just the airframe. First is a route product: when a First-equipped aircraft flies
+a route without First, the flight is published without a First cabin — a 747-8 on
+LH754 to Bengaluru, or standing in for the usual 747-400 on LH780 to Singapore, is
+published C88E32M244 (88 Business, no First; whether the 8 seats are then sold as
+Business or blocked, the feed doesn't say), and Allegris A350s drop
+from F4C38E24M201 to C42E24M201 on some flights. A tail's physical cabin is the
+layout it is most often published with; each leg keeps its own sold layout
+(`fis_legs.seat_config`, migration 012), which is what the cards, filters and
+planner show.
 
 **Map mode note.** The `/book` world map is self-hosted: the land/border
 outline and airport coordinates are inlined in `app.py` (regenerate with
@@ -485,13 +511,17 @@ docker compose exec app python -m tools.backfill_routes            # dry-run pre
 docker compose exec app python -m tools.backfill_routes --apply    # apply
 ```
 
-**Leg layer (`010`).** Deploy first (the collector skips the leg refresh while the tables
-are missing), then create the tables and backfill them once from all observations; after
-that every collector run refreshes the recent window on its own:
+**Leg layer (`010`, `012`) and serial numbers (`011`).** All three are additive; the code
+checks for them and works without. Create the tables/columns and backfill the leg layer
+once from all observations (again after `012`, so history gets each flight's sold layout);
+after that every collector run refreshes the recent window on its own. `011` is filled by
+the next weekly fleet refresh (or run `docker compose exec app python -m lhlogging.fleet_refresh`):
 
 ```bash
-ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
-  < db/init/010_fis_legs.sql
+for m in 010_fis_legs 011_aircraft_serial 012_fis_legs_cabin; do
+  ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
+    < db/init/$m.sql
+done
 docker compose exec flightstatus python fetch_flightstatus.py --rebuild-legs
 ```
 
