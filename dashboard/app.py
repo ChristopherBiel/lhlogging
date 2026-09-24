@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 import psycopg
 import psycopg.rows
 from dotenv import load_dotenv
+
+import booking_model
 from flask import (
     Flask,
     Response,
@@ -2281,9 +2283,6 @@ _SCHEDULE_TYPES = ("B748", "A388", "B788", "B789", "B78X", "A359", "A35K")
 # 120h..216h rows) the pages stay on the horizon every tier is swept at — so
 # the probe changes no page.
 BOOK_HORIZON_DAYS = int(os.environ.get("BOOK_HORIZON_DAYS", "4"))
-# Tails the user is most interested in — pinned to the top and highlighted.
-# A watched tail stays visible even when its type is hidden via the checkboxes.
-_WATCH_TAILS = ("D-ABYN", "D-AIMH", "D-AIXL", "D-ABPU")
 # German hub airports (all share the Frankfurt timezone) used to anchor each
 # leg onto a single Frankfurt-local clock.
 _DE_HUBS = {"FRA", "MUC", "DUS", "BER", "HAM", "STR", "CGN", "NUE", "LEJ", "TXL"}
@@ -2600,6 +2599,101 @@ def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
     return _q(conn, sql, params)
 
 
+# ── Booking model over the leg layer (fis_legs, migration 010) ──────────
+# P(target tail operates a flight) and the published tail's hold rate, from
+# booking_model.py — the same code tools/benchmark_booking.py scores
+# walk-forward. Everything here is None/legacy while migration 010 isn't
+# applied: /book then keeps the day-lead stability chip above.
+_MODEL_TTL_S = 600
+_MODEL_HISTORY_DAYS = booking_model.HISTORY_WEEKS * 7 + booking_model.VALIDATION_DAYS + 3
+_model_cache = {"ts": 0.0, "stats": None, "legs": None}
+# Planner date range: default and cap, in days from today.
+PLAN_DEFAULT_DAYS = 14
+PLAN_MAX_DAYS = 21
+
+_LEG_SQL = """
+    SELECT flight_date, airline, flight_number, dep_iata, arr_iata, dep_sched_local,
+           arr_sched_local, dep_utc, fleet_type, truth_tail, cancelled, latest_tail,
+           latest_status, latest_observed_at, first_lead_h, timeline
+    FROM fis_legs
+"""
+
+
+def _leg_from_row(r):
+    (fdate, airline, fnum, dep, arr, dep_l, arr_l, dep_utc, ftype, truth, cancelled,
+     latest, lstatus, lobs, first_lead, timeline) = r
+    return {"flight_date": fdate, "airline": airline, "flight_number": fnum,
+            "dep": dep, "arr": arr, "dep_local": dep_l, "arr_local": arr_l,
+            "dep_utc": dep_utc, "fleet_type": ftype or "", "truth_tail": truth or "",
+            "cancelled": bool(cancelled), "latest_tail": latest or "",
+            "latest_status": lstatus or "", "latest_observed_at": lobs,
+            "first_lead_h": first_lead, "timeline": timeline or []}
+
+
+def _published(leg):
+    """The tail on the flight right now: the newest look's, unless that look
+    was taken after departure (then the flight has flown, nothing to predict)."""
+    if not leg["latest_tail"] or leg["dep_utc"] is None or leg["latest_observed_at"] is None:
+        return None
+    return leg["latest_tail"] if leg["latest_observed_at"] < leg["dep_utc"] else None
+
+
+def _booking_model(conn):
+    """(stats, history legs) for the booking model, rebuilt every _MODEL_TTL_S;
+    (None, None) while fis_legs is absent."""
+    nowts = datetime.now(timezone.utc).timestamp()
+    if _model_cache["stats"] is not None and nowts - _model_cache["ts"] < _MODEL_TTL_S:
+        return _model_cache["stats"], _model_cache["legs"]
+    try:
+        if not _q1(conn, "SELECT to_regclass('fis_legs') IS NOT NULL"):
+            return None, None
+        rows = _q(conn, _LEG_SQL + " WHERE flight_date >= CURRENT_DATE - %s"
+                                   " AND flight_date < CURRENT_DATE",
+                  (_MODEL_HISTORY_DAYS,))
+    except Exception:
+        return _model_cache["stats"], _model_cache["legs"]  # stale beats a 500
+    legs = [_leg_from_row(r) for r in rows]
+    stats = booking_model.build_stats(legs, datetime.now(timezone.utc))
+    _model_cache.update(ts=nowts, stats=stats, legs=legs)
+    return stats, legs
+
+
+def _upcoming_legs(conn, *, reg=None, dep=None, arr=None, date_from=None, date_to=None,
+                   types=_SCHEDULE_TYPES):
+    """fis_legs counterpart of _latest_assignments: upcoming flights (today ..
+    BOOK_HORIZON_DAYS, or the given dates) as leg dicts, optionally only those
+    a tail is currently published on (`reg`) or a route (dep/arr: IATA lists)."""
+    where = ["flight_date >= %s", "flight_date <= %s", "dep_sched_local IS NOT NULL"]
+    today = date.today()
+    params = [date_from or today, date_to or today + timedelta(days=BOOK_HORIZON_DAYS)]
+    if types:
+        where.append("fleet_type = ANY(%s)"); params.append(list(types))
+    if reg:
+        where.append("latest_tail = %s"); params.append(reg)
+    if dep:
+        where.append("dep_iata = ANY(%s)"); params.append(list(dep))
+    if arr:
+        where.append("arr_iata = ANY(%s)"); params.append(list(arr))
+    rows = _q(conn, _LEG_SQL + " WHERE " + " AND ".join(where) + " ORDER BY dep_utc", params)
+    return [_leg_from_row(r) for r in rows]
+
+
+def _hold_chip(res):
+    """booking_model result for the published tail -> the {p, n, basis, lead}
+    shape the /book and /schedule chips read."""
+    if not res or res.get("hold") is None:
+        return None
+    return {"p": res["p"], "n": res["hold_n"], "basis": res["hold_kind"],
+            "lead": max(int(res["lead_h"] // 24), 0), "band": res["band"]}
+
+
+def _target_view(res):
+    """booking_model result -> the JSON a card shows for the visitor's target."""
+    return {"p": round(res["p"], 4), "regime": res["regime"], "why": res["why"],
+            "lead_h": res["lead_h"], "share_n": res["share_n"], "share_k": res["share_k"],
+            "hold": res["hold"], "hold_n": res["hold_n"], "band": res["band"]}
+
+
 @app.route("/api/schedule")
 def api_schedule():
     """Per-airframe upcoming schedule from the latest FIS snapshot of each
@@ -2760,13 +2854,14 @@ def api_schedule():
     win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     type_order = {"748": 0, "388": 1, "788": 2, "789": 3, "78X": 4, "359": 5, "35K": 6}
     airframes = [
-        {"reg": reg, "type": types[reg], "watch": reg in _WATCH_TAILS,
+        {"reg": reg, "type": types[reg],
          "icao24": icao24_by_reg.get(reg),
          "allegris": (reg or "").strip() in alleg,
          "legs": sorted(by_reg[reg], key=lambda x: x["start"])}
         for reg in by_reg
     ]
-    airframes.sort(key=lambda a: (not a["watch"], type_order.get(a["type"], 9), a["reg"]))
+    # the visitor's own tails (browser storage) are pinned client-side
+    airframes.sort(key=lambda a: (type_order.get(a["type"], 9), a["reg"]))
     return jsonify({
         "airframes": airframes,
         "window": {"start": win_start.isoformat(), "end": win_end.isoformat()},
@@ -2807,7 +2902,13 @@ def api_schedule_flight(airline, number, fdate):
             WHERE o.flight_date=%s AND o.airline=%s AND o.flight_number=%s
             ORDER BY o.observed_at
         """, (fdate_d, airline, number))
-        stab = _reassignment_stability(conn)
+        stats, _hist = _booking_model(conn)
+        mleg = None
+        if stats is not None:
+            found = _q(conn, _LEG_SQL + " WHERE flight_date = %s AND airline = %s"
+                                        " AND flight_number = %s", (fdate_d, airline, number))
+            mleg = _leg_from_row(found[0]) if found else None
+        stab = _reassignment_stability(conn) if mleg is None else None
         alleg = _allegris_tails(conn)
     finally:
         conn.close()
@@ -2836,8 +2937,13 @@ def api_schedule_flight(airline, number, fdate):
         (reg, at, dep, arr, dep_t, arr_t, st, pa, pn, pd, raw, obs_d) = latest[0]
         raw = raw or {}
         _lead = (fdate_d - date.today()).days
-        _hold = (_hold_probability(stab, _lead, f"{dep or '?'}-{arr or '?'}",
-                                   _CANON_SHORT.get(at, at)) if _lead >= 0 else None)
+        if mleg is not None:
+            pub = _published(mleg)
+            _hold = (_hold_chip(booking_model.p_target(stats, pub, mleg, published=pub))
+                     if pub else None)
+        else:
+            _hold = (_hold_probability(stab, _lead, f"{dep or '?'}-{arr or '?'}",
+                                       _CANON_SHORT.get(at, at)) if _lead >= 0 else None)
         leg = (raw.get("legs") or [{}])[0]
         depj, arrj = leg.get("departure") or {}, leg.get("arrival") or {}
         ac = raw.get("aircraftInfo") or {}
@@ -2897,38 +3003,162 @@ def api_book():
         conn = _db()
     except Exception as e:
         return jsonify({"error": str(e)}), 503
+    target = (request.args.get("target") or "").strip().upper() or None
     try:
-        rows = _latest_assignments(conn, reg=reg, dep=dep, arr=arr)
+        stats, _hist = _booking_model(conn)
+        if stats is not None:
+            legs = _upcoming_legs(conn, reg=reg, dep=dep, arr=arr)
+            rows = [(l["flight_date"], l["airline"], l["flight_number"], l["latest_tail"],
+                     l["fleet_type"], l["dep"], l["arr"], l["dep_local"], l["arr_local"],
+                     l["latest_status"]) for l in legs]
+        else:
+            legs = None
+            rows = _latest_assignments(conn, reg=reg, dep=dep, arr=arr)
+            stab = _reassignment_stability(conn)
         swapped = {(r[0], r[1]) for r in _q(conn, _BOOK_SWAP_SQL)}
-        stab = _reassignment_stability(conn)
         alleg = _allegris_tails(conn)
         cabins = _cabin_configs(conn)
     finally:
         conn.close()
 
     today = date.today()
+    now = datetime.now(timezone.utc)
     flights = []
-    for (fdate, airline, fnum, r_reg, atype, d, a, dep_t, arr_t, status) in rows:
+    for i, (fdate, airline, fnum, r_reg, atype, d, a, dep_t, arr_t, status) in enumerate(rows):
         short = _CANON_SHORT.get(atype, atype)
         lead = (fdate - today).days
+        tview = None
+        if legs is not None:
+            pub = _published(legs[i])
+            hold = (_hold_chip(booking_model.p_target(stats, pub, legs[i], published=pub, now=now))
+                    if pub else None)
+            if target:
+                tview = _target_view(booking_model.p_target(stats, target, legs[i],
+                                                            published=pub, now=now))
+        else:
+            hold = _hold_probability(stab, lead, f"{d or '?'}-{a or '?'}", short)
         flights.append({
             "flight": f"{airline}{fnum}", "number": fnum, "flight_date": fdate.isoformat(),
             "dep": d, "arr": a,
             "dep_sched": dep_t.isoformat() if dep_t else None,
             "arr_sched": arr_t.isoformat() if arr_t else None,
-            "reg": r_reg, "type": short, "watch": r_reg in _WATCH_TAILS,
+            "reg": r_reg, "type": short,
             "allegris": (r_reg or "").strip() in alleg,
             "cabin": _parse_seat_config(cabins.get((r_reg or "").strip())),
             "lead": lead, "status": status,
             "reassigned": (fdate, fnum) in swapped,
-            "hold": _hold_probability(stab, lead, f"{d or '?'}-{a or '?'}", short),
+            "hold": hold, "target": tview,
         })
     return jsonify({
         "mode": "tail" if reg else "route",
-        "query": {"reg": reg, "dep": dep, "arr": arr},
+        "query": {"reg": reg, "dep": dep, "arr": arr, "target": target},
+        "model": legs is not None,
         "flights": flights,
         "horizon": flights[-1]["flight_date"] if flights else None,
         "generated": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@app.route("/api/book/plan")
+def api_book_plan():
+    """The booking planner: for one target tail, every candidate flight in a
+    date range — optionally one route (dep/arr: comma-separated IATA lists) —
+    with P(target operates it), ranked. Inside the published window the
+    candidates are the flights FIS lists (with the tail published now); beyond
+    it, the timetable projected from recent weeks (booking_model.project_schedule).
+    ?target=D-ABYN [&dep=FRA&arr=EZE] [&from=YYYY-MM-DD&to=YYYY-MM-DD]"""
+    target = (request.args.get("target") or "").strip().upper() or None
+    if not target:
+        return jsonify({"error": "provide ?target= (a registration, e.g. D-ABYN)"}), 400
+    dep = _codes_param(request.args.get("dep"))
+    arr = _codes_param(request.args.get("arr"))
+    today = date.today()
+    try:
+        d_from = date.fromisoformat(request.args.get("from") or today.isoformat())
+        d_to = date.fromisoformat(request.args.get("to")
+                                  or (today + timedelta(days=PLAN_DEFAULT_DAYS)).isoformat())
+    except ValueError:
+        return jsonify({"error": "from/to must be YYYY-MM-DD"}), 400
+    d_from = max(d_from, today)
+    d_to = min(d_to, today + timedelta(days=PLAN_MAX_DAYS))
+    if d_to < d_from:
+        return jsonify({"error": "empty date range"}), 400
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        stats, hist = _booking_model(conn)
+        if stats is None:
+            return jsonify({"error": "the planner needs the leg layer (migration 010)"}), 503
+        ttype = stats.tail_type.get(target) or _q1(
+            conn, "SELECT aircraft_type FROM aircraft WHERE btrim(registration) = %s "
+                  "ORDER BY is_active DESC LIMIT 1", (target,))
+        if not ttype:
+            return jsonify({"error": f"unknown tail {target}"}), 404
+        horizon = today + timedelta(days=BOOK_HORIZON_DAYS)
+        # every row FIS has in the range: inside the horizon they carry the
+        # published tail, beyond it (horizon probe) only confirm the timetable
+        listed = _upcoming_legs(conn, dep=dep, arr=arr, date_from=d_from, date_to=d_to,
+                                types=None)
+        own = _upcoming_legs(conn, reg=target, date_from=today, date_to=horizon, types=None)
+        alleg = _allegris_tails(conn)
+        cabins = _cabin_configs(conn)
+    finally:
+        conn.close()
+
+    now = datetime.now(timezone.utc)
+    cands, have = [], set()
+    for leg in listed:
+        inside = leg["flight_date"] <= horizon
+        pub = _published(leg) if inside else None
+        if leg["fleet_type"] != ttype and pub != target:
+            continue  # another fleet: the target flies it only as a rare substitution
+        cands.append((leg, pub, "published" if pub else "scheduled"))
+        have.add((leg["flight_date"], leg["flight_number"]))
+    dates = [d_from + timedelta(days=i) for i in range((d_to - d_from).days + 1)]
+    for leg in booking_model.project_schedule(hist, [d for d in dates if d > horizon], now,
+                                              ftype=ttype, deps=dep, arrs=arr):
+        if (leg["flight_date"], leg["flight_number"]) not in have:
+            cands.append((leg, None, "projected"))
+
+    flights = []
+    for leg, pub, source in cands:
+        res = booking_model.p_target(stats, target, leg, published=pub, now=now)
+        if res["regime"] == "departed":
+            continue
+        flights.append({
+            "flight": f"{leg['airline']}{leg['flight_number']}", "number": leg["flight_number"],
+            "flight_date": leg["flight_date"].isoformat(), "dep": leg["dep"], "arr": leg["arr"],
+            "dep_sched": leg["dep_local"].isoformat() if leg["dep_local"] else None,
+            "arr_sched": leg["arr_local"].isoformat() if leg["arr_local"] else None,
+            "type": _CANON_SHORT.get(leg["fleet_type"], leg["fleet_type"]),
+            "source": source, "published": pub,
+            "published_allegris": bool(pub) and pub in alleg,
+            "published_cabin": _parse_seat_config(cabins.get(pub)) if pub else None,
+            "status": leg["latest_status"] or None,
+            **_target_view(res),
+        })
+    flights.sort(key=lambda f: (-f["p"], f["flight_date"], f["dep_sched"] or ""))
+
+    idle = booking_model.idle_days(stats, target)
+    return jsonify({
+        "target": {
+            "reg": target, "type": _CANON_SHORT.get(ttype, ttype), "type_code": ttype,
+            "allegris": target in alleg, "cabin": _parse_seat_config(cabins.get(target)),
+            "last_flown": stats.last_flown[target].isoformat() if target in stats.last_flown else None,
+            "idle_days": round(idle, 1) if idle is not None else None,
+            "fit": stats.fit.get(ttype),
+            "published_legs": [{"flight": f"{l['airline']}{l['flight_number']}",
+                                "flight_date": l["flight_date"].isoformat(),
+                                "dep": l["dep"], "arr": l["arr"],
+                                "dep_sched": l["dep_local"].isoformat() if l["dep_local"] else None}
+                               for l in own],
+        },
+        "query": {"dep": dep, "arr": arr, "from": d_from.isoformat(), "to": d_to.isoformat()},
+        "horizon": horizon.isoformat(),
+        "flights": flights,
+        "generated": now.isoformat(),
     })
 
 
@@ -4163,7 +4393,7 @@ def api_insights():
                        "first": r[3].isoformat() if r[3] else None,
                        "last": r[4].isoformat() if r[4] else None,
                        "type": _CANON_SHORT.get(r[5], r[5]),
-                       "watch": r[0] in _WATCH_TAILS, "max_ground_days": ground.get(r[0])}
+                       "max_ground_days": ground.get(r[0])}
                       for r in airframes],
         "rotation": [{"from": r[0], "to": r[1], "n": r[2]} for r in rotation],
         "reliability": reliability,
@@ -4221,10 +4451,10 @@ _SCHEDULE_HTML = """\
     </div></div>
     <div class="legrp"><span class="leglbl">Marks</span><div class="items">
       <span><span class="sw" style="background:linear-gradient(90deg,var(--fp-bg) 0 58%,var(--fp-dv-6) 58% 100%);border:var(--fp-keyline) solid var(--accent)"></span>swap</span>
-      <span><span class="star" style="color:var(--fp-ink)">&#9733;</span>watched</span>
+      <span><span class="star" style="color:var(--fp-ink)">&#9733;</span>your tails</span>
     </div></div>
   </div>
-  <div class="meta" style="margin-top:var(--fp-space-2)">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Watched tails are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
+  <div class="meta" style="margin-top:var(--fp-space-2)">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Your tails (the ones you planned on <a href="/book">Catch a Tail</a>, remembered in this browser) are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
@@ -4232,6 +4462,11 @@ _SCHEDULE_HTML = """\
 </footer>
 <script>
 const $ = id => document.getElementById(id);
+// The tails this visitor planned on /book (browser storage, no accounts).
+function myTargets(){
+  try { const v = JSON.parse(localStorage.getItem('lh.targets') || '[]'); return new Set(Array.isArray(v) ? v : []); }
+  catch(e){ return new Set(); }
+}
 function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
   return d.toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
 // hue per family (variants share it; the badge text names the exact variant)
@@ -4255,6 +4490,10 @@ async function init(){
   catch(e){ $('gantt').innerHTML='<div class="empty">Failed to load schedule.</div>'; return; }
   if(d.error){ $('gantt').innerHTML='<div class="empty">'+d.error+'</div>'; return; }
   if(!d.airframes || !d.airframes.length){ $('gantt').innerHTML='<div class="empty">No upcoming schedule data yet — the nightly collector has not populated future flights.</div>'; $('meta').textContent=''; return; }
+  // starred + pinned = the visitor's own tails (planned on /book, kept in this browser)
+  const MINE = myTargets(), TORD = {'748':0,'388':1,'788':2,'789':3,'78X':4,'359':5,'35K':6};
+  d.airframes.forEach(a => { a.watch = MINE.has(a.reg); });
+  d.airframes.sort((x,y) => (y.watch - x.watch) || ((x.type in TORD ? TORD[x.type] : 9) - (y.type in TORD ? TORD[y.type] : 9)) || x.reg.localeCompare(y.reg));
 
   const t0=new Date(d.window.start).getTime(), t1=new Date(d.window.end).getTime();
   const range=t1-t0, dayMs=86400000;
@@ -4567,26 +4806,35 @@ _BOOK_HTML = """\
       <a class="nav-link" href="/">&larr; Monitor</a>
     </nav>
   </div>
-    <div class="meta">Find an upcoming flight by <b>airframe</b>, <b>route</b> or <b>location</b>, with the currently published tail and a measured chance it still holds by departure. Schedule is published ~4 days out, so check back closer to your date.</div>
+    <div class="meta"><b>Plan</b> ranks every flight in your dates by the chance <b>your</b> airframe operates it &mdash; from the published tail up to ~4 days out, from history beyond. Or look up what flies by <b>tail</b>, <b>route</b> or <b>location</b>.</div>
   <div class="fp-seg">
-    <button id="m-tail" class="active" onclick="setMode('tail')">By tail</button>
+    <button id="m-plan" class="active" onclick="setMode('plan')">Plan</button>
+    <button id="m-tail" onclick="setMode('tail')">By tail</button>
     <button id="m-route" onclick="setMode('route')">By route</button>
     <button id="m-map" onclick="setMode('map')">By location</button>
   </div>
   <div class="searchbar">
-    <input id="tail-in" type="text" placeholder="registration, e.g. D-ABYN">
-    <div class="tokbox" id="dep-box" style="display:none">
+    <input id="plan-in" type="text" placeholder="your tail, e.g. D-ABYN" list="targets" autocomplete="off">
+    <datalist id="targets"></datalist>
+    <input id="tail-in" type="text" placeholder="registration, e.g. D-ABYN" style="display:none">
+    <div class="tokbox" id="dep-box">
       <span class="boxlbl">from</span>
       <input id="dep-in" type="text" placeholder="add airport, e.g. FRA" autocomplete="off">
       <div class="sugg" id="dep-sugg"></div>
     </div>
-    <div class="tokbox" id="arr-box" style="display:none">
+    <div class="tokbox" id="arr-box">
       <span class="boxlbl">to</span>
       <input id="arr-in" type="text" placeholder="add airport, e.g. HND" autocomplete="off">
       <div class="sugg" id="arr-sugg"></div>
     </div>
+    <div class="datebox" id="date-box">
+      <span class="boxlbl">dates</span>
+      <input id="plan-from" type="date" aria-label="first date">
+      <span class="dsep">&ndash;</span>
+      <input id="plan-to" type="date" aria-label="last date">
+    </div>
     <button class="fp-btn fp-btn--solid" id="search-btn" onclick="search()">Search</button>
-    <button class="fp-btn" id="filter-btn" onclick="toggleFilters()">Filters</button>
+    <button class="fp-btn" id="filter-btn" onclick="toggleFilters()" style="display:none">Filters</button>
   </div>
   <div class="mapwrap" id="mapwrap">
     <div class="maphead">
@@ -4619,8 +4867,8 @@ _BOOK_HTML = """\
     <span class="fsep"></span>
     <button class="fp-btn" id="f-reset">Reset</button>
   </div>
-  <div class="hint" id="hint"><span id="hint-lead">Tip: route mode takes <b>several airports per side</b> &mdash; type a code or city for suggestions, Enter or comma adds it.</span> Watched airframes are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin; <span class="cbadge cf">F8</span> <span class="cbadge">C80</span> = First / Business seat count (cabin follows the assigned tail, so mind the hold %).</div>
-  <div class="results" id="results"><div class="empty">Search a tail (e.g. D-ABYN), a route (e.g. FRA &rarr; HND), or pick an airport off the map.</div></div>
+  <div class="hint" id="hint"><span id="hint-lead">Tip: pick the tail you want to fly, optionally a route (several airports per side) and your dates.</span> Tails you have planned for are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin; <span class="cbadge cf">F8</span> <span class="cbadge">C80</span> = First / Business seat count (cabin follows the assigned tail, so mind the hold %).</div>
+  <div class="results" id="results"><div class="empty">Enter the tail you want to fly (e.g. D-ABYN) &mdash; optionally a route and dates &mdash; to rank the flights it could operate.</div></div>
 </div>
 <div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
 <footer>
@@ -4628,27 +4876,54 @@ _BOOK_HTML = """\
 </footer>
 <script>
 const $ = id => document.getElementById(id);
-let mode = 'tail';
+let mode = 'plan';
 const HINTS = {
+  plan: 'Tip: pick the tail you want to fly, optionally a route (several airports per side) and your dates.',
   tail: 'Tip: search a registration to see every upcoming leg that airframe is published on.',
   route: 'Tip: route mode takes <b>several airports per side</b> &mdash; type a code or city for suggestions, Enter or comma adds it.',
   map: 'Tip: drag to pan, scroll or +/&minus; to zoom, then click an airport. Marker size is how many departures are published there.',
 };
 function setMode(m){
   mode = m;
-  $('m-tail').classList.toggle('active', m==='tail');
-  $('m-route').classList.toggle('active', m==='route');
-  $('m-map').classList.toggle('active', m==='map');
+  ['plan','tail','route','map'].forEach(k => $('m-'+k).classList.toggle('active', m===k));
+  $('plan-in').style.display = m==='plan' ? '' : 'none';
+  $('date-box').style.display = m==='plan' ? '' : 'none';
   $('tail-in').style.display = m==='tail' ? '' : 'none';
-  $('dep-box').style.display = m==='route' ? '' : 'none';
-  $('arr-box').style.display = m==='route' ? '' : 'none';
+  $('dep-box').style.display = (m==='route' || m==='plan') ? '' : 'none';
+  $('arr-box').style.display = (m==='route' || m==='plan') ? '' : 'none';
   // in map mode the marker *is* the query, so the free-text search button goes
   $('search-btn').style.display = m==='map' ? 'none' : '';
+  // the filters act on the published tail; a plan is about one fixed tail
+  $('filter-btn').style.display = m==='plan' ? 'none' : '';
+  if(m==='plan') $('filterbar').classList.remove('show');
   $('mapwrap').classList.toggle('show', m==='map');
   $('hint-lead').innerHTML = HINTS[m] || '';
   if(m==='map'){ mapInit(); if(MAP.marks.length) mapDraw(); }   // redraw: it sizes to a visible box
-  else { (m==='tail' ? $('tail-in') : $('dep-in')).focus(); }
+  else { ({plan:$('plan-in'), tail:$('tail-in'), route:$('dep-in')})[m].focus(); }
 }
+
+/* ── Your targets: kept in this browser only (no accounts), star your tails
+   everywhere and prefill the Plan input. Storage can be blocked or throw
+   (private windows) — then there are simply no stars. */
+const TKEY = 'lh.targets';
+function loadTargets(){
+  try { const v = JSON.parse(localStorage.getItem(TKEY) || '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : []; }
+  catch(e){ return []; }
+}
+let WATCH = new Set(loadTargets());
+function fillTargets(){
+  WATCH = new Set(loadTargets());
+  $('targets').innerHTML = [...WATCH].map(r => '<option value="'+esc(r)+'">').join('');
+}
+function saveTarget(reg){
+  try { const t = loadTargets().filter(x => x !== reg); t.unshift(reg); localStorage.setItem(TKEY, JSON.stringify(t.slice(0, 8))); }
+  catch(e){}
+  fillTargets();
+}
+fillTargets();
+function isoDay(d){ return d.toISOString().slice(0, 10); }
+$('plan-from').value = isoDay(new Date());
+$('plan-to').value = isoDay(new Date(Date.now() + 14 * 864e5));
 
 /* ── Multi-airport token inputs with suggestions ─────────────────
    The suggestion list is the collected FIS network (code + city name),
@@ -4809,7 +5084,7 @@ function drawResults(){
       + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+lead+'</div>'
       + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+'</div>'
       + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
-      + '<div class="tail">'+(f.watch?'<span class="star">&#9733;</span>':'')+(f.reg||'?')
+      + '<div class="tail">'+(WATCH.has(f.reg)?'<span class="star">&#9733;</span>':'')+(f.reg||'?')
       + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span>'
       + (f.allegris?'<span class="abadge" title="Allegris cabin">ALLEGRIS</span>':'')
       + cabinBadges(f.cabin)+'</div>'
@@ -4819,8 +5094,83 @@ function drawResults(){
   R.innerHTML = h;
 }
 
+/* ── Plan mode: every candidate flight for one target tail, ranked by P ── */
+let PLAN = null, PSORT = 'p';
+function pctText(p){ const v = p * 100; return v >= 10 ? Math.round(v)+'%' : (v >= 1 ? v.toFixed(1)+'%' : (v > 0 ? '&lt;1%' : '0%')); }
+function srcLabel(s){ return ({published:'published', scheduled:'FIS schedule', projected:'projected'})[s] || s; }
+function leadTxt(fdate){
+  const n = Math.round((new Date(fdate+'T00:00:00Z') - new Date(isoDay(new Date())+'T00:00:00Z')) / 864e5);
+  return n === 0 ? 'today' : (n === 1 ? 'tomorrow' : 'in '+n+' days');
+}
+function renderPlan(d){ PLAN = d; drawPlan(); }
+function drawPlan(){
+  const R = $('results'), d = PLAN;
+  if(d.error){ R.innerHTML = '<div class="empty">'+esc(d.error)+'</div>'; return; }
+  const t = d.target;
+  let h = '<div class="tsum"><div class="tsum-head"><span class="treg">'+esc(t.reg)+'</span>'
+    + '<span class="tbadge '+tcls(t.type)+'">'+esc(t.type)+'</span>'
+    + (t.allegris ? '<span class="abadge">ALLEGRIS</span>' : '') + cabinBadges(t.cabin)
+    + (t.cabin ? '<span class="tcab">'+cabinText(t.cabin)+'</span>' : '') + '</div>';
+  const idle = t.idle_days;
+  h += '<div class="tsum-line">' + (idle == null ? 'No operated flight in the last weeks.'
+    : (idle > 3 ? '&#9888; Has not flown for '+Math.floor(idle)+' days &mdash; possibly in maintenance.'
+    : 'In service &middot; last flew '+(idle < 1 ? 'within the last day' : Math.round(idle)+' day'+(Math.round(idle) === 1 ? '' : 's')+' ago')+'.')) + '</div>';
+  if(t.published_legs && t.published_legs.length){
+    h += '<div class="tsum-line">Published next: ' + t.published_legs.map(l =>
+      '<span class="pleg">'+esc(l.flight)+' '+fmtDay(l.dep_sched)+' '+esc(l.dep)+'&rarr;'+esc(l.arr)+'</span>').join('') + '</div>';
+  }
+  h += '<div class="tsum-note">' + (t.fit && t.fit.m >= 1e5
+    ? 'On the '+esc(t.type)+' fleet, which tail flies a given flight can&rsquo;t be told from its history: every flight after '+fmtD(d.horizon)+' shows the same even share. The published tail, up to ~4 days out, is where the odds move &mdash; check back then.'
+    : 'Tails are published up to '+fmtD(d.horizon)+'; after that the list is the timetable of recent weeks, ranked by how often '+esc(t.reg)+' flew each flight.') + '</div></div>';
+  const fs = (d.flights || []).slice();
+  if(!fs.length){
+    R.innerHTML = h + '<div class="empty">No candidate flights for '+esc(t.reg)+' in these dates'+((d.query.dep || d.query.arr) ? ' on this route' : '')+'.</div>';
+    return;
+  }
+  if(PSORT === 'date') fs.sort((a, b) => (a.dep_sched || '').localeCompare(b.dep_sched || ''));
+  h += '<div class="plan-head"><span class="t">'+fs.length+' candidate flight'+(fs.length === 1 ? '' : 's')+'</span>'
+    + '<div class="fp-seg" id="psort"><button data-v="p" class="'+(PSORT === 'p' ? 'active' : '')+'">Best chance</button>'
+    + '<button data-v="date" class="'+(PSORT === 'date' ? 'active' : '')+'">By date</button></div></div>';
+  fs.slice(0, 150).forEach(f => {
+    h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'" data-src="'+f.source+'">'
+      + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+leadTxt(f.flight_date)+'</div>'
+      + '<div class="route"><div class="pair">'+esc(f.dep)+' &rarr; '+esc(f.arr)+'</div>'
+      + '<div class="sub">'+esc(f.flight)+' &middot; dep '+fmtClock(f.dep_sched)+' &middot; <span class="src src-'+f.source+'">'+srcLabel(f.source)+'</span></div>'
+      + '<div class="why">'+esc(f.why)+'</div></div>'
+      + '<div class="tail">' + (f.published
+          ? (WATCH.has(f.published) ? '<span class="star">&#9733;</span>' : '')+esc(f.published)
+            + '<span class="tbadge '+tcls(f.type)+'">'+esc(f.type)+'</span>'
+            + (f.published_allegris ? '<span class="abadge" title="Allegris cabin">ALLEGRIS</span>' : '')
+            + cabinBadges(f.published_cabin)
+          : '<span class="nopub">not published yet</span>') + '</div>'
+      + '<div class="miniconf pchip" title="chance '+esc(t.reg)+' operates this flight"><span class="p">'+pctText(f.p)+'</span><span class="cn">'+esc(t.reg)+'</span></div></div>';
+  });
+  if(fs.length > 150) h += '<div class="fnote">150 of '+fs.length+' flights shown</div>';
+  R.innerHTML = h;
+  R.querySelectorAll('#psort button').forEach(b => b.addEventListener('click', () => { PSORT = b.dataset.v; drawPlan(); }));
+}
+function planQuery(){
+  const q = new URLSearchParams({target: $('plan-in').value.trim().toUpperCase()});
+  const dp = tokDep.codes().join(','), ar = tokArr.codes().join(',');
+  if(dp) q.set('dep', dp);
+  if(ar) q.set('arr', ar);
+  if($('plan-from').value) q.set('from', $('plan-from').value);
+  if($('plan-to').value) q.set('to', $('plan-to').value);
+  return q;
+}
+
 function search(){
   let url;
+  if(mode==='plan'){
+    const q = planQuery();
+    if(!q.get('target')) return;
+    saveTarget(q.get('target'));
+    history.replaceState(null, '', '?' + q.toString());   // the plan is its own link
+    $('results').innerHTML = '<div class="empty">Ranking flights&hellip;</div>';
+    fetch('/api/book/plan?' + q.toString()).then(r => r.json()).then(renderPlan)
+      .catch(() => { $('results').innerHTML = '<div class="empty">Planning failed.</div>'; });
+    return;
+  }
   if(mode==='tail'){
     const r = $('tail-in').value.trim().toUpperCase();
     if(!r){ return; }
@@ -4840,6 +5190,7 @@ function search(){
 
 // route-mode inputs handle Enter themselves (suggestion pick vs. search)
 $('tail-in').addEventListener('keydown', e => { if(e.key==='Enter') search(); });
+$('plan-in').addEventListener('keydown', e => { if(e.key==='Enter') search(); });
 
 /* ── Flight detail modal (shared shape with /schedule) ─────────── */
 function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
@@ -4904,7 +5255,10 @@ function renderFlight(d){
   }
   b.innerHTML = h;
 }
-$('results').addEventListener('click', e => { const c=e.target.closest('.fcard'); if(c) openFlight(c.dataset.num, c.dataset.fdate); });
+$('results').addEventListener('click', e => {
+  const c = e.target.closest('.fcard');
+  if(c && c.dataset.src !== 'projected') openFlight(c.dataset.num, c.dataset.fdate);  // a projection has no FIS record yet
+});
 $('fl-modal').addEventListener('click', e => { if(e.target.id==='fl-modal') closeFl(); });
 document.addEventListener('keydown', e => { if(e.key==='Escape') closeFl(); });
 
@@ -5124,10 +5478,17 @@ function mapInit(){
   }).catch(() => { $('map-count').textContent = 'Map failed to load.'; });
 }
 
-/* Prefill + auto-search from URL (?reg=, ?dep=&arr=, or ?loc=) so links land on results */
+/* Prefill + auto-search from URL (?target=[&dep=&arr=&from=&to=], ?reg=, ?dep=&arr=,
+   or ?loc=) so links land on results */
 (function(){
   const p = new URLSearchParams(location.search);
-  if(p.get('reg')){ setMode('tail'); $('tail-in').value = p.get('reg'); search(); }
+  if(p.get('target')){ setMode('plan'); $('plan-in').value = p.get('target');
+    tokDep.set((p.get('dep')||'').split(/[,\\s]+/));
+    tokArr.set((p.get('arr')||'').split(/[,\\s]+/));
+    if(p.get('from')) $('plan-from').value = p.get('from');
+    if(p.get('to')) $('plan-to').value = p.get('to');
+    search(); }
+  else if(p.get('reg')){ setMode('tail'); $('tail-in').value = p.get('reg'); search(); }
   else if(p.get('loc')){ setMode('map'); mapSelect(p.get('loc').trim().toUpperCase()); }
   else if(p.get('dep') || p.get('arr')){ setMode('route');
     tokDep.set((p.get('dep')||'').split(/[,\\s]+/));
@@ -5190,6 +5551,11 @@ _INSIGHTS_HTML = """\
 </footer>
 <script>
 const $ = id => document.getElementById(id);
+// The tails this visitor planned on /book (browser storage, no accounts).
+function myTargets(){
+  try { const v = JSON.parse(localStorage.getItem('lh.targets') || '[]'); return new Set(Array.isArray(v) ? v : []); }
+  catch(e){ return new Set(); }
+}
 const P = new URLSearchParams(location.search);
 const TYPE = (P.get('type') || 'B748').toUpperCase();
 const REG = (P.get('reg') || '').toUpperCase();
@@ -5272,6 +5638,8 @@ async function init(){
   try { d = await (await fetch('/api/insights?type='+encodeURIComponent(TYPE)+(REG?'&reg='+encodeURIComponent(REG):''))).json(); }
   catch(e){ $('body').innerHTML='<div class="empty">Failed to load.</div>'; $('meta').textContent=''; return; }
   if(d.error){ $('body').innerHTML='<div class="empty">'+d.error+'</div>'; return; }
+  const MINE = myTargets();   // starred = the visitor's own tails (planned on /book)
+  (d.airframes||[]).forEach(a => { a.watch = MINE.has(a.reg); });
   const m=d.meta||{};
   $('meta').innerHTML = '<b>'+(d.type||'')+'</b>'+(REG?' &middot; '+REG:'')+' &middot; <b>'+(m.flights||0)+'</b> flights &middot; <b>'+(m.tails||0)+'</b> tails &middot; '+shortDate(m.first)+' &ndash; '+shortDate(m.last);
 

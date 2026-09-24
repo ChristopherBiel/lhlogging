@@ -78,7 +78,7 @@ body { background:var(--bg); color:var(--text); font-size:var(--fp-text-sm); lin
 .tokbox { display:flex; align-items:center; flex-wrap:wrap; gap:var(--fp-space-1); background:var(--surface);
   border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-1) var(--fp-space-2); width:280px; position:relative; cursor:text; }
 .tokbox:focus-within { border-color:var(--accent); }
-.tokbox .boxlbl { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-right:var(--fp-space-1); }
+.tokbox .boxlbl, .datebox .boxlbl { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-right:var(--fp-space-1); }
 .tok { display:inline-flex; align-items:center; gap:var(--fp-space-1); background:var(--fp-ink); color:var(--fp-text-inverse);
   font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700; padding:var(--fp-space-1) var(--fp-space-2); }
 .tok button { border:none; background:none; color:color-mix(in srgb,var(--fp-text-inverse) 72%,transparent); cursor:pointer; font-size:var(--fp-text-sm); line-height:1; padding:0; }
@@ -133,6 +133,34 @@ body { background:var(--bg); color:var(--text); font-size:var(--fp-text-sm); lin
 .maptip b { font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); }
 .maptip .d { color:color-mix(in srgb,var(--fp-text-inverse) 72%,transparent); }
 .mapnote { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); padding:var(--fp-space-2) var(--fp-space-3); border-top:var(--fp-keyline) solid var(--border); }
+/* ── Plan mode ── date range, the target summary, ranked candidate cards */
+.datebox { display:flex; align-items:center; gap:var(--fp-space-1); background:var(--surface);
+  border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-1) var(--fp-space-2); }
+.datebox:focus-within { border-color:var(--accent); }
+.datebox input { border:none; background:none; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs);
+  color:var(--text-bright); padding:var(--fp-space-1); }
+.datebox input:focus { outline:none; }
+.datebox .dsep { color:var(--muted); }
+.tsum { display:flex; flex-direction:column; gap:var(--fp-space-2); border:var(--fp-keyline) solid var(--fp-ink);
+  background:var(--surface); padding:var(--fp-space-3); }
+.tsum-head { display:flex; align-items:center; flex-wrap:wrap; gap:var(--fp-space-1) var(--fp-space-2); }
+.tsum .treg { font-family:var(--fp-font-mono); font-weight:700; font-size:var(--fp-text-base); color:var(--text-bright); }
+.tsum .tcab { font-size:var(--fp-text-xs); color:var(--muted); }
+.tsum-line { font-size:var(--fp-text-xs); color:var(--text); }
+.tsum .pleg { display:inline-block; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); white-space:nowrap;
+  margin-right:var(--fp-space-3); }
+.tsum-note { font-size:var(--fp-text-xs); color:var(--muted); border-top:var(--fp-keyline) solid var(--border);
+  padding-top:var(--fp-space-2); }
+.plan-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--fp-space-2);
+  margin-top:var(--fp-space-2); }
+.plan-head .t { font-size:var(--fp-text-xs); color:var(--muted); }
+.plan-head .fp-seg { margin-bottom:0; }
+.fcard .why { font-size:var(--fp-text-xs); color:var(--muted); margin-top:var(--fp-space-1); }
+.src { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.4px; }
+.src-published { color:var(--fp-ink); font-weight:700; }
+.src-projected, .src-scheduled { color:var(--muted); }
+.nopub { font-family:var(--fp-font-sans); font-weight:400; font-size:var(--fp-text-xs); color:var(--muted); }
+.pchip .cn { text-transform:none; font-family:var(--fp-font-mono); }
 .hint { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); }
 .results { display:flex; flex-direction:column; gap:var(--fp-space-2); }
 .fcard { display:flex; align-items:center; gap:var(--fp-space-3); border:var(--fp-keyline) solid var(--fp-ink); background:var(--surface); padding:var(--fp-space-3) var(--fp-space-3); cursor:pointer; transition:border-color .12s; }
@@ -188,3 +216,11 @@ footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:va
 .hist-row .reg { font-family:var(--fp-font-mono); font-weight:700; color:var(--text-bright); min-width:64px; }
 .hist-row.changed .reg { color:var(--amber); }
 .hist-row .tag { font-size:var(--fp-text-xxs); color:var(--muted); }
+/* phones: a card's four columns become two rows — date + route, then tail +
+   chance — instead of squeezing the route into a one-word column. Last in the
+   file so it outranks the base .fcard rules above. */
+@media (max-width:560px){
+  .fcard { flex-wrap:wrap; }
+  .fcard .route { flex:1 1 calc(100% - 96px - var(--fp-space-3)); }
+  .fcard .tail { flex:1 1 auto; }
+}
