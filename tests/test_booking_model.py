@@ -123,6 +123,13 @@ class Projection(unittest.TestCase):
         self.assertTrue(out[0]["projected"])
         self.assertEqual(out[0]["truth_tail"], "")
 
+    def test_projection_takes_the_usual_layout_not_the_last_one(self):
+        legs = [dict(leg(7 * w, "422", "D-ABYA"), seat_config=s)
+                for w, s in ((1, "C88E32M244"), (2, "F8C80E32M244"), (3, "F8C80E32M244"))]
+        target = (NOW + timedelta(days=7)).date()
+        out = bm.project_schedule(legs, [target], NOW, ftype="B748")
+        self.assertEqual(out[0]["seat_config"], "F8C80E32M244")
+
 
 if __name__ == "__main__":
     unittest.main()

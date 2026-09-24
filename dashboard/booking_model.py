@@ -373,9 +373,12 @@ PROJECT_MIN_WEEKS = 2
 def project_schedule(legs, dates, now, ftype=None, deps=None, arrs=None):
     """Projected legs on `dates` (list of date), optionally one fleet type and
     dep/arr airport sets. Each is a leg dict shaped like the input, dates
-    shifted, nothing published, with projected=True."""
+    shifted, nothing published, with projected=True — timed like the flight's
+    last same-weekday run, with the layout that flight number is usually sold
+    with (a single run may have been published without First)."""
     since = now - timedelta(weeks=PROJECT_WEEKS)
     seen = defaultdict(list)  # (flight_number, weekday) -> legs, oldest first
+    layouts = defaultdict(Counter)  # flight_number -> seat_config counts
     for leg in sorted(legs, key=lambda l: l["dep_utc"] or now):
         dep = leg.get("dep_utc")
         if leg.get("cancelled") or dep is None or not (since <= dep < now):
@@ -385,6 +388,8 @@ def project_schedule(legs, dates, now, ftype=None, deps=None, arrs=None):
         if (deps and leg.get("dep") not in deps) or (arrs and leg.get("arr") not in arrs):
             continue
         seen[(leg["flight_number"], leg["flight_date"].weekday())].append(leg)
+        if leg.get("seat_config"):
+            layouts[leg["flight_number"]][leg["seat_config"]] += 1
     out = []
     for d in dates:
         for (fnum, weekday), group in seen.items():
@@ -396,5 +401,7 @@ def project_schedule(legs, dates, now, ftype=None, deps=None, arrs=None):
                             dep_local=ref["dep_local"] + shift if ref.get("dep_local") else None,
                             arr_local=ref["arr_local"] + shift if ref.get("arr_local") else None,
                             dep_utc=ref["dep_utc"] + shift, truth_tail="", latest_tail="",
-                            latest_status="", timeline=[], first_lead_h=None, projected=True))
+                            latest_status="", timeline=[], first_lead_h=None, projected=True,
+                            seat_config=(layouts[fnum].most_common(1)[0][0] if layouts[fnum]
+                                         else ref.get("seat_config"))))
     return out

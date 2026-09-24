@@ -2,9 +2,13 @@
 LHLogging monitoring dashboard.
 Serves a single-page HTML dashboard and a /api/stats JSON endpoint.
 """
+import json
 import os
 import random
 import re
+import threading
+import time
+import urllib.request
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +19,7 @@ import psycopg.rows
 from dotenv import load_dotenv
 
 import booking_model
+import leg_stats
 from flask import (
     Flask,
     Response,
@@ -690,13 +695,29 @@ _DATENSCHUTZ_HTML = (
 <h2>2. Erhebung und Verarbeitung personenbezogener Daten</h2>
 <p>Diese Website erhebt, speichert und verarbeitet keine personenbezogenen Daten
 ihrer Besucher. Es werden keine Cookies gesetzt, keine Analyse- oder Tracking-Tools
-eingesetzt und keine Daten an Dritte weitergegeben.</p>
+eingesetzt und keine Daten an Dritte weitergegeben &ndash; mit Ausnahme des in
+Abschnitt 5 beschriebenen, nur auf Ihren Klick geladenen Flugzeugfotos.</p>
 <h2>3. Server-Logfiles</h2>
 <p>Beim Zugriff auf diese Website werden m&ouml;glicherweise durch den
 Hosting-Provider technische Daten (z.&nbsp;B. IP-Adresse, Zeitpunkt des Zugriffs)
 in Server-Logfiles gespeichert. Diese Daten werden nicht mit anderen Datenquellen
 zusammengef&uuml;hrt und nach kurzer Zeit gel&ouml;scht.</p>
-<h2>4. Ihre Rechte</h2>
+<h2>4. Lokaler Speicher im Browser</h2>
+<p>Einstellungen, die Sie selbst vornehmen &ndash; etwa die Flugzeuge, f&uuml;r die
+Sie auf &bdquo;Catch a Tail&ldquo; eine Buchung planen, oder ausgeblendete Flugzeugtypen
+im Flugplan &ndash; werden ausschlie&szlig;lich im lokalen Speicher (localStorage) Ihres
+Browsers abgelegt, damit sie beim n&auml;chsten Besuch wieder da sind. Sie werden
+nicht an diesen Server oder Dritte &uuml;bertragen und lassen sich jederzeit &uuml;ber
+die Browsereinstellungen l&ouml;schen.</p>
+<h2>5. Flugzeugfotos von planespotters.net</h2>
+<p>Auf den Flugzeugseiten (/airframe) kann ein Foto des Flugzeugs von
+planespotters.net angezeigt werden. Es wird erst geladen, wenn Sie auf
+&bdquo;Show photo&ldquo; klicken. Erst dann ruft Ihr Browser das Bild direkt bei
+planespotters.net ab und &uuml;bermittelt dabei technisch bedingt Ihre IP-Adresse an
+deren Betreiber. Ohne diesen Klick findet keine Verbindung zu planespotters.net statt.
+F&uuml;r die dortige Verarbeitung gilt die Datenschutzerkl&auml;rung von
+planespotters.net.</p>
+<h2>6. Ihre Rechte</h2>
 <p>Sie haben das Recht auf Auskunft, Berichtigung, L&ouml;schung und
 Einschr&auml;nkung der Verarbeitung Ihrer personenbezogenen Daten gem&auml;&szlig;
 der DSGVO. Da wir keine personenbezogenen Daten erheben, fallen in der Regel keine
@@ -1248,6 +1269,7 @@ async function init() {
     item('ICAO24', '<span style="font-family:var(--fp-font-mono)">' + info.icao24 + '</span>') +
     item('Type', info.aircraft_type || '\\u2014') +
     item('Model', info.aircraft_subtype || '\\u2014') +
+    item('Profile', '<a href="/airframe/' + encodeURIComponent(info.registration) + '">airframe &amp; cabin &rarr;</a>') +
     item('Status', statusBadge) +
     item('Airline', info.airline_iata || '\\u2014') +
     item('First Seen', info.first_seen || '\\u2014') +
@@ -2436,9 +2458,10 @@ def _allegris_tails(conn):
 # ── Cabin configuration ────────────────────────────────────────────────
 # FIS also reports aircraftInfo.seatConfig per observation (kept in `raw`),
 # e.g. "F8C80E32M244" = First 8 / Business (C) 80 / Premium Eco (E) 32 /
-# Economy (M) 244; absent cabins are simply omitted. The cabin belongs to the
-# airframe, so we keep the latest string per tail — same read-time / TTL
-# pattern as the Allegris set, and retrofits show up on their own.
+# Economy (M) 244; absent cabins are simply omitted. It describes the FLIGHT:
+# the same 747-8 is C88E32M244 to Bengaluru (no First on that route). A tail's
+# physical cabin is therefore the layout it is most often published with; a
+# flight's own layout lives on its leg (fis_legs.seat_config, migration 012).
 _SEAT_RE = re.compile(r"([FCEM])(\d+)")
 _CABIN_TTL_S = 600
 _cabin_cache = {"ts": 0.0, "map": {}}
@@ -2451,35 +2474,29 @@ def _parse_seat_config(s):
 
 
 def _cabin_configs(conn):
-    """Registration -> latest seatConfig string per recent FIS payloads."""
+    """Registration -> its physical cabin: the seatConfig it is most often
+    published with over the last 45 days (latest breaks ties, so a refit
+    takes over as it becomes the majority)."""
     nowts = datetime.now(timezone.utc).timestamp()
     if nowts - _cabin_cache["ts"] < _CABIN_TTL_S:
         return _cabin_cache["map"]
     try:
         rows = _q(conn, """
-            SELECT DISTINCT ON (btrim(registration))
-                   btrim(registration), raw->'aircraftInfo'->>'seatConfig'
-            FROM flight_status_observations
-            WHERE found AND registration IS NOT NULL
-              AND raw->'aircraftInfo'->>'seatConfig' IS NOT NULL
-              AND observed_at >= NOW() - INTERVAL '45 days'
-            ORDER BY btrim(registration), observed_at DESC
+            SELECT DISTINCT ON (reg) reg, seat FROM (
+                SELECT btrim(registration) AS reg, raw->'aircraftInfo'->>'seatConfig' AS seat,
+                       count(*) AS n, max(observed_at) AS last
+                FROM flight_status_observations
+                WHERE found AND registration IS NOT NULL
+                  AND raw->'aircraftInfo'->>'seatConfig' IS NOT NULL
+                  AND observed_at >= NOW() - INTERVAL '45 days'
+                GROUP BY 1, 2
+            ) x
+            ORDER BY reg, n DESC, last DESC
         """)
     except Exception:
         return _cabin_cache["map"]  # stale beats a 500 mid-request
     _cabin_cache.update(ts=nowts, map={r[0]: r[1] for r in rows})
     return _cabin_cache["map"]
-
-
-def _merge_hold(cells):
-    """n-weighted combination of several {lead: {p,n}} stability dicts — used
-    when an insights tab spans a type family. None/empty members are skipped."""
-    acc = defaultdict(lambda: [0.0, 0])
-    for cell in cells:
-        for lead, v in (cell or {}).items():
-            acc[lead][0] += v["p"] * v["n"]
-            acc[lead][1] += v["n"]
-    return {lead: {"p": s / n, "n": n} for lead, (s, n) in acc.items() if n}
 
 
 def _reassignment_stability(conn):
@@ -2614,16 +2631,29 @@ PLAN_MAX_DAYS = 21
 _LEG_SQL = """
     SELECT flight_date, airline, flight_number, dep_iata, arr_iata, dep_sched_local,
            arr_sched_local, dep_utc, fleet_type, truth_tail, cancelled, latest_tail,
-           latest_status, latest_observed_at, first_lead_h, timeline
+           latest_status, latest_observed_at, first_lead_h, timeline, duration_min,
+           {cabin}
     FROM fis_legs
 """
+_leg_cabin_cache = {"has": None}
+
+
+def _leg_sql(conn):
+    """The fis_legs SELECT, with the sold-layout columns once migration 012 is in."""
+    if not _leg_cabin_cache["has"]:
+        _leg_cabin_cache["has"] = _q1(conn, """
+            SELECT count(*) = 2 FROM information_schema.columns
+            WHERE table_name = 'fis_legs' AND column_name IN ('seat_config', 'allegris')""")
+    return _LEG_SQL.format(cabin="seat_config, allegris" if _leg_cabin_cache["has"]
+                           else "NULL, NULL")
 
 
 def _leg_from_row(r):
     (fdate, airline, fnum, dep, arr, dep_l, arr_l, dep_utc, ftype, truth, cancelled,
-     latest, lstatus, lobs, first_lead, timeline) = r
+     latest, lstatus, lobs, first_lead, timeline, duration, seat, alleg) = r
     return {"flight_date": fdate, "airline": airline, "flight_number": fnum,
             "dep": dep, "arr": arr, "dep_local": dep_l, "arr_local": arr_l,
+            "duration_min": duration, "seat_config": seat, "allegris": alleg,
             "dep_utc": dep_utc, "fleet_type": ftype or "", "truth_tail": truth or "",
             "cancelled": bool(cancelled), "latest_tail": latest or "",
             "latest_status": lstatus or "", "latest_observed_at": lobs,
@@ -2638,24 +2668,50 @@ def _published(leg):
     return leg["latest_tail"] if leg["latest_observed_at"] < leg["dep_utc"] else None
 
 
+def _build_model(conn):
+    """Load the history legs and fit the model (~2 s); cache it. False while
+    fis_legs is absent."""
+    if not _q1(conn, "SELECT to_regclass('fis_legs') IS NOT NULL"):
+        return False
+    rows = _q(conn, _leg_sql(conn) + " WHERE flight_date >= CURRENT_DATE - %s"
+                               " AND flight_date < CURRENT_DATE", (_MODEL_HISTORY_DAYS,))
+    legs = [_leg_from_row(r) for r in rows]
+    stats = booking_model.build_stats(legs, datetime.now(timezone.utc))
+    _model_cache.update(ts=datetime.now(timezone.utc).timestamp(), stats=stats, legs=legs)
+    return True
+
+
 def _booking_model(conn):
-    """(stats, history legs) for the booking model, rebuilt every _MODEL_TTL_S;
-    (None, None) while fis_legs is absent."""
+    """(stats, history legs) for the booking model; (None, None) while fis_legs
+    is absent. Normally served from the cache the warmer below keeps fresh."""
     nowts = datetime.now(timezone.utc).timestamp()
     if _model_cache["stats"] is not None and nowts - _model_cache["ts"] < _MODEL_TTL_S:
         return _model_cache["stats"], _model_cache["legs"]
     try:
-        if not _q1(conn, "SELECT to_regclass('fis_legs') IS NOT NULL"):
+        if not _build_model(conn):
             return None, None
-        rows = _q(conn, _LEG_SQL + " WHERE flight_date >= CURRENT_DATE - %s"
-                                   " AND flight_date < CURRENT_DATE",
-                  (_MODEL_HISTORY_DAYS,))
     except Exception:
-        return _model_cache["stats"], _model_cache["legs"]  # stale beats a 500
-    legs = [_leg_from_row(r) for r in rows]
-    stats = booking_model.build_stats(legs, datetime.now(timezone.utc))
-    _model_cache.update(ts=nowts, stats=stats, legs=legs)
-    return stats, legs
+        pass  # stale beats a 500
+    return _model_cache["stats"], _model_cache["legs"]
+
+
+def _model_warmer():
+    """Rebuild the model a minute before the cache would expire, so no visitor
+    request pays the ~2 s fit. Failures just leave the request path to retry."""
+    while True:
+        try:
+            conn = _db()
+            try:
+                _build_model(conn)
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        time.sleep(max(_MODEL_TTL_S - 60, 60))
+
+
+if os.environ.get("BOOK_MODEL_WARMER", "1") == "1":
+    threading.Thread(target=_model_warmer, name="model-warmer", daemon=True).start()
 
 
 def _upcoming_legs(conn, *, reg=None, dep=None, arr=None, date_from=None, date_to=None,
@@ -2674,7 +2730,7 @@ def _upcoming_legs(conn, *, reg=None, dep=None, arr=None, date_from=None, date_t
         where.append("dep_iata = ANY(%s)"); params.append(list(dep))
     if arr:
         where.append("arr_iata = ANY(%s)"); params.append(list(arr))
-    rows = _q(conn, _LEG_SQL + " WHERE " + " AND ".join(where) + " ORDER BY dep_utc", params)
+    rows = _q(conn, _leg_sql(conn) + " WHERE " + " AND ".join(where) + " ORDER BY dep_utc", params)
     return [_leg_from_row(r) for r in rows]
 
 
@@ -2747,6 +2803,7 @@ def api_schedule():
         """, (list(_SCHEDULE_TYPES),))
         endpoints = _route_endpoints(conn)
         alleg = _allegris_tails(conn)
+        cabins = _cabin_configs(conn)
     finally:
         conn.close()
 
@@ -2855,7 +2912,7 @@ def api_schedule():
     type_order = {"748": 0, "388": 1, "788": 2, "789": 3, "78X": 4, "359": 5, "35K": 6}
     airframes = [
         {"reg": reg, "type": types[reg],
-         "icao24": icao24_by_reg.get(reg),
+         "icao24": icao24_by_reg.get(reg), "cabin": cabins.get((reg or "").strip()),
          "allegris": (reg or "").strip() in alleg,
          "legs": sorted(by_reg[reg], key=lambda x: x["start"])}
         for reg in by_reg
@@ -2905,7 +2962,7 @@ def api_schedule_flight(airline, number, fdate):
         stats, _hist = _booking_model(conn)
         mleg = None
         if stats is not None:
-            found = _q(conn, _LEG_SQL + " WHERE flight_date = %s AND airline = %s"
+            found = _q(conn, _leg_sql(conn) + " WHERE flight_date = %s AND airline = %s"
                                         " AND flight_number = %s", (fdate_d, airline, number))
             mleg = _leg_from_row(found[0]) if found else None
         stab = _reassignment_stability(conn) if mleg is None else None
@@ -3037,6 +3094,9 @@ def api_book():
                                                             published=pub, now=now))
         else:
             hold = _hold_probability(stab, lead, f"{d or '?'}-{a or '?'}", short)
+        # the layout this flight is sold with (a route without First publishes
+        # no First cabin); the tail's usual cabin until the leg layer knows it
+        sold = legs[i]["seat_config"] if legs is not None else None
         flights.append({
             "flight": f"{airline}{fnum}", "number": fnum, "flight_date": fdate.isoformat(),
             "dep": d, "arr": a,
@@ -3044,7 +3104,8 @@ def api_book():
             "arr_sched": arr_t.isoformat() if arr_t else None,
             "reg": r_reg, "type": short,
             "allegris": (r_reg or "").strip() in alleg,
-            "cabin": _parse_seat_config(cabins.get((r_reg or "").strip())),
+            "cabin": _parse_seat_config(sold or cabins.get((r_reg or "").strip())),
+            "cabin_sold": bool(sold),
             "lead": lead, "status": status,
             "reassigned": (fdate, fnum) in swapped,
             "hold": hold, "target": tview,
@@ -3136,6 +3197,9 @@ def api_book_plan():
             "source": source, "published": pub,
             "published_allegris": bool(pub) and pub in alleg,
             "published_cabin": _parse_seat_config(cabins.get(pub)) if pub else None,
+            # what this flight is sold with — for a projection, the layout it
+            # last flew with (First is not sold on every route)
+            "cabin": _parse_seat_config(leg.get("seat_config")),
             "status": leg["latest_status"] or None,
             **_target_view(res),
         })
@@ -3160,6 +3224,198 @@ def api_book_plan():
         "flights": flights,
         "generated": now.isoformat(),
     })
+
+
+# ── Airframe profile (/airframe/<reg>) ─────────────────────────────────
+# One page per tail with everything the booking decision wants about the
+# airframe itself: cabin and hard product (all from the FIS payload — seat
+# layout, Allegris, Wi-Fi, IFE, USB power, sub-fleet code, special livery),
+# which cabin variant of its fleet it is, its cabin history, whether it's in
+# service (operated legs + the last ADS-B position), where it flies and what
+# it's published on next.
+_REG_RE = re.compile(r"^[A-Z0-9]{1,2}-?[A-Z0-9]{2,5}$")
+_serial_cache = {"has": None}
+
+
+def _aircraft_has_serial(conn):
+    """Whether migration 011 (aircraft.serial_number) is applied; cached once true."""
+    if not _serial_cache["has"]:
+        _serial_cache["has"] = bool(_q1(conn, """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'aircraft' AND column_name = 'serial_number'"""))
+    return _serial_cache["has"]
+
+
+def _adsb_last_seen(conn, icao24):
+    """The tail's latest ADS-B position (positions are kept 30 days) and, when
+    it's on the ground, the airport it's at (nearest within 10 km)."""
+    rows = _q(conn, """
+        SELECT captured_at, latitude, longitude, on_ground, altitude_m, velocity_ms,
+               btrim(callsign)
+        FROM positions WHERE icao24 = %s ORDER BY captured_at DESC LIMIT 1
+    """, (icao24,))
+    if not rows:
+        return None
+    at, lat, lon, ground, alt, vel, cs = rows[0]
+    # same ground fallback as the detector: OpenSky's on_ground flag is unreliable
+    parked = bool(ground) or (alt is not None and alt < 300 and (vel or 0) < 30)
+    near = None
+    if parked and lat is not None and lon is not None:
+        r = _q(conn, """
+            SELECT icao_code,
+                   earth_distance(ll_to_earth(latitude, longitude), ll_to_earth(%s, %s)) / 1000.0
+            FROM airports
+            ORDER BY earth_distance(ll_to_earth(latitude, longitude), ll_to_earth(%s, %s))
+            LIMIT 1
+        """, (lat, lon, lat, lon))
+        if r and r[0][1] is not None and r[0][1] < 10:
+            near = r[0][0].strip()
+    return {"at": at.isoformat(), "on_ground": parked, "callsign": cs or None,
+            "airport_icao": near, "airport": _icao_to_iata(near) if near else None}
+
+
+@app.route("/api/airframe/<reg>")
+def api_airframe(reg):
+    reg = reg.strip().upper()
+    if not _REG_RE.match(reg):
+        return jsonify({"error": "not a registration"}), 400
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        stats, hist = _booking_model(conn)
+        if stats is None:
+            return jsonify({"error": "airframe pages need the leg layer (migration 010)"}), 503
+        serial_col = ", serial_number" if _aircraft_has_serial(conn) else ", NULL"
+        ac = _q(conn, f"""
+            SELECT icao24, aircraft_type, aircraft_subtype, is_active, first_seen_date{serial_col}
+            FROM aircraft WHERE btrim(registration) = %s
+            ORDER BY is_active DESC, last_seen_date DESC NULLS LAST LIMIT 1
+        """, (reg,))
+        info = _q(conn, """
+            SELECT raw->'aircraftInfo', observed_at FROM flight_status_observations
+            WHERE found AND registration = %s AND raw IS NOT NULL
+            ORDER BY observed_at DESC LIMIT 1
+        """, (reg,))
+        if not ac and not info:
+            return jsonify({"error": f"unknown tail {reg}"}), 404
+        spans = _q(conn, """
+            SELECT seat_config, allegris, sub_type, first_seen, last_seen
+            FROM airframe_cabin WHERE registration = %s
+        """, (reg,))
+        # every tail's current cabin (a glitch span only if it has nothing else)
+        latest = _q(conn, """
+            SELECT DISTINCT ON (registration) registration, seat_config, allegris, sub_type
+            FROM airframe_cabin WHERE last_seen > NOW() - INTERVAL '45 days'
+            ORDER BY registration, (last_seen - first_seen >= INTERVAL '6 hours') DESC,
+                     last_seen DESC
+        """)
+        upcoming = _upcoming_legs(conn, reg=reg, types=None)
+        seen = _adsb_last_seen(conn, ac[0][0].strip()) if ac else None
+        cabins = _cabin_configs(conn)
+        alleg = _allegris_tails(conn)
+    finally:
+        conn.close()
+
+    ftype = stats.tail_type.get(reg) or (ac[0][1] if ac else None)
+    ai = (info[0][0] or {}) if info else {}
+    now = datetime.now(timezone.utc)
+    # physical cabin = the layout the tail is most often published with; the
+    # sub-fleet code from its latest real cabin span
+    physical = cabins.get(reg) or ai.get("seatConfig")
+    variants = leg_stats.cabin_variants(
+        {r[0]: (stats.tail_type.get(r[0]), cabins.get(r[0]) or r[1], r[0] in alleg, r[3])
+         for r in latest}, ftype)
+    mine = next((v for v in variants if reg in v["tails"]), None)
+    tail_first = {r: bool((_parse_seat_config(c) or {}).get("F")) for r, c in cabins.items()}
+    recent_cut = now - timedelta(weeks=booking_model.HISTORY_WEEKS)
+    window = [l for l in hist if l["dep_utc"] and l["dep_utc"] >= recent_cut]
+    flown = [l for l in leg_stats.flown(hist) if l["truth_tail"] == reg]
+
+    nxt = []
+    for leg in upcoming:
+        pub = _published(leg)
+        if pub != reg:
+            continue
+        res = booking_model.p_target(stats, reg, leg, published=pub, now=now)
+        nxt.append({"flight": f"{leg['airline']}{leg['flight_number']}",
+                    "number": leg["flight_number"], "flight_date": leg["flight_date"].isoformat(),
+                    "dep": leg["dep"], "arr": leg["arr"],
+                    "dep_sched": leg["dep_local"].isoformat() if leg["dep_local"] else None,
+                    "hold": _hold_chip(res)})
+    idle = booking_model.idle_days(stats, reg)
+    return jsonify({
+        "reg": reg,
+        "type": _CANON_SHORT.get(ftype, ftype), "type_code": ftype,
+        "fis_type": ai.get("aircraftType"), "sub_type": ai.get("aircraftSubType"),
+        "model": ac[0][2] if ac else None, "serial": ac[0][5] if ac else None,
+        "icao24": ac[0][0].strip() if ac else None,
+        "active": bool(ac[0][3]) if ac else None,
+        "cabin": _parse_seat_config(physical), "seat_config": physical,
+        "allegris": reg in alleg or bool(ai.get("allegris")),
+        # routes where this fleet flew without First on sale (last weeks)
+        "first_not_sold": (leg_stats.first_not_sold(window, ftype, tail_first)
+                           if tail_first.get(reg) else []),
+        "amenities": {"wifi": ai.get("wifiOnBoard"), "wifi_type": ai.get("wifiType"),
+                      "ife": ai.get("inFlightEntertainment"), "usb_power": ai.get("usbPower"),
+                      "livery": ai.get("specialLivery") or None},
+        "amenities_seen": info[0][1].isoformat() if info else None,
+        "variant": mine, "variants": len(variants),
+        "cabin_history": leg_stats.cabin_spans(spans),
+        "status": {"last_flown": stats.last_flown[reg].isoformat() if reg in stats.last_flown else None,
+                   "idle_days": round(idle, 1) if idle is not None else None,
+                   "adsb": seen},
+        "routes": leg_stats.route_shares(window, reg),
+        "window_weeks": booking_model.HISTORY_WEEKS,
+        "upcoming": nxt,
+        "recent": [{"flight": f"{l['airline']}{l['flight_number']}", "number": l["flight_number"],
+                    "flight_date": l["flight_date"].isoformat(), "dep": l["dep"], "arr": l["arr"]}
+                   for l in reversed(flown[-12:])],
+        "generated": now.isoformat(),
+    })
+
+
+# Photos: Planespotters' terms allow hotlinking a thumbnail (with credit and a
+# link back) but not copying it, and our privacy page promises no third-party
+# requests without the visitor's action. So the photo is click-to-load: the
+# click asks this endpoint, which looks up the thumbnail *metadata* server-side
+# (no visitor data leaves; kept an hour), and only then does the visitor's
+# browser load the image from Planespotters.
+_PHOTO_API = "https://api.planespotters.net/pub/photos/reg/%s"
+_PHOTO_UA = "LHFleetLogger/1.0 (+https://lhlogging.biels.net/impressum)"
+_PHOTO_TTL_S = 3600
+_photo_cache = {}
+
+
+@app.route("/api/airframe/<reg>/photo")
+def api_airframe_photo(reg):
+    reg = reg.strip().upper()
+    if not _REG_RE.match(reg):
+        return jsonify({"error": "not a registration"}), 400
+    hit = _photo_cache.get(reg)
+    if hit and time.time() - hit[0] < _PHOTO_TTL_S:
+        return jsonify(hit[1])
+    try:
+        req = urllib.request.Request(_PHOTO_API % reg, headers={"User-Agent": _PHOTO_UA})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            photos = json.load(resp).get("photos") or []
+    except Exception:
+        return jsonify({"error": "Planespotters did not answer"}), 502
+    out = {"photo": None}
+    if photos:
+        p = photos[0]
+        thumb = p.get("thumbnail_large") or p.get("thumbnail") or {}
+        if thumb.get("src") and p.get("link"):
+            out = {"photo": {"src": thumb["src"], "size": thumb.get("size"),
+                             "link": p["link"], "photographer": p.get("photographer")}}
+    _photo_cache[reg] = (time.time(), out)
+    return jsonify(out)
+
+
+@app.route("/airframe/<reg>")
+def airframe_page(reg):
+    return render_template_string(_AIRFRAME_HTML)
 
 
 # Airport pickers on /book suggest from this: every dep/arr airport seen in
@@ -4215,18 +4471,31 @@ def api_book_map():
     except Exception as e:
         return jsonify({"error": str(e)}), 503
     try:
-        rows = _latest_assignments(conn)
+        stats, _hist = _booking_model(conn)
+        if stats is not None:
+            legs = _upcoming_legs(conn)
+            rows = [(l["flight_date"], l["airline"], l["flight_number"], l["latest_tail"],
+                     l["fleet_type"], l["dep"], l["arr"], l["seat_config"]) for l in legs]
+        else:
+            rows = [r[:7] + (None,) for r in _latest_assignments(conn)]
         names = {a["code"]: a["name"] for a in _book_airports(conn)}
+        alleg = _allegris_tails(conn)
+        cabins = _cabin_configs(conn)
     finally:
         conn.close()
 
     agg = {}
-    for (fdate, _airline, _fnum, _reg, atype, d, a, _dep_t, _arr_t, _st) in rows:
+    for (fdate, _airline, _fnum, reg, atype, d, a, sold) in rows:
         if not d:
             continue
         e = agg.setdefault(d, {"flights": 0, "dests": set(),
-                               "types": set(), "next": None})
+                               "types": set(), "next": None, "rows": []})
         e["flights"] += 1
+        # one row per departure so the page can filter markers by type, tail
+        # and cabin without asking again: [type, tail, allegris, has First]
+        reg = (reg or "").strip()
+        e["rows"].append([_CANON_SHORT.get(atype, atype), reg, reg in alleg,
+                          bool((_parse_seat_config(sold or cabins.get(reg)) or {}).get("F"))])
         if a:
             e["dests"].add(a)
         short = _CANON_SHORT.get(atype, atype)
@@ -4239,7 +4508,7 @@ def api_book_map():
     for code, e in sorted(agg.items()):
         rec = {"code": code, "name": names.get(code) or code,
                "flights": e["flights"], "dests": sorted(e["dests"]),
-               "types": sorted(e["types"]),
+               "types": sorted(e["types"]), "rows": e["rows"],
                "next": e["next"].isoformat() if e["next"] else None}
         ll = _AIRPORT_LL.get(code)
         if ll:
@@ -4248,6 +4517,47 @@ def api_book_map():
         else:
             unplaced.append(rec)
     return jsonify({"airports": airports, "unplaced": unplaced,
+                    "generated": datetime.now(timezone.utc).isoformat()})
+
+
+@app.route("/api/book/network")
+def api_book_network():
+    """The route network for /book map mode's Network layer: every widebody
+    route flown in the last ?weeks= (default 8), both directions merged, with
+    legs per tail — plus each tail's type, Allegris and First flags, so the page
+    filters by fleet, cabin or one tail locally. From the leg layer (the tail
+    that actually flew), not the published plan."""
+    try:
+        weeks = min(max(int(request.args.get("weeks") or 8), 1), booking_model.HISTORY_WEEKS)
+    except ValueError:
+        return jsonify({"error": "weeks must be a number"}), 400
+    try:
+        conn = _db()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+    try:
+        stats, hist = _booking_model(conn)
+        if stats is None:
+            return jsonify({"error": "the network needs the leg layer (migration 010)"}), 503
+        names = {a["code"]: a["name"] for a in _book_airports(conn)}
+        alleg = _allegris_tails(conn)
+        cabins = _cabin_configs(conn)
+    finally:
+        conn.close()
+
+    cut = datetime.now(timezone.utc) - timedelta(weeks=weeks)
+    tail_first = {r: bool((_parse_seat_config(c) or {}).get("F")) for r, c in cabins.items()}
+    routes = leg_stats.network([l for l in hist if l["dep_utc"] and l["dep_utc"] >= cut
+                                and l["fleet_type"] in _SCHEDULE_TYPES], tail_first)
+    regs = {r for rt in routes for r in rt["tails"]}
+    codes = {c for rt in routes for c in (rt["a"], rt["b"])}
+    tails = {r: {"type": _CANON_SHORT.get(stats.tail_type.get(r), stats.tail_type.get(r)),
+                 "allegris": r in alleg,
+                 "first": bool((_parse_seat_config(cabins.get(r)) or {}).get("F"))} for r in regs}
+    airports = {c: {"name": names.get(c) or c, "lat": _AIRPORT_LL[c][0], "lon": _AIRPORT_LL[c][1]}
+                for c in codes if c in _AIRPORT_LL}
+    return jsonify({"weeks": weeks, "routes": routes, "tails": tails, "airports": airports,
+                    "unplaced": sorted(codes - set(airports)),
                     "generated": datetime.now(timezone.utc).isoformat()})
 
 
@@ -4263,140 +4573,55 @@ _INSIGHT_FAMILIES = {
 @app.route("/api/insights")
 def api_insights():
     """Descriptive fleet analytics for one aircraft type or family (optionally
-    one tail): route frequency, rotation transitions, per-airframe profiles,
-    and — for types we collect schedule data on — reliability. Purely
-    backward-looking; no prediction. Drives the parameterised /insights page."""
+    one tail), from the leg layer: the tail FIS reports as having flown each
+    flight, so routes and rotations are flight numbers and IATA pairs rather
+    than ADS-B detections. Route frequency, rotation transitions, per-airframe
+    profiles and schedule reliability. Purely backward-looking; no prediction."""
     atype = (request.args.get("type") or "B748").strip().upper()
     reg = (request.args.get("reg") or "").strip().upper() or None
     members = list(_INSIGHT_FAMILIES.get(atype, (atype,)))
     short = _CANON_SHORT.get(atype, atype)
-
-    scope = "a.aircraft_type = ANY(%s) AND NOT f.needs_review"
-    sp = [members]
-    if reg:
-        scope += " AND btrim(a.registration) = %s"
-        sp.append(reg)
-    # exclude unresolved/loop legs from the route-shaped queries
-    clean = (" AND f.departure_airport_icao IS NOT NULL AND f.arrival_airport_icao IS NOT NULL"
-             " AND f.departure_airport_icao <> f.arrival_airport_icao"
-             " AND f.departure_airport_icao <> 'UNKN' AND f.arrival_airport_icao <> 'UNKN'")
-
     try:
         conn = _db()
     except Exception as e:
         return jsonify({"error": str(e)}), 503
     try:
-        meta = _q(conn, f"""
-            SELECT COUNT(*), COUNT(DISTINCT a.registration),
-                   MIN(f.flight_date), MAX(f.flight_date)
-            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE {scope}
-        """, sp)[0]
-
-        routes = _q(conn, f"""
-            SELECT f.departure_airport_icao || '-' || f.arrival_airport_icao AS route,
-                   COUNT(*) AS n,
-                   percentile_cont(0.5) WITHIN GROUP (ORDER BY f.duration_minutes) AS med
-            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE {scope}{clean}
-            GROUP BY route ORDER BY n DESC LIMIT 25
-        """, sp)
-
-        airframes = _q(conn, f"""
-            SELECT btrim(a.registration), COUNT(*),
-                   ROUND(SUM(f.duration_minutes) / 60.0, 1),
-                   MIN(f.flight_date), MAX(f.flight_date), MIN(a.aircraft_type)
-            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE {scope}
-            GROUP BY 1 ORDER BY 2 DESC
-        """, sp)
-
-        grounding = _q(conn, f"""
-            WITH g AS (
-              SELECT btrim(a.registration) AS reg,
-                     f.flight_date - LAG(f.flight_date)
-                       OVER (PARTITION BY a.registration ORDER BY f.flight_date) AS gap
-              FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
-              WHERE {scope}
-            )
-            SELECT reg, MAX(gap) FROM g GROUP BY reg
-        """, sp)
-
-        rotation = _q(conn, f"""
-            WITH ordered AS (
-              SELECT f.departure_airport_icao || '-' || f.arrival_airport_icao AS route,
-                     LEAD(f.departure_airport_icao || '-' || f.arrival_airport_icao)
-                       OVER (PARTITION BY a.registration ORDER BY f.first_seen) AS nxt
-              FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
-              WHERE {scope}{clean}
-            )
-            SELECT route, nxt, COUNT(*) AS n FROM ordered
-            WHERE nxt IS NOT NULL GROUP BY route, nxt ORDER BY n DESC LIMIT 60
-        """, sp)
-
-        # Schedule reliability (FIS) — only meaningful for collected types.
-        ontime = _q(conn, """
-            WITH latest AS (
-                SELECT DISTINCT ON (o.flight_date, o.flight_number) o.overall_status
-                FROM flight_status_observations o
-                JOIN aircraft a ON a.registration = o.registration
-                WHERE o.found AND a.aircraft_type = ANY(%s)
-                ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
-            )
-            SELECT COALESCE(overall_status, 'UNKNOWN'), COUNT(*)
-            FROM latest GROUP BY 1 ORDER BY 2 DESC
-        """, [members])
-        stab = _reassignment_stability(conn)
-
-        # Reschedulings over time: per observed_date, how many flights had their
-        # tail change vs the previous nightly snapshot (the "re-planned today" axis).
-        reschedulings = _q(conn, """
-            WITH snaps AS (
-                SELECT o.observed_date, btrim(o.registration) AS reg,
-                       LAG(btrim(o.registration)) OVER (
-                           PARTITION BY o.flight_date, o.airline, o.flight_number
-                           ORDER BY o.observed_at) AS prev_reg
-                FROM flight_status_observations o
-                JOIN aircraft a ON a.registration = o.registration
-                WHERE o.found AND o.registration IS NOT NULL AND a.aircraft_type = ANY(%s)
-                  -- the D+5..D+9 horizon probe would otherwise inflate the
-                  -- count from the day it started; keep the series comparable
-                  AND o.flight_date <= o.observed_date + %s
-            )
-            SELECT observed_date,
-                   COUNT(*) FILTER (WHERE prev_reg IS NOT NULL AND reg <> prev_reg) AS changes
-            FROM snaps GROUP BY observed_date ORDER BY observed_date
-        """, [members, BOOK_HORIZON_DAYS])
+        stats, _hist = _booking_model(conn)
+        if stats is None:
+            return jsonify({"error": "insights need the leg layer (migration 010)"}), 503
+        legs = [_leg_from_row(r) for r in _q(
+            conn, _leg_sql(conn) + " WHERE fleet_type = ANY(%s) ORDER BY dep_utc", (members,))]
     finally:
         conn.close()
 
-    ground = {r[0]: r[1] for r in grounding}
-    resched = [{"date": r[0].isoformat(), "n": r[1]} for r in reschedulings]
-    hold = _merge_hold(stab["type"].get(_CANON_SHORT.get(t, t)) for t in members)
-    reliability = None
-    if ontime or hold or resched:
-        reliability = {
-            "ontime": [{"status": s, "n": n} for s, n in ontime],
-            "hold_by_lead": hold or stab["overall"],
-            "churn_by_route": stab["route"],
-            "reschedulings": resched,
-        }
-
+    scoped = [l for l in legs if not reg or l["truth_tail"] == reg]
+    done = leg_stats.flown(scoped)
+    # hold rate by lead band (hours), n-weighted over the family's members
+    hold = {}
+    for t in members:
+        for b in booking_model.BANDS_H:
+            held, n = stats.hold.get(("type", t, b), (0, 0))
+            if n:
+                cell = hold.setdefault(b, [0, 0])
+                cell[0] += held
+                cell[1] += n
     return jsonify({
         "type": atype, "short": short, "reg": reg, "members": members,
-        "meta": {"flights": meta[0], "tails": meta[1],
-                 "first": meta[2].isoformat() if meta[2] else None,
-                 "last": meta[3].isoformat() if meta[3] else None},
-        "routes": [{"route": r[0], "n": r[1], "median_min": int(r[2]) if r[2] is not None else None}
-                   for r in routes],
-        "airframes": [{"reg": r[0], "legs": r[1], "hours": float(r[2]) if r[2] is not None else 0.0,
-                       "first": r[3].isoformat() if r[3] else None,
-                       "last": r[4].isoformat() if r[4] else None,
-                       "type": _CANON_SHORT.get(r[5], r[5]),
-                       "max_ground_days": ground.get(r[0])}
-                      for r in airframes],
-        "rotation": [{"from": r[0], "to": r[1], "n": r[2]} for r in rotation],
-        "reliability": reliability,
+        "meta": {"flights": len(done), "tails": len({l["truth_tail"] for l in done}),
+                 "first": done[0]["flight_date"].isoformat() if done else None,
+                 "last": done[-1]["flight_date"].isoformat() if done else None},
+        "routes": leg_stats.route_counts(scoped),
+        "airframes": leg_stats.airframe_profiles(scoped),
+        "rotation": leg_stats.rotation(scoped),
+        "reliability": {
+            # the published horizon + a day, so the D+5..D+9 probe (and any
+            # later widening) doesn't inflate the series
+            "reschedulings": leg_stats.reschedulings(legs, (BOOK_HORIZON_DAYS + 1) * 24),
+            "ontime": leg_stats.status_mix(l for l in legs
+                                           if l["flight_date"] >= date.today() - timedelta(days=28)
+                                           and l["flight_date"] <= date.today()),
+            "hold_by_band": {b: {"p": h / n, "n": n} for b, (h, n) in sorted(hold.items())},
+        },
         "generated": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -4528,9 +4753,8 @@ async function init(){
     const lblInner=(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span>'
       +(a.allegris?'<span class="abadge" title="Allegris cabin">A</span>':'');
     html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-type="'+a.type+'" data-allegris="'+(a.allegris?'1':'0')+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
-    html+= a.icao24
-      ? '<a class="gantt-label" href="/fleet/'+a.icao24+'" title="Open '+a.reg+' in Fleet DB">'+lblInner+'</a>'
-      : '<div class="gantt-label">'+lblInner+'</div>';
+    html+='<a class="gantt-label" href="/airframe/'+encodeURIComponent(a.reg)+'" title="'+a.reg
+      +(a.cabin?' \u00b7 '+a.cabin:'')+' \u2014 open airframe profile">'+lblInner+'</a>';
     html+='<div class="gantt-track">';
 
     // rotation ties ("stays"): consecutive legs where the tail sits at an outstation (out & back)
@@ -4838,7 +5062,9 @@ _BOOK_HTML = """\
   </div>
   <div class="mapwrap" id="mapwrap">
     <div class="maphead">
-      <span class="t">Click an airport to see what departs</span>
+      <div class="fp-seg" id="map-layer"><button type="button" data-v="up" class="active">Upcoming</button><button type="button" data-v="net">Network</button></div>
+      <input id="map-tail" type="text" placeholder="only one tail, e.g. D-ABYN" list="targets" autocomplete="off" aria-label="show one tail only">
+      <span class="t" id="map-hint">Click an airport to see what departs</span>
       <span class="pick" id="map-pick"></span>
       <span class="t" id="map-count" style="margin-left:auto"></span>
     </div>
@@ -5041,6 +5267,7 @@ function syncFilters(){
   const n = (FILT.fams?1:0) + (FILT.alleg!=='any'?1:0) + (FILT.first!=='any'?1:0);
   $('filter-btn').textContent = n ? 'Filters \\u00b7 '+n : 'Filters';
   if(LAST) drawResults();
+  if(MAP.gLayer) mapRender(false);
 }
 function applyFams(){
   const boxes = [...document.querySelectorAll('.fchk')], on = boxes.filter(x=>!x.classList.contains('off'));
@@ -5084,7 +5311,7 @@ function drawResults(){
       + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+lead+'</div>'
       + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+'</div>'
       + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
-      + '<div class="tail">'+(WATCH.has(f.reg)?'<span class="star">&#9733;</span>':'')+(f.reg||'?')
+      + '<div class="tail">'+(WATCH.has(f.reg)?'<span class="star">&#9733;</span>':'')+tlink(f.reg)
       + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span>'
       + (f.allegris?'<span class="abadge" title="Allegris cabin">ALLEGRIS</span>':'')
       + cabinBadges(f.cabin)+'</div>'
@@ -5096,6 +5323,8 @@ function drawResults(){
 
 /* ── Plan mode: every candidate flight for one target tail, ranked by P ── */
 let PLAN = null, PSORT = 'p';
+// a tail anywhere on the page opens its airframe profile (cabin, where it flies)
+function tlink(reg){ return reg ? '<a class="tlink" href="/airframe/'+encodeURIComponent(reg)+'">'+esc(reg)+'</a>' : '?'; }
 function pctText(p){ const v = p * 100; return v >= 10 ? Math.round(v)+'%' : (v >= 1 ? v.toFixed(1)+'%' : (v > 0 ? '&lt;1%' : '0%')); }
 function srcLabel(s){ return ({published:'published', scheduled:'FIS schedule', projected:'projected'})[s] || s; }
 function leadTxt(fdate){
@@ -5107,7 +5336,7 @@ function drawPlan(){
   const R = $('results'), d = PLAN;
   if(d.error){ R.innerHTML = '<div class="empty">'+esc(d.error)+'</div>'; return; }
   const t = d.target;
-  let h = '<div class="tsum"><div class="tsum-head"><span class="treg">'+esc(t.reg)+'</span>'
+  let h = '<div class="tsum"><div class="tsum-head"><span class="treg">'+tlink(t.reg)+'</span>'
     + '<span class="tbadge '+tcls(t.type)+'">'+esc(t.type)+'</span>'
     + (t.allegris ? '<span class="abadge">ALLEGRIS</span>' : '') + cabinBadges(t.cabin)
     + (t.cabin ? '<span class="tcab">'+cabinText(t.cabin)+'</span>' : '') + '</div>';
@@ -5136,13 +5365,16 @@ function drawPlan(){
       + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+leadTxt(f.flight_date)+'</div>'
       + '<div class="route"><div class="pair">'+esc(f.dep)+' &rarr; '+esc(f.arr)+'</div>'
       + '<div class="sub">'+esc(f.flight)+' &middot; dep '+fmtClock(f.dep_sched)+' &middot; <span class="src src-'+f.source+'">'+srcLabel(f.source)+'</span></div>'
-      + '<div class="why">'+esc(f.why)+'</div></div>'
+      + '<div class="why">'+esc(f.why)+'</div>'
+      + ((t.cabin && t.cabin.F && f.cabin && !f.cabin.F)
+          ? '<div class="why nof">&#9888; No First on this flight &mdash; Lufthansa publishes it without a First cabin (a route without First).</div>' : '')
+      + '</div>'
       + '<div class="tail">' + (f.published
-          ? (WATCH.has(f.published) ? '<span class="star">&#9733;</span>' : '')+esc(f.published)
+          ? (WATCH.has(f.published) ? '<span class="star">&#9733;</span>' : '')+tlink(f.published)
             + '<span class="tbadge '+tcls(f.type)+'">'+esc(f.type)+'</span>'
             + (f.published_allegris ? '<span class="abadge" title="Allegris cabin">ALLEGRIS</span>' : '')
-            + cabinBadges(f.published_cabin)
-          : '<span class="nopub">not published yet</span>') + '</div>'
+          : '<span class="nopub">not published yet</span>')
+      + cabinBadges(f.cabin || f.published_cabin) + '</div>'
       + '<div class="miniconf pchip" title="chance '+esc(t.reg)+' operates this flight"><span class="p">'+pctText(f.p)+'</span><span class="cn">'+esc(t.reg)+'</span></div></div>';
   });
   if(fs.length > 150) h += '<div class="fnote">150 of '+fs.length+' flights shown</div>';
@@ -5226,7 +5458,7 @@ function renderFlight(d){
   if(d.found){
     const dur = isoDur(d.duration);
     h += '<div class="det-grid">';
-    h += row('Aircraft',(d.current_reg||'?')+(d.current_type?' &middot; '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
+    h += row('Aircraft',(d.current_reg ? tlink(d.current_reg) : '?')+(d.current_type?' &middot; '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
     if(d.cabin){
       const cb=[]; if(d.cabin.F)cb.push('<b>First '+d.cabin.F+'</b>'); if(d.cabin.C)cb.push('Business '+d.cabin.C);
       if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
@@ -5256,6 +5488,7 @@ function renderFlight(d){
   b.innerHTML = h;
 }
 $('results').addEventListener('click', e => {
+  if(e.target.closest('a')) return;              // a tail link navigates instead
   const c = e.target.closest('.fcard');
   if(c && c.dataset.src !== 'projected') openFlight(c.dataset.num, c.dataset.fdate);  // a projection has no FIS record yet
 });
@@ -5274,7 +5507,8 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 // 12-degree window it degrades into abstract polygons. 12 degrees still puts
 // ~50px between neighbours as close as HND/NRT or JFK/EWR.
 const MAP = { on:false, svg:null, marks:[], byCode:{}, sel:null, pending:null,
-              moved:0, minW:12, V:{x:-180,y:-70,w:360} };
+              moved:0, minW:12, V:{x:-180,y:-70,w:360},
+              layer:'up', up:null, net:null, tail:null, gLayer:null };
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
@@ -5348,12 +5582,19 @@ function mapZoomCentre(f){
 }
 
 function mapTip(m, ev){
-  const tip = $('maptip'), a = m.a, nd = a.dests.length;
-  tip.innerHTML = '<b>'+esc(a.code)+'</b> '+esc(a.name)
-    + '<br>'+a.flights+' departure'+(a.flights===1?'':'s')
-    + ' &middot; '+nd+' destination'+(nd===1?'':'s')
-    + (a.types.length ? '<br><span class="d">'+esc(a.types.join(', '))
-        + (a.next ? ' &middot; from '+fmtD(a.next) : '')+'</span>' : '');
+  const tip = $('maptip'), a = m.a;
+  if(a.net){
+    tip.innerHTML = '<b>'+esc(a.code)+'</b> '+esc(a.name)+'<br>'+a.count+' leg'+(a.count===1?'':'s')
+      + ' in '+MAP.net.weeks+' weeks'+(MAP.tail ? ' by '+esc(MAP.tail) : '')
+      + '<br><span class="d">click for its upcoming departures</span>';
+  } else {
+    const nd = a.dests.length;
+    tip.innerHTML = '<b>'+esc(a.code)+'</b> '+esc(a.name)
+      + '<br>'+a.count+' departure'+(a.count===1?'':'s')+(a.count !== a.flights ? ' (of '+a.flights+', filtered)' : '')
+      + ' &middot; '+nd+' destination'+(nd===1?'':'s')
+      + (a.types.length ? '<br><span class="d">'+esc(a.types.join(', '))
+          + (a.next ? ' &middot; from '+fmtD(a.next) : '')+'</span>' : '');
+  }
   tip.classList.add('show');
   const wr = $('mapwrap').getBoundingClientRect();
   const x = Math.min(ev.clientX - wr.left + 14, wr.width - tip.offsetWidth - 8);
@@ -5363,22 +5604,96 @@ function mapTip(m, ev){
 }
 function mapHideTip(){ $('maptip').classList.remove('show'); }
 
+/* Two layers on one basemap. Upcoming: airports with a published departure
+   in the next days (marker = departures). Network: routes flown in the last
+   8 weeks (line width = legs), from the tail that actually flew each leg.
+   Both honour the type/Allegris/First filters and the one-tail box, so "where
+   does D-ABYN go" and "where do Allegris A350s fly" are one click each. */
 function mapBuild(world, data){
   const svg = MAP.svg;
   svg.innerHTML = '';
   svg.appendChild(svgEl('path', {d:world.path, class:'land'}));
-  const gMk = svgEl('g', {}), gLbl = svgEl('g', {});
-  // busiest first, so the small outstations paint on top and stay clickable
-  const A = (data.airports||[]).slice().sort((a,b) => b.flights - a.flights);
-  const max = A.length ? A[0].flights : 1;
+  MAP.gLayer = svgEl('g', {});
+  svg.appendChild(MAP.gLayer);
+  MAP.up = data;
+  mapRender(true);
+}
+function mapKeep(type, reg, alleg, first){      // first === undefined: caller counts it
+  if(FILT.fams && !FILT.fams.has(famOf(type))) return false;
+  if(FILT.alleg!=='any' && !!alleg !== (FILT.alleg==='yes')) return false;
+  if(first !== undefined && FILT.first!=='any' && !!first !== (FILT.first==='yes')) return false;
+  return !MAP.tail || reg === MAP.tail;
+}
+/* a gentle northward arc, so opposite directions and parallel routes separate */
+function arcPath(A, B){
+  const x1 = A.lon, y1 = -A.lat, x2 = B.lon, y2 = -B.lat;
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+  let nx = -dy / len, ny = dx / len;
+  if(ny > 0){ nx = -nx; ny = -ny; }
+  const k = 0.16 * len, cx = (x1 + x2) / 2 + nx * k, cy = (y1 + y2) / 2 + ny * k;
+  return 'M'+x1+','+y1+' Q'+cx.toFixed(3)+','+cy.toFixed(3)+' '+x2+','+y2;
+}
+function mapRender(fit){
+  const g = MAP.gLayer;
+  if(!g) return;
+  g.innerHTML = '';
+  const gLines = svgEl('g', {}), gMk = svgEl('g', {}), gLbl = svgEl('g', {});
+  g.appendChild(gLines); g.appendChild(gMk); g.appendChild(gLbl);
   MAP.marks = []; MAP.byCode = {};
-  A.forEach((a, i) => {
+  if(MAP.layer === 'net' && !MAP.net) return;      // still loading; mapLayer renders it
+  let pts = [], unplaced = [];
+  if(MAP.layer === 'up'){
+    (MAP.up.airports || []).forEach(a => {
+      const n = (a.rows || []).filter(r => mapKeep(r[0], r[1], r[2], r[3])).length;
+      if(n) pts.push(Object.assign({}, a, {count:n}));
+    });
+    unplaced = (MAP.up.unplaced || []).map(u => u.code);
+    $('map-count').textContent = pts.length + ' airport'+(pts.length===1?'':'s')+' with published departures';
+  } else {
+    const net = MAP.net, agg = {}, keep = [];
+    net.routes.forEach(rt => {
+      let n = 0;
+      // First is per flight (routes without First publish none): count the legs
+      for(const reg in rt.tails){
+        const c = net.tails[reg] || {};
+        if(!mapKeep(c.type, reg, c.allegris)) continue;
+        const f = (rt.first && rt.first[reg]) || 0;
+        n += FILT.first === 'yes' ? f : (FILT.first === 'no' ? rt.tails[reg] - f : rt.tails[reg]);
+      }
+      if(n && net.airports[rt.a] && net.airports[rt.b]) keep.push([rt, n]);
+    });
+    const maxn = keep.reduce((m, x) => Math.max(m, x[1]), 1);
+    keep.sort((x, y) => x[1] - y[1]).forEach(([rt, n]) => {   // busiest drawn last, on top
+      const A = net.airports[rt.a], B = net.airports[rt.b], d = arcPath(A, B);
+      const w = (1 + 5 * Math.sqrt(n / maxn)).toFixed(2);
+      const line = svgEl('path', {d:d, class:'rt', 'stroke-width':w});
+      const hit = svgEl('path', {d:d, class:'rthit', tabindex:'0', role:'button',
+        'aria-label':rt.a+' to '+rt.b+', '+n+' legs'});
+      const info = {rt:rt, n:n};
+      hit.addEventListener('click', () => { if(MAP.moved < 5) mapRoute(rt.a, rt.b); });
+      hit.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); mapRoute(rt.a, rt.b); } });
+      hit.addEventListener('pointerenter', ev => { line.classList.add('on'); mapRouteTip(info, ev); });
+      hit.addEventListener('pointermove', ev => mapRouteTip(info, ev));
+      hit.addEventListener('pointerleave', () => { line.classList.remove('on'); mapHideTip(); });
+      gLines.appendChild(line); gLines.appendChild(hit);
+      [rt.a, rt.b].forEach(c => { agg[c] = (agg[c] || 0) + n; });
+    });
+    pts = Object.keys(agg).map(c => ({code:c, name:net.airports[c].name, lat:net.airports[c].lat,
+                                      lon:net.airports[c].lon, count:agg[c], net:true}));
+    unplaced = net.unplaced || [];
+    $('map-count').textContent = keep.length + ' route'+(keep.length===1?'':'s')+' flown in '+net.weeks+' weeks';
+  }
+  // busiest first, so the small outstations paint on top and stay clickable
+  pts.sort((a, b) => b.count - a.count);
+  const max = pts.length ? pts[0].count : 1;
+  pts.forEach((a, i) => {
     const c = svgEl('circle', {cx:a.lon, cy:-a.lat, r:0, class:'mk', tabindex:'0',
-      role:'button', 'aria-label':a.code+' '+a.name+', '+a.flights+' departures'});
+      role:'button', 'aria-label':a.code+' '+a.name+', '+a.count+(a.net ? ' legs' : ' departures')});
     const t = svgEl('text', {x:a.lon, y:-a.lat, class:'mklbl'});
     t.textContent = a.code;
     const m = {code:a.code, lon:a.lon, lat:a.lat, a:a, c:c, t:t,
-               r:3.4 + 3.8 * Math.sqrt(a.flights / max), big:i < 8};
+               r:3.4 + 3.8 * Math.sqrt(a.count / max), big:i < 8};
+    c.classList.toggle('sel', a.code === MAP.sel);
     c.addEventListener('click', () => { if(MAP.moved < 5) mapSelect(a.code); });
     c.addEventListener('keydown', e => {
       if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); mapSelect(a.code); } });
@@ -5388,17 +5703,59 @@ function mapBuild(world, data){
     gMk.appendChild(c); gLbl.appendChild(t);
     MAP.marks.push(m); MAP.byCode[a.code] = a;
   });
-  svg.appendChild(gMk); svg.appendChild(gLbl);
-  $('map-count').textContent = A.length + ' airports with published departures';
-  const un = data.unplaced || [];
-  $('mapnote').style.display = un.length ? '' : 'none';
-  if(un.length){
-    $('mapnote').innerHTML = un.length+' airport'+(un.length===1?'':'s')
-      + ' not placed on the map ('+un.map(u => esc(u.code)).join(', ')
-      + ') &mdash; reachable from route mode.';
+  $('mapnote').style.display = unplaced.length ? '' : 'none';
+  if(unplaced.length){
+    $('mapnote').innerHTML = unplaced.length+' airport'+(unplaced.length===1?'':'s')
+      + ' not placed on the map ('+unplaced.map(esc).join(', ')+') &mdash; reachable from route mode.';
   }
-  mapFit();
+  if(fit) mapFit(); else mapDraw();
 }
+function mapRouteTip(info, ev){
+  const rt = info.rt, tip = $('maptip');
+  const tails = Object.entries(rt.tails).sort((x, y) => y[1] - x[1]);
+  const types = Object.entries(rt.types).map(([k, v]) => k+' '+v).join(', ');
+  const mine = MAP.tail ? (rt.tails[MAP.tail] || 0) : null;
+  tip.innerHTML = '<b>'+esc(rt.a)+' &harr; '+esc(rt.b)+'</b><br>'+info.n+' leg'+(info.n===1?'':'s')+' in '+MAP.net.weeks+' weeks'
+    + (mine != null ? ' by '+esc(MAP.tail)+' ('+Math.round(100*mine/rt.n)+'% of all '+rt.n+')' : '')
+    + '<br><span class="d">'+esc(types)+' &middot; '+tails.length+' tail'+(tails.length===1?'':'s')+'</span>'
+    + '<br><span class="d">click to '+(MAP.tail ? 'plan '+esc(MAP.tail)+' on this route' : 'see upcoming flights')+'</span>';
+  tip.classList.add('show');
+  const wr = $('mapwrap').getBoundingClientRect();
+  tip.style.left = Math.max(6, Math.min(ev.clientX - wr.left + 14, wr.width - tip.offsetWidth - 8))+'px';
+  tip.style.top = Math.max(6, Math.min(ev.clientY - wr.top + 14, wr.height - tip.offsetHeight - 8))+'px';
+}
+/* a route line opens the route: planned for the one-tail filter if set, else
+   the published flights on it (either direction via the hub side first) */
+function mapRoute(a, b){
+  mapHideTip();
+  tokDep.set([a]); tokArr.set([b]);
+  if(MAP.tail){ $('plan-in').value = MAP.tail; setMode('plan'); }
+  else setMode('route');
+  search();
+}
+function mapLayer(v){
+  MAP.layer = v;
+  $('map-layer').querySelectorAll('button').forEach(x => x.classList.toggle('active', x.dataset.v === v));
+  $('map-hint').textContent = v === 'up' ? 'Click an airport to see what departs'
+    : 'Line width = legs flown; click a line to open the route';
+  if(v === 'net' && !MAP.net){
+    $('map-count').textContent = 'Loading the network…';
+    fetch('/api/book/network').then(r => r.json()).then(d => {
+      if(d.error){ $('map-count').textContent = d.error; return; }
+      MAP.net = d; if(MAP.layer === 'net') mapRender(true);
+    }).catch(() => { $('map-count').textContent = 'Network failed to load.'; });
+    return;
+  }
+  mapRender(true);
+}
+$('map-layer').querySelectorAll('button').forEach(b => b.addEventListener('click', () => mapLayer(b.dataset.v)));
+function mapTailSet(){
+  const v = $('map-tail').value.trim().toUpperCase();
+  MAP.tail = v || null;
+  if(MAP.gLayer) mapRender(false);
+}
+$('map-tail').addEventListener('change', mapTailSet);
+$('map-tail').addEventListener('keydown', e => { if(e.key === 'Enter') mapTailSet(); });
 
 function mapWire(){
   const svg = MAP.svg, ptrs = new Map();
@@ -5474,15 +5831,22 @@ function mapInit(){
   ]).then(([w, d]) => {
     if(d.error){ $('map-count').textContent = d.error; return; }
     mapBuild(w, d);
+    if(MAP.layer === 'net') mapLayer('net');   // a ?map=net link asked before the basemap was in
     if(MAP.pending){ const c = MAP.pending; MAP.pending = null; mapSelect(c); }
   }).catch(() => { $('map-count').textContent = 'Map failed to load.'; });
 }
 
 /* Prefill + auto-search from URL (?target=[&dep=&arr=&from=&to=], ?reg=, ?dep=&arr=,
-   or ?loc=) so links land on results */
+   ?loc=, or ?map=net|up[&tail=]) so links land on results */
 (function(){
   const p = new URLSearchParams(location.search);
-  if(p.get('target')){ setMode('plan'); $('plan-in').value = p.get('target');
+  if(p.get('map')){
+    if(p.get('tail')){ $('map-tail').value = p.get('tail').trim().toUpperCase(); MAP.tail = $('map-tail').value; }
+    MAP.layer = p.get('map') === 'net' ? 'net' : 'up';
+    $('map-layer').querySelectorAll('button').forEach(x => x.classList.toggle('active', x.dataset.v === MAP.layer));
+    setMode('map');
+  }
+  else if(p.get('target')){ setMode('plan'); $('plan-in').value = p.get('target');
     tokDep.set((p.get('dep')||'').split(/[,\\s]+/));
     tokArr.set((p.get('arr')||'').split(/[,\\s]+/));
     if(p.get('from')) $('plan-from').value = p.get('from');
@@ -5564,9 +5928,10 @@ function fmtMin(m){ if(m==null) return '—'; return Math.floor(m/60)+'h'+String
 function shortDate(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{day:'2-digit',month:'short',timeZone:'UTC'}); }
 function esc(s){ return (s==null?'':String(s)).replace(/"/g,'&quot;'); }
 
+function tailLink(reg){ return '<a class="tail-link" href="/airframe/'+encodeURIComponent(reg)+'">'+reg+'</a>'; }
 function routesTable(routes){
   if(!routes.length) return '<div class="empty">No routes yet.</div>';
-  let h='<table><tr><th>Route</th><th class="r">Flights</th><th class="r">Median time</th></tr>';
+  let h='<table><tr><th>Route</th><th class="r">Flights</th><th class="r">Median block</th></tr>';
   routes.slice(0,15).forEach(r=>{ h+='<tr><td>'+r.route+'</td><td class="r">'+r.n+'</td><td class="r">'+fmtMin(r.median_min)+'</td></tr>'; });
   return h+'</table>';
 }
@@ -5581,7 +5946,7 @@ function airframesTable(af){
   const mixed = new Set(af.map(a=>a.type)).size > 1;  // family tab with >1 variant
   let h='<table><tr><th>Tail</th>'+(mixed?'<th>Type</th>':'')+'<th class="r">Legs</th><th class="r">Hours</th><th class="r">Longest gap</th><th class="r">Last seen</th></tr>';
   af.forEach(a=>{
-    h+='<tr><td class="tail-reg">'+(a.watch?'<span class="star">&#9733;</span>':'')+a.reg+'</td>'
+    h+='<tr><td class="tail-reg">'+(a.watch?'<span class="star">&#9733;</span>':'')+tailLink(a.reg)+'</td>'
       +(mixed?'<td>'+(a.type||'')+'</td>':'')
       +'<td class="r">'+a.legs+'</td><td class="r">'+a.hours+'h</td>'
       +'<td class="r">'+(a.max_ground_days!=null?a.max_ground_days+'d':'—')+'</td>'
@@ -5614,16 +5979,16 @@ function ontimeBar(rel){
   const col = s => s==='ONTIME'||s==='EARLY'||s==='ARRIVED' ? 'var(--fp-dv-1)' : s==='DELAYED' ? 'var(--fp-dv-3)' : 'var(--fp-dv-6)';
   let seg='', list=[];
   ot.forEach(x=>{ seg+='<div class="ot-seg" style="width:'+(x.n/total*100)+'%;background:'+col(x.status)+'" title="'+esc(x.status+': '+x.n)+'"></div>'; list.push(x.status+' '+x.n); });
-  return '<div class="subhead">On-time mix (latest snapshot per flight)</div><div class="ot-bar">'+seg+'</div><div class="ot-list">'+list.join('  \\u00b7  ')+'</div>';
+  return '<div class="subhead">Status mix, last 4 weeks (latest look per flight)</div><div class="ot-bar">'+seg+'</div><div class="ot-list">'+list.join('  \\u00b7  ')+'</div>';
 }
 function holdTable(rel){
-  const hb = rel && rel.hold_by_lead;
+  const hb = rel && rel.hold_by_band;
   if(!hb) return '';
-  const leads = Object.keys(hb).map(Number).sort((a,b)=>a-b);
-  if(!leads.length) return '';
-  let h='<div class="subhead" style="margin-top:var(--fp-space-3)">Tail holds by lead (how often the published tail survives to departure)</div>';
-  h+='<table><tr><th>Days out</th><th class="r">Holds</th><th class="r">n</th></tr>';
-  leads.forEach(l=>{ const c=hb[l]; h+='<tr><td>'+l+'d</td><td class="r">'+Math.round(c.p*100)+'%</td><td class="r">'+c.n+'</td></tr>'; });
+  const bands = Object.keys(hb).map(Number).sort((a,b)=>b-a);
+  if(!bands.length) return '';
+  let h='<div class="subhead" style="margin-top:var(--fp-space-3)">Tail holds by lead (how often the tail published this far out is the one that flies, last 8 weeks)</div>';
+  h+='<table><tr><th>Hours out</th><th class="r">Holds</th><th class="r">n</th></tr>';
+  bands.forEach(b=>{ const c=hb[b]; h+='<tr><td>'+b+'h</td><td class="r">'+Math.round(c.p*100)+'%</td><td class="r">'+c.n+'</td></tr>'; });
   return h+'</table>';
 }
 
@@ -5645,13 +6010,13 @@ async function init(){
 
   let html = '';
   html += module('Schedule reliability', 'reschedulings',
-      '<div class="rs-note">Bars = tails reassigned each day vs the night before. Early days are thin.</div>'
+      '<div class="rs-note">Bars = tail changes each day, dated by the look that revealed them (within the published horizon).</div>'
       + reschedChart(d.reliability)
       + '<div style="margin-top:var(--fp-space-3)">' + ontimeBar(d.reliability) + holdTable(d.reliability) + '</div>');
   html += module('Routes &amp; rotation', 'where this '+(REG||d.type)+' flies',
       '<div class="cols"><div><div class="subhead">Top routes</div>'+routesTable(d.routes)+'</div>'
       + '<div><div class="subhead">Typical next leg</div>'+rotationList(d.rotation)+'</div></div>');
-  html += module('Per-airframe profiles', 'utilisation &amp; groundings',
+  html += module('Per-airframe profiles', 'utilisation &amp; longest time on the ground &middot; click a tail for its profile',
       airframesTable(d.airframes));
   $('body').innerHTML = html;
 }
@@ -5668,6 +6033,181 @@ init();
 @app.route("/insights")
 def insights():
     return render_template_string(_INSIGHTS_HTML)
+
+
+_AIRFRAME_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Airframe | LH Fleet</title>
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/airframe.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body class="fp" data-fp-intensity="02">
+<div class="container">
+  <div class="header">
+    <div class="brand">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
+      <div>
+        <h1>Air<span>frame</span></h1>
+        <div class="fp-label model">AIRFRAME &middot; Profile &amp; hard product</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a class="nav-link" href="/book">Book</a>
+      <a class="nav-link" href="/schedule">Schedule</a>
+      <a class="nav-link" href="/insights">Insights</a>
+      <a class="nav-link" href="/fleet">Fleet DB</a>
+    </nav>
+  </div>
+  <div id="body"><div class="empty">Loading&hellip;</div></div>
+</div>
+<footer>
+  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+const REG = decodeURIComponent(location.pathname.split('/').pop() || '').toUpperCase();
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+function tcls(t){ return ({'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'})[t] || 'tother'; }
+function fmtDay(iso){ if(!iso) return ''; return new Date(iso.length===10 ? iso+'T00:00:00Z' : iso).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}); }
+function fmtClock(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
+function ago(iso){
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if(m < 60) return m+' min ago';
+  if(m < 48*60) return Math.round(m/60)+' h ago';
+  return Math.round(m/1440)+' days ago';
+}
+function yn(v, extra){ return v==null ? '&mdash;' : (v ? 'yes'+(extra?' &middot; '+esc(extra):'') : 'no'); }
+function module(title, sub, inner){
+  return '<div class="module"><div class="modhead">'+title+(sub?'<span class="sub">'+sub+'</span>':'')+'</div><div class="modbody">'+inner+'</div></div>';
+}
+function tailLink(r){ return r===REG ? '<b>'+esc(r)+'</b>' : '<a class="tail-link" href="/airframe/'+encodeURIComponent(r)+'">'+esc(r)+'</a>'; }
+
+function cabinBlock(d){
+  const c = d.cabin || {};
+  const rows = [['First','F'],['Business','C'],['Premium Economy','E'],['Economy','M']];
+  const tot = rows.reduce((s,[,k]) => s + (c[k]||0), 0);
+  let h = '<div class="kv">';
+  rows.forEach(([n,k]) => { h += '<span class="k">'+n+'</span><span class="v">'+(c[k] ? '<b>'+c[k]+'</b> seats' : '&mdash;')+'</span>'; });
+  h += '<span class="k">Total</span><span class="v">'+(tot ? '<b>'+tot+'</b>' : '&mdash;')+(d.seat_config ? ' &middot; '+esc(d.seat_config) : '')+'</span>';
+  h += '<span class="k">Allegris</span><span class="v">'+yn(d.allegris)+'</span>';
+  const a = d.amenities || {};
+  h += '<span class="k">Wi-Fi</span><span class="v">'+yn(a.wifi, a.wifi_type)+'</span>';
+  h += '<span class="k">Seatback IFE</span><span class="v">'+yn(a.ife)+'</span>';
+  h += '<span class="k">USB power</span><span class="v">'+yn(a.usb_power)+'</span>';
+  if(a.livery) h += '<span class="k">Livery</span><span class="v">'+esc(a.livery)+'</span>';
+  h += '</div>';
+  if(d.first_not_sold && d.first_not_sold.length){
+    h += '<div class="note"><b>First isn&rsquo;t sold on every flight.</b> First is a route product: on these routes the '+esc(d.type)+' fleet was published without a First cabin (last '+d.window_weeks+' weeks, legs without First / legs): '
+      + d.first_not_sold.map(r => esc(r.dep)+'&rarr;'+esc(r.arr)+' '+r.without+'/'+r.legs).join(', ')+'.</div>';
+  }
+  if(d.variant){
+    const others = d.variant.tails.filter(t => t !== REG);
+    h += '<div class="note">Cabin variant <b>'+esc(d.variant.label)+'</b> of '+d.variants+' on the '+esc(d.type)+' fleet'
+      + (others.length ? ' &mdash; the same cabin as '+others.map(tailLink).join(', ')+'.' : ' &mdash; the only tail with this cabin.')
+      + '</div>';
+  }
+  h += '<div class="note">Everything above is what Lufthansa&rsquo;s own flight-status feed publishes for this tail; the layout is the one it is most often sold with'
+    + (d.amenities_seen ? ' (last seen '+ago(d.amenities_seen)+')' : '')+'.</div>';
+  h += '<div class="photo" id="photo"><button class="fp-btn" id="photo-btn">Show photo</button>'
+    + '<div class="credit">Loads from planespotters.net &mdash; nothing is requested from them until you click.</div></div>';
+  return h;
+}
+function statusLine(d){
+  const s = d.status || {}, bits = [];
+  if(s.idle_days == null) bits.push('No operated flight in the last weeks.');
+  else if(s.idle_days > 3) bits.push('<span class="warn">&#9888; Has not flown for '+Math.floor(s.idle_days)+' days &mdash; possibly in maintenance.</span>');
+  else bits.push('In service &middot; last flew '+(s.idle_days < 1 ? 'within the last day' : Math.round(s.idle_days)+' day'+(Math.round(s.idle_days)===1?'':'s')+' ago')+'.');
+  const a = s.adsb;
+  if(a) bits.push('Last ADS-B position '+ago(a.at)+': '+(a.on_ground ? 'on the ground'+(a.airport ? ' at <b>'+esc(a.airport)+'</b>' : '') : 'airborne'+(a.callsign ? ' as '+esc(a.callsign) : ''))+'.');
+  return bits.join(' ');
+}
+function upcomingBlock(d){
+  const u = d.upcoming || [];
+  if(!u.length) return '<div class="empty">Not published on any flight in the next days.</div>';
+  let h = '<table><tr><th>Date</th><th>Flight</th><th>Route</th><th class="r">Dep</th><th class="r">Holds</th></tr>';
+  u.forEach(l => {
+    h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+'</td>'
+      + '<td class="r">'+fmtClock(l.dep_sched)+'</td>'
+      + '<td class="r pct" title="'+(l.hold ? 'how often a tail published '+l.hold.band+'h out still flies it ('+l.hold.basis+', n='+l.hold.n+')' : '')+'">'+(l.hold ? Math.round(l.hold.p*100)+'%' : '&mdash;')+'</td></tr>';
+  });
+  return h + '</table><div class="note">Holds = the chance the tail published now is still the one that flies.</div>';
+}
+function routesBlock(d){
+  const r = d.routes || [];
+  if(!r.length) return '<div class="empty">No operated legs in the last '+d.window_weeks+' weeks.</div>';
+  let h = '<table><tr><th>Route</th><th class="r">Legs</th><th class="r">Of all legs on it</th><th></th></tr>';
+  r.forEach(x => {
+    const q = new URLSearchParams({target: REG, dep: x.dep, arr: x.arr});
+    h += '<tr><td>'+esc(x.dep)+' &rarr; '+esc(x.arr)+'</td><td class="r">'+x.k+'</td>'
+      + '<td class="r"><span class="pct">'+Math.round(x.share*100)+'%</span> of '+x.n+'</td>'
+      + '<td class="r"><a class="tail-link" href="/book?'+q.toString()+'">plan</a></td></tr>';
+  });
+  return h + '</table>';
+}
+function historyBlock(d){
+  const hs = d.cabin_history || [];
+  if(!hs.length) return '<div class="empty">No cabin data yet.</div>';
+  const refits = hs.filter(x => !x.glitch && !x.concurrent);
+  let h = '<table><tr><th>Layout</th><th>Allegris</th><th>Sub-type</th><th class="r">From</th><th class="r">To</th></tr>';
+  hs.forEach(x => {
+    const tag = x.glitch ? ' &middot; one-off' : (x.concurrent ? ' &middot; alongside' : '');
+    h += '<tr class="'+(x.glitch?'glitch':'')+'"><td>'+esc(x.seat_config||'?')+'</td><td>'+(x.allegris?'yes':'no')+'</td><td>'+esc(x.sub_type||'')+'</td>'
+      + '<td class="r">'+fmtDay(x.first_seen)+'</td><td class="r">'+fmtDay(x.last_seen)+tag+'</td></tr>';
+  });
+  h += '</table>';
+  if(hs.some(x => x.concurrent)) h += '<div class="note">Layouts marked <i>alongside</i> were published at the same time as another: the same cabin published differently on some flights (no First on a route without it), not a refit.</div>';
+  if(refits.length > 1) h += '<div class="note">The cabin changed while we were watching &mdash; most recently from '+fmtDay(refits[refits.length-1].first_seen)+'.</div>';
+  return h;
+}
+function recentBlock(d){
+  const r = d.recent || [];
+  if(!r.length) return '<div class="empty">No operated legs in the last weeks.</div>';
+  let h = '<table><tr><th>Date</th><th>Flight</th><th>Route</th></tr>';
+  r.forEach(l => { h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+'</td></tr>'; });
+  return h + '</table>';
+}
+function loadPhoto(){
+  const box = $('photo');
+  box.innerHTML = '<div class="credit">Loading from planespotters.net&hellip;</div>';
+  fetch('/api/airframe/'+encodeURIComponent(REG)+'/photo').then(r => r.json()).then(p => {
+    if(p.error || !p.photo){ box.innerHTML = '<div class="credit">'+(p.error ? esc(p.error) : 'No photo of '+esc(REG)+' on planespotters.net.')+'</div>'; return; }
+    const ph = p.photo;
+    box.innerHTML = '<a href="'+esc(ph.link)+'" target="_blank" rel="noopener noreferrer">'
+      + '<img src="'+esc(ph.src)+'" alt="'+esc(REG)+' on planespotters.net"'+(ph.size ? ' width="'+ph.size.width+'" height="'+ph.size.height+'"' : '')+'></a>'
+      + '<div class="credit">&copy; '+esc(ph.photographer || 'photographer')+' &middot; <a href="'+esc(ph.link)+'" target="_blank" rel="noopener noreferrer">planespotters.net</a></div>';
+  }).catch(() => { box.innerHTML = '<div class="credit">Photo lookup failed.</div>'; });
+}
+fetch('/api/airframe/'+encodeURIComponent(REG)).then(r => r.json()).then(d => {
+  if(d.error){ $('body').innerHTML = '<div class="empty">'+esc(d.error)+'</div>'; return; }
+  document.title = d.reg + ' | LH Fleet';
+  const sub = [d.fis_type, d.sub_type ? 'sub-fleet '+d.sub_type : null, d.serial ? 'MSN '+d.serial : null, d.model].filter(Boolean);
+  let h = '<div class="ahead"><span class="areg">'+esc(d.reg)+'</span>'
+    + (d.type ? '<span class="tbadge '+tcls(d.type)+'">'+esc(d.type)+'</span>' : '')
+    + (d.allegris ? '<span class="abadge">ALLEGRIS</span>' : '') + '</div>'
+    + '<div class="asub">'+sub.map(esc).join(' &middot; ')+'</div>'
+    + '<div class="astatus">'+statusLine(d)+'</div>'
+    + '<div class="actions"><a class="fp-btn fp-btn--solid" href="/book?target='+encodeURIComponent(d.reg)+'">Plan a booking on '+esc(d.reg)+'</a>'
+    + '<a class="fp-btn" href="/insights?type='+encodeURIComponent(d.type_code||'')+'&amp;reg='+encodeURIComponent(d.reg)+'">Insights</a></div>';
+  h += '<div class="cols"><div>'+module('Cabin &amp; hard product', '', cabinBlock(d))+'</div><div>'
+    + module('Published next', 'from the flight-status feed', upcomingBlock(d))
+    + module('Where it flies', 'last '+d.window_weeks+' weeks &middot; share = its legs of all legs on that route', routesBlock(d))
+    + '</div></div>';
+  h += '<div class="cols"><div>'+module('Cabin history', 'every layout the feed has published for it', historyBlock(d))+'</div><div>'
+    + module('Recent flights', 'operated, newest first', recentBlock(d))+'</div></div>';
+  $('body').innerHTML = h;
+  $('photo-btn').addEventListener('click', loadPhoto);
+}).catch(() => { $('body').innerHTML = '<div class="empty">Failed to load.</div>'; });
+</script>
+</body>
+</html>
+"""
 
 
 if __name__ == "__main__":

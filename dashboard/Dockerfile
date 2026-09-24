@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py booking_model.py ./
+COPY app.py booking_model.py leg_stats.py ./
 # Vendored Faceplate design system (tokens + components + MANIFEST) and the
 # stylesheets, fonts and favicon the pages link. The CSS lives in real files so
 # `npx faceplate check` can actually read it -- it only scans .css/.html/.svg.
