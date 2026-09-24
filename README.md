@@ -127,6 +127,8 @@ lhlogging/
 | **positions** | 2-minute position snapshots — lat/lon, altitude, on_ground, callsign |
 | **flights** | Route log — airports, callsign, timestamps, auto-calculated duration, `needs_review` flag |
 | **airports** | Static airport lookup — ICAO code, lat/lon (from OurAirports) |
+| **fis_legs** | One row per scheduled flight from the FIS looks — operated (truth) tail, latest/first published tail, change timeline; rebuilt by the collector after every run |
+| **airframe_cabin** | Cabin history per tail — each distinct seat layout / Allegris / FIS sub-type and when it was seen |
 | **batch_runs** | Audit trail — every job run with stats and error details |
 
 Key design decisions:
@@ -282,9 +284,11 @@ ADS-B pipeline can only observe after the fact.
 - **Config:** `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`),
   `FIS_LOOKAHEAD_DAYS` (2), `FIS_BACKFILL_DAYS` (2), `FIS_FAR_MIN_DAYS`/`MAX_DAYS`
   (3/3), `FIS_FAR_DEEP_MAX_DAYS` (4), `FIS_DEEP_TYPES`, `FIS_PULSE_OFFSETS`
-  (`1,2`), `FIS_DEEP_LOOKAHEAD_BONUS` (1), `FIS_SEED_LOOKBACK_DAYS` (2),
-  `FIS_MAX_LOOKUPS` (700), `FIS_SESSION_LOOKUPS` (80),
-  `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`, `FIS_BLOCK_BACKOFF_S`. Ad-hoc single lookup:
+  (`1,2`; the 22:00 pulse adds `5..9` as the horizon probe), `FIS_DEEP_LOOKAHEAD_BONUS` (1),
+  `FIS_SEED_LOOKBACK_DAYS` (2), `FIS_MAX_LOOKUPS` (700), `FIS_SESSION_LOOKUPS` (80),
+  `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`, `FIS_BLOCK_BACKOFF_S`, `FIS_LEGS_REFRESH_DAYS`
+  (3: every run rebuilds `fis_legs` from D-3 on). Dashboard: `BOOK_HORIZON_DAYS`
+  (4: furthest day the pages show published tails for). Ad-hoc single lookup:
   `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`
   (set `NIGHTLY_JITTER=0` to skip the start jitter).
 
@@ -311,14 +315,20 @@ Built on the FIS snapshots, these help you *catch* a specific airframe — find
 an upcoming flight, see which tail is published on it, and how likely that
 assignment is to still hold by departure.
 
-- **`/book` — Catch a Tail.** Find an upcoming flight three ways: **by tail**
-  (every leg a registration is published on), **by route** (several alternative
-  airports per side), or **by location** (pick a departure airport off a world
-  map). Each result carries the currently published tail, its cabin config
-  (First/Business seat counts, Allegris marker), and a measured hold
-  probability — how often that assignment survives to departure, from the
-  reassignment time series. Deep-linkable: `?reg=D-ABYN`, `?dep=FRA&arr=HND`,
-  `?loc=KIX`.
+- **`/book` — Catch a Tail.** Opens in **Plan** mode: pick the one tail you
+  want to fly, optionally a route (several airports per side) and your dates
+  (default the next 14 days), and every candidate flight is ranked by the
+  chance *that* tail operates it — from the published tail and its measured
+  hold rate up to ~4 days out, from the fleet's history beyond (timetable
+  projected from recent weeks). Each card says what its number rests on; the
+  model and its benchmark are in [docs/booking_model.md](docs/booking_model.md).
+  The lookup modes remain: **by tail** (every leg a registration is published
+  on), **by route**, or **by location** (a departure airport off a world map),
+  each with the published tail, its cabin config (First/Business seat counts,
+  Allegris marker) and hold probability. Tails you plan for are remembered in
+  your browser only (no accounts) and starred/pinned on `/book`, `/schedule`
+  and `/insights`. Deep-linkable: `?target=D-ABYN&dep=FRA&arr=EZE&from=…&to=…`,
+  `?reg=D-ABYN`, `?dep=FRA&arr=HND`, `?loc=KIX`; API: `/api/book/plan`.
 - **`/schedule`** — per-airframe upcoming timeline from the latest snapshot of
   each flight, grouped by tail.
 - **`/insights`** — descriptive, backward-looking analytics per aircraft
@@ -473,6 +483,16 @@ docker compose exec app python tools/load_airports.py
 docker compose exec app python -m tools.seed_flight_routes --apply
 docker compose exec app python -m tools.backfill_routes            # dry-run preview
 docker compose exec app python -m tools.backfill_routes --apply    # apply
+```
+
+**Leg layer (`010`).** Deploy first (the collector skips the leg refresh while the tables
+are missing), then create the tables and backfill them once from all observations; after
+that every collector run refreshes the recent window on its own:
+
+```bash
+ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
+  < db/init/010_fis_legs.sql
+docker compose exec flightstatus python fetch_flightstatus.py --rebuild-legs
 ```
 
 ---
