@@ -2275,6 +2275,12 @@ _CANON_SHORT = {"B748": "748", "A388": "388", "B788": "788", "B789": "789",
 # FIS_SEED_TYPES, incl. the not-yet-delivered variants (B788/B78X/A35K) so they
 # appear the day the collector first sees one.
 _SCHEDULE_TYPES = ("B748", "A388", "B788", "B789", "B78X", "A359", "A35K")
+# Furthest flight date (days from today) the upcoming-flight pages show. FIS
+# publishes tails out to D+9 and the 22:00 pulse now probes D+5..D+9 for the
+# deep tier, but until that probe is scored (tools/benchmark_booking.py, the
+# 120h..216h rows) the pages stay on the horizon every tier is swept at — so
+# the probe changes no page.
+BOOK_HORIZON_DAYS = int(os.environ.get("BOOK_HORIZON_DAYS", "4"))
 # Tails the user is most interested in — pinned to the top and highlighted.
 # A watched tail stays visible even when its type is hidden via the checkboxes.
 _WATCH_TAILS = ("D-ABYN", "D-AIMH", "D-AIXL", "D-ABPU")
@@ -2558,8 +2564,8 @@ def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
     then reg/route filter on that — so a flight reassigned away from a tail no
     longer shows under it. Ordered by scheduled departure."""
     inner = ["o.found", "o.registration IS NOT NULL", "o.dep_scheduled IS NOT NULL",
-             "o.flight_date >= CURRENT_DATE"]
-    params = []
+             "o.flight_date >= CURRENT_DATE", "o.flight_date <= CURRENT_DATE + %s"]
+    params = [BOOK_HORIZON_DAYS]
     if date_from:
         inner.append("o.flight_date >= %s"); params.append(date_from)
     if date_to:
@@ -2624,9 +2630,10 @@ def api_schedule():
             JOIN aircraft a ON a.registration = o.registration
             WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
               AND o.flight_date >= CURRENT_DATE - 1
+              AND o.flight_date <= CURRENT_DATE + %s
               AND a.aircraft_type = ANY(%s)
             ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
-        """, (list(_SCHEDULE_TYPES),))
+        """, (BOOK_HORIZON_DAYS, list(_SCHEDULE_TYPES)))
         swap_rows = _q(conn, """
             SELECT flight_date, flight_number
             FROM flight_status_observations
@@ -4122,11 +4129,14 @@ def api_insights():
                 FROM flight_status_observations o
                 JOIN aircraft a ON a.registration = o.registration
                 WHERE o.found AND o.registration IS NOT NULL AND a.aircraft_type = ANY(%s)
+                  -- the D+5..D+9 horizon probe would otherwise inflate the
+                  -- count from the day it started; keep the series comparable
+                  AND o.flight_date <= o.observed_date + %s
             )
             SELECT observed_date,
                    COUNT(*) FILTER (WHERE prev_reg IS NOT NULL AND reg <> prev_reg) AS changes
             FROM snaps GROUP BY observed_date ORDER BY observed_date
-        """, [members])
+        """, [members, BOOK_HORIZON_DAYS])
     finally:
         conn.close()
 

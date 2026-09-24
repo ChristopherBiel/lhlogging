@@ -39,8 +39,8 @@ TZ=Europe/Berlin
 #                      (priority sort), so the evening bank departs on
 #                      fresh data; also sets tomorrow's plan
 #   21:15 watch 4.5h   evening bank + just-after-midnight departures  ~30
-#   22:00 pulse                                                       ~66
-#                                                          total    ~1700/day
+#   22:00 pulse + horizon probe: deep x D+1/D+2, then D+5..D+9       ~231
+#                                                          total    ~1865/day
 #
 # Combined with the three sweeps, a deep-tier leg gets 10 looks/day at D+1/D+2
 # with a maximum gap of ~2.8h — tight enough to date a reassignment to a few
@@ -55,6 +55,16 @@ TZ=Europe/Berlin
 # a previous run is still active (flock), so slots never overlap into doubled
 # request rates. Every slot has >=23 min of margin to the next at worst-case
 # jitter + duration; a skipped pulse just widens one bracket.
+#
+# Horizon probe (2026-09-24): FIS publishes a tail up to D+9 (D+10 returns no
+# flight at all), and awards are booked ~1-2 weeks out, so what a D+5..D+9
+# assignment is worth decides whether the booking planner can use it. The 22:00
+# pulse carries those offsets for the deep tier only (~33 numbers x 5 more
+# dates); nearest offsets go first, so its D+1/D+2 cadence is unchanged. It sits
+# in the quietest gap of the day (next slot 00:10): ~40 min typical, ~80 min at
+# the slowest far-pass pace seen, so it cannot run into the next pulse. The
+# dashboard keeps capping upcoming flights at D+4 (BOOK_HORIZON_DAYS) until the
+# probe has been scored (tools/benchmark_booking.py, its 120h..216h rows).
 10  0 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 0   2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 45  2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4 >> /var/log/lhlogging/flightstatus.log 2>&1
@@ -69,4 +79,4 @@ TZ=Europe/Berlin
 45 16 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 15 18 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
 15 21 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
-0  22 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
+0  22 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 FIS_PULSE_OFFSETS=1,2,5,6,7,8,9 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
