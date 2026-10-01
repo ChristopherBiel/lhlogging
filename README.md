@@ -286,7 +286,9 @@ ADS-B pipeline can only observe after the fact.
   (3/3), `FIS_FAR_DEEP_MAX_DAYS` (4), `FIS_DEEP_TYPES`, `FIS_PULSE_OFFSETS`
   (`1,2`; the 22:00 pulse adds `5..9` as the horizon probe), `FIS_DEEP_LOOKAHEAD_BONUS` (1),
   `FIS_SEED_LOOKBACK_DAYS` (2), `FIS_MAX_LOOKUPS` (700), `FIS_SESSION_LOOKUPS` (80),
-  `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`, `FIS_BLOCK_BACKOFF_S`, `FIS_LEGS_REFRESH_DAYS`
+  `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`, `FIS_BLOCK_BACKOFF_S`, `FIS_MAX_CONSECUTIVE_BLOCKS`
+  (10: a run stops after that many blocked lookups in a row, logged as status `blocked`, so a
+  blocked run frees the lock for the next slot instead of crawling on for hours), `FIS_LEGS_REFRESH_DAYS`
   (3: every run rebuilds `fis_legs` from D-3 on). Dashboard: `BOOK_HORIZON_DAYS`
   (4: furthest day the pages show published tails for). Ad-hoc single lookup:
   `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`

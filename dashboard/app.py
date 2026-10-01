@@ -467,7 +467,9 @@ async function refresh() {
   const fs = data.last_flightstatus;
   const fsAgeH = fs && fs.started_at ? (Date.now() - new Date(fs.started_at).getTime()) / 3600000 : null;
   const fsFresh = fsAgeH !== null && fsAgeH <= 26;            // one healthy run within ~a day
-  const fsBlocked = fs && fs.status === 'ok' && (fs.aircraft_ok || 0) === 0 && (fs.aircraft_total || 0) > 0;
+  // blocked = nothing found in a finished run, or the collector's circuit breaker stopped it
+  const fsBlocked = fs && (fs.status === 'blocked'
+    || (fs.status === 'ok' && (fs.aircraft_ok || 0) === 0 && (fs.aircraft_total || 0) > 0));
   const fsOk = fs && fs.status === 'ok' && (fs.aircraft_ok || 0) > 0 && fsFresh;
   const fsColor = !fs ? 'var(--red)'
     : fs.status === 'error' ? 'var(--red)'

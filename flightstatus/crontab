@@ -54,7 +54,10 @@ TZ=Europe/Berlin
 # holds, 30 for sweeps/far since neither is time-critical) and skips the slot if
 # a previous run is still active (flock), so slots never overlap into doubled
 # request rates. Every slot has >=23 min of margin to the next at worst-case
-# jitter + duration; a skipped pulse just widens one bracket.
+# jitter + duration; a skipped pulse just widens one bracket. When the feed
+# blocks us outright, a run stops after FIS_MAX_CONSECUTIVE_BLOCKS (10) blocked
+# lookups in a row instead of crawling on with backoff for hours and making the
+# flock skip the next slots (lost evening/morning sweeps, 2026-09-29/10-01).
 #
 # Horizon probe (2026-09-24): FIS publishes a tail up to D+9 (D+10 returns no
 # flight at all), and awards are booked ~1-2 weeks out, so what a D+5..D+9

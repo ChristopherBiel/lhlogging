@@ -128,6 +128,14 @@ REQUEST_DELAY_MIN_S = float(os.environ.get("FIS_REQUEST_DELAY_MIN_S", "5.0"))
 REQUEST_DELAY_MAX_S = float(os.environ.get("FIS_REQUEST_DELAY_MAX_S", "10.0"))
 MAX_FETCH_RETRIES = int(os.environ.get("FIS_MAX_FETCH_RETRIES", "3"))
 BLOCK_BACKOFF_S = float(os.environ.get("FIS_BLOCK_BACKOFF_S", "45.0"))
+# Circuit breaker: once this many lookups in a row come back blocked — each one
+# already retried MAX_FETCH_RETRIES times with fresh sessions and backoff, so
+# ~1.5-2 min apiece — stop the run and release the lock (0 disables). Without
+# it a blocked run kept going for 2-4h (2026-09-29 afternoon, 2026-10-01 far
+# pass) and the flock made the next slots skip: the evening sweep and the
+# morning sweep were lost. Stopping lets the next slot try with a new browser.
+MAX_CONSECUTIVE_BLOCKS = int(os.environ.get("FIS_MAX_CONSECUTIVE_BLOCKS", "10"))
+BLOCKED_STATUS = "blocked"  # batch_runs.status for a run the breaker stopped
 # Rotation-chain expansion: many legs (esp. westbound MUC departures) fly under
 # tactical callsigns (DLH3Y, DLH8P, …) so they never enter the ADS-B-derived
 # seed. The FIS `previousFlight` field names them, so after the seed fetch we
@@ -1180,6 +1188,7 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
     run_id = log_batch_start(conn)
     obs_run_id = run_id if per_pass else None  # None -> legacy daily upsert
     total = ok = err = upserted = chained = resets = 0
+    streak = 0  # consecutive blocked lookups (circuit breaker)
     status, detail = "ok", None
     summary = None
     try:
@@ -1214,10 +1223,18 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
                 sess["n"] += 1
                 if payload is None:
                     err += 1
+                    streak += 1
                     obs = parse_flight({}, flight_number, target, seed_type)
                     upsert_observation(conn, obs, obs_run_id)
                     conn.commit()
+                    if MAX_CONSECUTIVE_BLOCKS and streak >= MAX_CONSECUTIVE_BLOCKS:
+                        status = BLOCKED_STATUS
+                        detail = (f"stopped after {streak} consecutive blocked lookups "
+                                  f"({total} done, {len(work)} left)")
+                        log(f"circuit breaker: {detail}")
+                        break
                 else:
+                    streak = 0
                     obs = parse_flight(payload, flight_number, target, seed_type)
                     upsert_observation(conn, obs, obs_run_id)
                     conn.commit()
@@ -1248,7 +1265,11 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
             browser.close()
         # catalog lifecycle: retire numbers that stopped returning a widebody.
         # Owned by the near sweeps only — the far pass just reads the catalog.
-        if using_catalog and not far:
+        # Not after a stopped run: every number it never reached would accrue a
+        # miss and drift toward retirement for no reason.
+        if status == BLOCKED_STATUS:
+            log("catalog prune skipped: run stopped early by the circuit breaker")
+        elif using_catalog and not far:
             try:
                 prune_catalog(conn)
             except Exception as e:
@@ -1318,6 +1339,7 @@ def run_light_pass(label: str, work: list, conn: psycopg.Connection) -> int:
     run_id = log_batch_start(conn)
     obs_run_id = run_id if per_pass else None  # None -> legacy daily upsert
     total = ok = err = upserted = resets = 0
+    streak = 0  # consecutive blocked lookups (circuit breaker)
     status, detail = "ok", None
     try:
         with sync_playwright() as pw:
@@ -1351,7 +1373,15 @@ def run_light_pass(label: str, work: list, conn: psycopg.Connection) -> int:
                 conn.commit()
                 if payload is None:
                     err += 1
+                    streak += 1
+                    if MAX_CONSECUTIVE_BLOCKS and streak >= MAX_CONSECUTIVE_BLOCKS:
+                        status = BLOCKED_STATUS
+                        detail = (f"stopped after {streak} consecutive blocked lookups "
+                                  f"({total} of {min(len(work), MAX_LOOKUPS)} done)")
+                        log(f"{label} circuit breaker: {detail}")
+                        break
                 else:
+                    streak = 0
                     upserted += 1
                     if obs["found"]:
                         ok += 1
