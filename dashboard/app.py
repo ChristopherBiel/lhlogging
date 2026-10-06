@@ -2668,6 +2668,8 @@ _model_cache = {"ts": 0.0, "stats": None, "legs": None}
 # Planner date range: default and cap, in days from today.
 PLAN_DEFAULT_DAYS = 14
 PLAN_MAX_DAYS = 21
+# How far ahead the model's plan index reads published flights (FIS: D+9).
+_PLAN_AHEAD_DAYS = 10
 
 _LEG_SQL = """
     SELECT flight_date, airline, flight_number, dep_iata, arr_iata, dep_sched_local,
@@ -2711,13 +2713,17 @@ def _published(leg):
 
 def _build_model(conn):
     """Load the history legs and fit the model (~2 s); cache it. False while
-    fis_legs is absent."""
+    fis_legs is absent. The clash checks read every tail's plan, so the plan
+    index also covers the flights FIS publishes ahead (any type)."""
     if not _q1(conn, "SELECT to_regclass('fis_legs') IS NOT NULL"):
         return False
     rows = _q(conn, _leg_sql(conn) + " WHERE flight_date >= CURRENT_DATE - %s"
                                " AND flight_date < CURRENT_DATE", (_MODEL_HISTORY_DAYS,))
     legs = [_leg_from_row(r) for r in rows]
-    stats = booking_model.build_stats(legs, datetime.now(timezone.utc))
+    ahead = _upcoming_legs(conn, date_from=date.today(),
+                           date_to=date.today() + timedelta(days=_PLAN_AHEAD_DAYS), types=None)
+    stats = booking_model.build_stats(legs, datetime.now(timezone.utc),
+                                      plan=booking_model.PlanIndex(legs + ahead))
     _model_cache.update(ts=datetime.now(timezone.utc).timestamp(), stats=stats, legs=legs)
     return True
 
@@ -4648,7 +4654,7 @@ def api_insights():
     hold = {}
     for t in members:
         for b in booking_model.BANDS_H:
-            held, n = stats.hold.get(("type", t, b), (0, 0))
+            held, n = stats.hold.get(("all", t, b), (0, 0))
             if n:
                 cell = hold.setdefault(b, [0, 0])
                 cell[0] += held

@@ -11,7 +11,14 @@ having flown it) over the last HISTORY_WEEKS:
   published  a tail is currently published on the flight.
              target published      -> P = hold rate at this lead time
                                       (route -> type -> overall, first cell
-                                      with enough support)
+                                      with enough support); from FAR_BAND_H
+                                      out, one rate per type over all far
+                                      bands, barely pulled toward the other
+                                      types (747-8 ~13% vs A380 ~48% there);
+                                      a published tail that clashes with its
+                                      own plan (also on an overlapping flight,
+                                      or its previous flight lands elsewhere)
+                                      takes the much lower clash rate
              other tail published  -> P = (1 - hold) x the target's share of
                                       the flight among the tails that are not
                                       the published one. 98.6% of changes are
@@ -40,7 +47,8 @@ its last VALIDATION_DAYS, scored on those days (log-likelihood of the tail that
 flew). tools/benchmark_booking.py scores the result walk-forward.
 
 A leg is a dict with:
-    flight_number, dep, arr, fleet_type, dep_utc (aware datetime)
+    flight_date, flight_number, dep, arr, fleet_type, dep_utc (aware datetime)
+    duration_min        block time (None when FIS gave none)
     truth_tail          '' until the flight has operated
     timeline            [[lead_h, tail], ...] one entry per published change
     first_lead_h        lead of our first pre-departure look (None if none)
@@ -49,6 +57,7 @@ A leg is a dict with:
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import timedelta
 
@@ -85,6 +94,24 @@ HOLD_M = 20.0
 # Who replaces a swapped-out tail: this weight on the flight's own history
 # (who usually flies it), the rest on the type-wide share (who is flying at all).
 SWAP_MIX = 0.5
+# From this lead out (the D+5..D+9 probe) a publication holds about equally
+# often at every band, but very differently per type, so the far bands share
+# one cell per type (each leg counted once, its far bands averaged) and the
+# type is pulled only FAR_TYPE_M pseudo-legs toward the cross-type rate.
+FAR_BAND_H = 120
+FAR_TYPE_M = 5.0
+# A settled leg's truth lands with the D-1/D-2 truth pass; until then the plan
+# knows it by its last pre-departure publication.
+TRUTH_LAG = timedelta(days=2)
+# Plan clash: minimum turn between two flights of one tail (0.13% of real
+# consecutive legs turn faster), and how far around a flight the tail's other
+# flights are searched.
+TURN = timedelta(minutes=45)
+PLAN_BACK = timedelta(hours=48)
+PLAN_AHEAD = timedelta(hours=24)
+# Clash hold rates are rare cells, so they pool bands into three groups
+# (labelled by their farthest band): inside a day, 36-72h, 96h and beyond.
+CLASH_GROUPS = (24, 72, 216)
 
 
 def tail_at(timeline, first_lead_h, lead_h):
@@ -111,6 +138,94 @@ def band_for(lead_h):
     return BANDS_H[-1]
 
 
+def clash_group(band):
+    for g in CLASH_GROUPS:
+        if band <= g:
+            return g
+    return CLASH_GROUPS[-1]
+
+
+def arr_utc(leg):
+    dep, dur = leg.get("dep_utc"), leg.get("duration_min")
+    return dep + timedelta(minutes=int(dur)) if dep is not None and dur else None
+
+
+def leg_key(leg):
+    return (leg.get("flight_date"), leg.get("flight_number"))
+
+
+def tail_as_of(leg, now):
+    """The tail the plan had on `leg` at `now`: the truth once it has landed
+    with the truth pass, else the last publication taken before `now` (before
+    departure, for a flight that has left)."""
+    dep = leg.get("dep_utc")
+    if dep is None or leg.get("cancelled"):
+        return None
+    if leg.get("truth_tail") and dep <= now - TRUTH_LAG:
+        return leg["truth_tail"]
+    lead = (dep - now).total_seconds() / 3600.0
+    return tail_at(leg.get("timeline") or [], leg.get("first_lead_h"), max(lead, 0.0))
+
+
+class PlanIndex:
+    """Every leg a tail was ever published on or flew, by tail and departure,
+    so a tail's plan around a flight is a bisect away. Built once over the
+    history and upcoming legs; which of those legs the tail held at a given
+    moment is tail_as_of's question."""
+
+    def __init__(self, legs):
+        by = defaultdict(list)
+        for leg in legs:
+            if leg.get("cancelled") or leg.get("dep_utc") is None:
+                continue
+            for tail in {t for _, t in leg.get("timeline") or ()} | {leg.get("truth_tail")}:
+                if tail:
+                    by[tail].append(leg)
+        self.legs = {t: sorted(ls, key=lambda l: l["dep_utc"]) for t, ls in by.items()}
+        self.deps = {t: [l["dep_utc"] for l in ls] for t, ls in self.legs.items()}
+        self.memo = {}
+
+    def around(self, tail, lo, hi):
+        deps = self.deps.get(tail)
+        if not deps:
+            return []
+        return self.legs[tail][bisect_left(deps, lo):bisect_left(deps, hi)]
+
+
+def plan_conflict(plan, leg, tail, now):
+    """Why `tail`, published on `leg` as of `now`, cannot fly it as planned:
+    ('overlap', other leg) when the plan also has it on a flight that overlaps
+    (turn included), ('airport', previous leg) when its previous planned or
+    flown leg lands elsewhere; None when the plan is consistent (or unknown)."""
+    dep = leg.get("dep_utc")
+    if plan is None or dep is None or not tail:
+        return None
+    arr = arr_utc(leg) or dep
+    key = leg_key(leg)
+    prev = None
+    for other in plan.around(tail, dep - PLAN_BACK, arr + PLAN_AHEAD):
+        if leg_key(other) == key or tail_as_of(other, now) != tail:
+            continue
+        o_arr = arr_utc(other) or other["dep_utc"]
+        if other["dep_utc"] < arr + TURN and dep < o_arr + TURN:
+            return ("overlap", other)
+        if o_arr <= dep and (prev is None or other["dep_utc"] > prev["dep_utc"]):
+            prev = other
+    if prev is not None and prev.get("arr") and leg.get("dep") and prev["arr"] != leg["dep"]:
+        return ("airport", prev)
+    return None
+
+
+def conflict_at_band(plan, leg, tail, band):
+    """plan_conflict as of `band` hours before departure — memoised on the
+    index, since every build over the same index asks it again."""
+    k = (leg_key(leg), tail, band)
+    if k not in plan.memo:
+        plan.memo[k] = plan_conflict(plan, leg, tail,
+                                     leg["dep_utc"] - timedelta(hours=band)) is not None
+    return plan.memo[k]
+
+
 def route_key(leg):
     return "%s-%s" % (leg.get("dep") or "?", leg.get("arr") or "?")
 
@@ -131,6 +246,7 @@ class Stats:
         self.last_flown = {}                         # tail -> latest operated dep_utc
         self.n_active = Counter()                    # fleet type -> tails flown within ACTIVE_DAYS
         self.n_legs = 0
+        self.plan = None                             # PlanIndex for clash checks (None: none)
 
 
 def _settled(leg, lo, hi):
@@ -139,11 +255,18 @@ def _settled(leg, lo, hi):
             and not leg.get("cancelled"))
 
 
-def build_stats(legs, now, weeks=HISTORY_WEEKS, fit=True):
+def build_stats(legs, now, weeks=HISTORY_WEEKS, fit=True, plan=None, holds=True):
     """Aggregate the settled legs that departed in [now - weeks, now), and (with
-    `fit`) choose each fleet type's share shrinkage on a temporal holdout."""
+    `fit`) choose each fleet type's share shrinkage on a temporal holdout.
+
+    `plan` is the PlanIndex clash checks read — pass one built over history
+    *and* upcoming legs (the dashboard) or over everything (the benchmark, which
+    shares one across builds); default: one over `legs`. `holds=False` skips the
+    hold cells (the share fit needs none)."""
     legs = legs if isinstance(legs, list) else list(legs)
     st = Stats(now, weeks)
+    if holds:
+        st.plan = plan if plan is not None else PlanIndex(legs)
     cutoff = now - timedelta(weeks=weeks)
     tail_types = defaultdict(Counter)
     for leg in legs:
@@ -159,16 +282,8 @@ def build_stats(legs, now, weeks=HISTORY_WEEKS, fit=True):
         tail_types[truth][ftype] += 1
         if dep > st.last_flown.get(truth, dep - timedelta(seconds=1)):
             st.last_flown[truth] = dep
-        timeline, first = leg.get("timeline") or [], leg.get("first_lead_h")
-        for b in BANDS_H:
-            pub = tail_at(timeline, first, b)
-            if pub is None:
-                continue
-            held = pub == truth
-            for kind, key in (("route", route), ("type", ftype), ("overall", "")):
-                cell = st.hold[(kind, key, b)]
-                cell[0] += held
-                cell[1] += 1
+        if holds:
+            _count_holds(st, leg, truth, route, ftype)
         st.n_legs += 1
     st.tail_type = {t: c.most_common(1)[0][0] for t, c in tail_types.items()}
     for ftype, tails in st.fleet.items():
@@ -176,6 +291,48 @@ def build_stats(legs, now, weeks=HISTORY_WEEKS, fit=True):
     if fit:
         st.fit = fit_knobs(legs, now, weeks)
     return st
+
+
+def _count_holds(st, leg, truth, route, ftype):
+    """One settled leg into the hold cells.
+
+    ("all", type, band)      every publication — what /insights shows
+    (route|type|overall, ., band)
+                             publications consistent with the tail's plan —
+                             what the model quotes for a consistent one
+    ("far:<kind>", ., FAR_BAND_H), ("clash:<kind>", ., group)
+                             pooled cells; a leg counts once in each — the mean
+                             of its bands there — so a leg looked at five times
+                             far out is not five legs' worth of evidence"""
+    timeline, first = leg.get("timeline") or [], leg.get("first_lead_h")
+    far, clash = [], defaultdict(list)
+    for b in BANDS_H:
+        pub = tail_at(timeline, first, b)
+        if pub is None:
+            continue
+        held = pub == truth
+        cell = st.hold[("all", ftype, b)]
+        cell[0] += held
+        cell[1] += 1
+        if st.plan is not None and conflict_at_band(st.plan, leg, pub, b):
+            clash[clash_group(b)].append(held)
+            continue
+        for kind, key in (("route", route), ("type", ftype), ("overall", "")):
+            cell = st.hold[(kind, key, b)]
+            cell[0] += held
+            cell[1] += 1
+        if b >= FAR_BAND_H:
+            far.append(held)
+    pooled = [("far", FAR_BAND_H, far)] if far else []
+    pooled += [("clash", g, vals) for g, vals in clash.items()]
+    for cell_kind, g, vals in pooled:
+        frac = sum(vals) / len(vals)
+        for kind, key in (("route", route), ("type", ftype), ("overall", "")):
+            if cell_kind == "clash" and kind == "route":
+                continue  # far too thin per route
+            cell = st.hold[(cell_kind + ":" + kind, key, g)]
+            cell[0] += frac
+            cell[1] += 1
 
 
 def _pick(grid, cell, n, order):
@@ -192,7 +349,7 @@ def fit_knobs(legs, now, weeks=HISTORY_WEEKS):
     the idle weights at the chosen shrinkage. Types with fewer than
     MIN_VALIDATION_LEGS holdout legs are left out (callers use DEFAULTS)."""
     split = now - timedelta(days=VALIDATION_DAYS)
-    train = build_stats(legs, split, weeks, fit=False)
+    train = build_stats(legs, split, weeks, fit=False, holds=False)
     hold = defaultdict(list)
     for leg in legs:
         if _settled(leg, split, now):
@@ -219,21 +376,39 @@ def fit_knobs(legs, now, weeks=HISTORY_WEEKS):
     return fitted
 
 
-def hold_rate(st, band, route, ftype, m=HOLD_M):
+def hold_rate(st, band, route, ftype, m=HOLD_M, conflict=False):
     """(p, n, kind): the route's hold rate at `band`, shrunk toward the type's,
     which is shrunk toward the overall rate. `kind`/`n` name the most specific
-    context that has data. None when no leg at all covers this band."""
-    held_o, n_o = st.hold.get(("overall", "", band), (0, 0))
+    context that has data. None when no leg at all covers this band.
+
+    From FAR_BAND_H out the pooled far cells answer (type pulled only
+    FAR_TYPE_M toward the cross-type rate). With `conflict` the clash cells of
+    the band's group answer (type -> overall), until a clash has been seen."""
+    if conflict:
+        g = clash_group(band)
+        held_o, n_o = st.hold.get(("clash:overall", "", g), (0, 0))
+        if n_o:
+            p, kind, n = held_o / n_o, "overall", n_o
+            held, cnt = st.hold.get(("clash:type", ftype, g), (0, 0))
+            p = (held + m * p) / (cnt + m)
+            if cnt:
+                kind, n = "type", cnt
+            return p, int(round(n)), kind
+    if band >= FAR_BAND_H and st.hold.get(("far:overall", "", FAR_BAND_H), (0, 0))[1]:
+        prefix, cell_band, type_m = "far:", FAR_BAND_H, FAR_TYPE_M
+    else:
+        prefix, cell_band, type_m = "", band, m
+    held_o, n_o = st.hold.get((prefix + "overall", "", cell_band), (0, 0))
     if not n_o:
         return None
     p = held_o / n_o
     kind, n = "overall", n_o
-    for k, key in (("type", ftype), ("route", route)):
-        held, cnt = st.hold.get((k, key, band), (0, 0))
-        p = (held + m * p) / (cnt + m)
+    for k, key, mk in (("type", ftype, type_m), ("route", route, m)):
+        held, cnt = st.hold.get((prefix + k, key, cell_band), (0, 0))
+        p = (held + mk * p) / (cnt + mk)
         if cnt:
             kind, n = k, cnt
-    return p, n, kind
+    return p, int(round(n)), kind
 
 
 def _is_active(st, tail):
@@ -303,7 +478,7 @@ def p_target(st, target, leg, published=None, now=None, knobs=None, hold_m=HOLD_
     out = {"p": None, "basis": None, "lead_h": round(lead_h, 1), "share": s,
            "share_n": nf, "share_k": kf,
            "hold": None, "hold_n": None, "hold_kind": None, "band": None,
-           "idle_days": idle_days(st, target)}
+           "conflict": None, "idle_days": idle_days(st, target)}
     flight = "LH%s" % leg["flight_number"]
 
     if leg.get("cancelled"):
@@ -331,15 +506,21 @@ def p_target(st, target, leg, published=None, now=None, knobs=None, hold_m=HOLD_
     idle_why = (" %s has not flown for %d days (maintenance?)." % (target, idle)
                 if idle is not None and idle > ACTIVE_DAYS else "")
 
-    h = hold_rate(st, band_for(lead_h), route, ftype, hold_m) if published else None
+    clash = plan_conflict(st.plan, leg, published, now) if published else None
+    h = (hold_rate(st, band_for(lead_h), route, ftype, hold_m, conflict=clash is not None)
+         if published else None)
     if published and h is not None:
         hp, hn, kind = h
-        out.update(hold=hp, hold_n=hn, hold_kind=kind, band=band_for(lead_h))
+        out.update(hold=hp, hold_n=hn, hold_kind=kind, band=band_for(lead_h),
+                   conflict=_clash_why(published, leg, clash))
         ctx = {"route": "this route", "type": "this type", "overall": "all flights"}[kind]
+        if clash:
+            ctx = "flights whose tail clashes like this on " + ctx
         if published == target:
             out.update(p=hp, regime="published",
-                       why="%s is published; %dh out, the published tail holds %d%% of the "
-                           "time on %s (n=%d)." % (target, out["band"], round(hp * 100), ctx, hn))
+                       why="%s is published%s; %dh out, the published tail holds %d%% of the "
+                           "time on %s (n=%d)." % (target, out["conflict"] or "", out["band"],
+                                                    round(hp * 100), ctx, hn))
         else:
             # who replaces it: the target's share among the tails that are not
             # the published one — of this flight, mixed with of the whole type
@@ -350,14 +531,26 @@ def p_target(st, target, leg, published=None, now=None, knobs=None, hold_m=HOLD_
                       if t_pub < 1.0 else 0.0)
             q = min(swap_mix * q_flight + (1.0 - swap_mix) * q_type, 1.0)
             out.update(p=(1.0 - hp) * q, regime="swap",
-                       why="%s is published; %dh out it changes %d%% of the time on %s "
+                       why="%s is published%s; %dh out it changes %d%% of the time on %s "
                            "(n=%d); the replacement: %s.%s"
-                           % (published, out["band"], round((1 - hp) * 100), ctx, hn,
-                              hist_why, idle_why))
+                           % (published, out["conflict"] or "", out["band"],
+                              round((1 - hp) * 100), ctx, hn, hist_why, idle_why))
         return out
 
     out.update(p=s, regime="history", why="Not published yet; %s.%s" % (hist_why, idle_why))
     return out
+
+
+def _clash_why(tail, leg, clash):
+    """', but …' clause naming the clash, or None."""
+    if not clash:
+        return None
+    kind, other = clash
+    if kind == "overlap":
+        return (", but the plan also has %s on LH%s %s-%s at the same time"
+                % (tail, other["flight_number"], other.get("dep") or "?", other.get("arr") or "?"))
+    return (", but %s's previous flight (LH%s) lands in %s, not %s"
+            % (tail, other["flight_number"], other.get("arr") or "?", leg.get("dep") or "?"))
 
 
 # --- timetable beyond the published window ---------------------------------

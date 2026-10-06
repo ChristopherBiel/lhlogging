@@ -16,6 +16,9 @@ Baselines per scenario:
     uniform     1/N over the fleet of that type
     published   hold-overall for the published tail, the rest spread evenly
                 (what today's /book chip amounts to)
+    unpublished the model at the same moment with the published tail withheld
+                (history regime) — the paired answer to "does a tail published
+                this far out beat not looking?"
 
 Metrics: log-loss of the true tail's probability (lower is better), multiclass
 Brier, top-1 hit rate, and a reliability table over every (leg, tail) pair —
@@ -49,7 +52,7 @@ WIDEBODY = ("B748", "A388", "B789", "B788", "B78X", "A359", "A35K")
 # BOOK_HORIZON_DAYS can be raised.
 SCENARIOS = ("pre", 216, 192, 168, 144, 120, 96, 72, 48, 24, 12, 6)
 PRE_LEAD_H = 24 * 10      # "pre": standing 10 days out, nothing published
-TRUTH_LAG = timedelta(days=2)   # a leg's truth lands with the D-1/D-2 truth pass
+TRUTH_LAG = bm.TRUTH_LAG  # a leg's truth lands with the D-1/D-2 truth pass
 EPS = 1e-4
 REL_BINS = (0.0, 0.01, 0.03, 0.06, 0.1, 0.2, 0.35, 0.5, 0.7, 0.85, 1.0001)
 
@@ -66,6 +69,7 @@ def load(path):
                 "dep": r["dep_airport"], "arr": r["arr_airport"],
                 "fleet_type": r["fleet_type"],
                 "dep_utc": datetime.fromisoformat(r["dep_scheduled_utc"]),
+                "duration_min": int(r["duration_min"]) if r.get("duration_min") else None,
                 "truth_tail": r["truth_tail"],
                 "timeline": json.loads(r["timeline"] or "[]"),
                 "first_lead_h": float(r["first_lead_h"]) if r["first_lead_h"] else None,
@@ -86,6 +90,8 @@ def main():
                     help="use booking_model.DEFAULTS for every type instead of fitting per type")
     ap.add_argument("--hold-m", type=float, default=bm.HOLD_M)
     ap.add_argument("--swap-mix", type=float, default=bm.SWAP_MIX)
+    ap.add_argument("--no-plan", action="store_true",
+                    help="no plan index: no clash checks (the pre-clash model)")
     ap.add_argument("--quiet", action="store_true", help="scores only, no reliability tables")
     args = ap.parse_args()
 
@@ -103,6 +109,9 @@ def main():
              args.hold_m, args.swap_mix))
 
     stats_cache = {}
+    # one plan over every leg: tail_as_of reads it as of each moment, and the
+    # clash checks it answers are memoised across the daily builds
+    plan = bm.PlanIndex(legs) if not args.no_plan else bm.PlanIndex([])
 
     def stats_for(now):
         key = now.date()
@@ -110,7 +119,7 @@ def main():
             # settled by then = departed before now - TRUTH_LAG
             stats_cache[key] = bm.build_stats(
                 legs, datetime.combine(key, datetime.min.time(), tzinfo=now.tzinfo) - TRUTH_LAG,
-                args.weeks, fit=not args.no_fit)
+                args.weeks, fit=not args.no_fit, plan=plan)
         return stats_cache[key]
 
     agg = defaultdict(lambda: defaultdict(float))
@@ -130,6 +139,13 @@ def main():
             res = {x: bm.p_target(st, x, leg, published=pub, now=now,
                                   hold_m=args.hold_m, swap_mix=args.swap_mix) for x in cands}
             ps = {x: r["p"] for x, r in res.items()}
+            if pub:
+                hist = {x: bm.p_target(st, x, leg, published=None, now=now)["p"] for x in cands}
+            else:
+                hist = ps
+            a_regime = agg[sc]
+            a_regime["n_pub_regime"] += res[truth]["regime"] in ("published", "swap")
+            a_regime["n_clash"] += bool(pub) and res[pub]["conflict"] is not None
             n = max(len(fleet), 1)
             uni = {x: (1.0 / n if x in fleet else 0.0) for x in cands}
             if pub:
@@ -143,7 +159,8 @@ def main():
 
             a = agg[sc]
             a["n"] += 1
-            for name, dist in (("model", ps), ("uniform", uni), ("published", base)):
+            for name, dist in (("model", ps), ("uniform", uni), ("published", base),
+                               ("unpub", hist)):
                 pt = max(dist.get(truth, 0.0), EPS)
                 a[name + "_ll"] += -math.log(pt)
                 a[name + "_brier"] += sum((dist.get(x, 0.0) - (x == truth)) ** 2 for x in cands)
@@ -151,7 +168,7 @@ def main():
                 a[name + "_mass"] += sum(dist.values())
 
             for x, r in res.items():
-                regime = "history" if r["regime"] == "history" else r["regime"]
+                regime = r["regime"] + (" (clash)" if r.get("conflict") else "")
                 for i in range(len(REL_BINS) - 1):
                     if REL_BINS[i] <= r["p"] < REL_BINS[i + 1]:
                         cell = rel[regime][i]
@@ -161,26 +178,31 @@ def main():
                         break
 
     print("\n=== scores by scenario (log-loss / Brier: lower is better) " + "=" * 18)
-    print("%-6s %6s | %-24s | %-24s | %-24s" % ("scen", "legs", "model  ll / brier / top1",
-                                                 "uniform", "published-only"))
+    print("%-6s %6s %5s | %-24s | %-24s | %-24s | %-24s"
+          % ("scen", "legs", "used", "model  ll / brier / top1", "uniform", "published-only",
+             "unpublished (same now)"))
     for sc in SCENARIOS:
         a = agg.get(sc)
         if not a:
             continue
         n = a["n"]
         cols = []
-        for name in ("model", "uniform", "published"):
+        for name in ("model", "uniform", "published", "unpub"):
             cols.append("%5.2f / %4.2f / %4.0f%%" % (a[name + "_ll"] / n, a[name + "_brier"] / n,
                                                      100 * a[name + "_top1"] / n))
         label = "pre" if sc == "pre" else "%dh" % sc
-        print("%-6s %6d | %-24s | %-24s | %-24s" % ((label, int(n)) + tuple(cols)))
+        print("%-6s %6d %4.0f%% | %-24s | %-24s | %-24s | %-24s"
+              % ((label, int(n), 100 * a["n_pub_regime"] / n) + tuple(cols)))
     mass = [agg[sc]["model_mass"] / agg[sc]["n"] for sc in SCENARIOS if agg.get(sc)]
     print("model probability mass per leg (should be ~1): %.3f .. %.3f" % (min(mass), max(mass)))
+    print("published tail clashes with its plan: " + ", ".join(
+        "%s %.1f%%" % ("pre" if sc == "pre" else "%dh" % sc, 100 * agg[sc]["n_clash"] / agg[sc]["n"])
+        for sc in SCENARIOS if agg.get(sc) and sc != "pre"))
 
     if args.quiet:
         return
     print("\n=== reliability: predicted P(target) vs how often it flew " + "=" * 18)
-    for regime in ("published", "swap", "history"):
+    for regime in ("published", "published (clash)", "swap", "swap (clash)", "history"):
         bins = rel.get(regime)
         if not bins:
             continue

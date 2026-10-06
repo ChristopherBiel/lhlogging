@@ -18,13 +18,13 @@ KNOBS = {"m": 5.0, "m_type": 20.0, "idle_near": 0.2, "idle_far": 0.5}
 
 
 def leg(days_ago, fnum, truth, timeline=None, first_lead=None, dep="FRA", arr="HND",
-        ftype="B748"):
+        ftype="B748", duration=None):
     dep_utc = NOW - timedelta(days=days_ago)
     return {"flight_date": dep_utc.date(), "airline": "LH", "flight_number": fnum,
             "dep": dep, "arr": arr, "fleet_type": ftype, "dep_utc": dep_utc,
             "dep_local": dep_utc, "arr_local": dep_utc + timedelta(hours=12),
-            "truth_tail": truth, "timeline": timeline or [], "first_lead_h": first_lead,
-            "cancelled": False}
+            "duration_min": duration, "truth_tail": truth, "timeline": timeline or [],
+            "first_lead_h": first_lead, "cancelled": False}
 
 
 def history():
@@ -45,7 +45,9 @@ def upcoming(days_ahead, fnum="716", arr="HND"):
 
 class Regimes(unittest.TestCase):
     def setUp(self):
-        self.st = bm.build_stats(history(), NOW, weeks=8, fit=False)
+        # history() never flies the return legs, so every plan would clash:
+        # these tests are about the regimes, Clash below about the plan
+        self.st = bm.build_stats(history(), NOW, weeks=8, fit=False, plan=bm.PlanIndex([]))
 
     def p(self, tail, lg, pub=None):
         return bm.p_target(self.st, tail, lg, published=pub, now=NOW, knobs=KNOBS)
@@ -89,6 +91,74 @@ class Regimes(unittest.TestCase):
                            knobs=dict(KNOBS, m=1e6, m_type=1e6))
         self.assertEqual(flat["basis"], "fleet")
         self.assertIn("even share", flat["why"])
+
+
+class Clash(unittest.TestCase):
+    """D-ABYA: LH716 FRA-HND in 24h (12h block), back on LH717 HND-FRA 14.4h
+    after that (13h block, lands ~51h from now). Every publication is dated
+    before NOW (timeline lead >= the flight's lead now)."""
+
+    def plan(self, *extra):
+        out = leg(-1, "716", "", [[30.0, "D-ABYA"]], 30.0, duration=720)
+        back = leg(-1.6, "717", "", [[45.0, "D-ABYA"]], 45.0, dep="HND", arr="FRA",
+                   duration=780)
+        return [out, back] + list(extra)
+
+    def test_a_consistent_chain_does_not_clash(self):
+        nxt = leg(-2.5, "400", "", [[70.0, "D-ABYA"]], 70.0, arr="JFK", duration=500)
+        idx = bm.PlanIndex(self.plan(nxt))
+        self.assertIsNone(bm.plan_conflict(idx, nxt, "D-ABYA", NOW))
+
+    def test_overlapping_flights_clash(self):
+        # leaves FRA while still flying back from HND
+        nxt = leg(-1.7, "400", "", [[45.0, "D-ABYA"]], 45.0, arr="JFK", duration=500)
+        idx = bm.PlanIndex(self.plan(nxt))
+        kind, other = bm.plan_conflict(idx, nxt, "D-ABYA", NOW)
+        self.assertEqual((kind, other["flight_number"]), ("overlap", "717"))
+
+    def test_departing_where_the_tail_is_not_clashes(self):
+        # the return LH717 is published on another tail: D-ABYA stays in HND
+        legs = self.plan()
+        legs[1] = dict(legs[1], timeline=[[45.0, "D-ABYB"]])
+        nxt = leg(-2.5, "400", "", [[70.0, "D-ABYA"]], 70.0, arr="JFK", duration=500)
+        kind, other = bm.plan_conflict(bm.PlanIndex(legs + [nxt]), nxt, "D-ABYA", NOW)
+        self.assertEqual((kind, other["flight_number"]), ("airport", "716"))
+
+    def test_the_plan_is_read_as_of_then(self):
+        # D-ABYB until 10h out, then D-ABYA (who is still flying LH717 then)
+        nxt = leg(-1.7, "400", "", [[45.0, "D-ABYB"], [10.0, "D-ABYA"]], 45.0, arr="JFK",
+                  duration=500)
+        idx = bm.PlanIndex(self.plan(nxt))
+        self.assertIsNone(bm.plan_conflict(idx, nxt, "D-ABYB", NOW))
+        later = nxt["dep_utc"] - timedelta(hours=5)
+        self.assertEqual(bm.plan_conflict(idx, nxt, "D-ABYA", later)[0], "overlap")
+
+    def test_tail_as_of_takes_truth_only_once_settled(self):
+        flown = leg(1, "716", "D-ABYB", [[30.0, "D-ABYA"]], 30.0)
+        self.assertEqual(bm.tail_as_of(flown, NOW), "D-ABYA")  # truth pass not in yet
+        self.assertEqual(bm.tail_as_of(flown, NOW + bm.TRUTH_LAG), "D-ABYB")
+
+    def test_clash_and_far_cells_drive_the_hold_rate(self):
+        st = bm.Stats(NOW, 8)
+        st.hold[("overall", "", 48)] = [8, 10]
+        st.hold[("clash:overall", "", 72)] = [3, 10]
+        self.assertAlmostEqual(bm.hold_rate(st, 48, "FRA-HND", "B748")[0], 0.8)
+        self.assertAlmostEqual(bm.hold_rate(st, 48, "FRA-HND", "B748", conflict=True)[0], 0.3)
+        # far: the type keeps its own rate (A380-like overall vs 747-8-like type)
+        st.hold[("far:overall", "", 120)] = [45, 100]
+        st.hold[("far:type", "B748", 120)] = [13, 100]
+        p = bm.hold_rate(st, 192, "FRA-HND", "B748")[0]
+        self.assertAlmostEqual(p, (13 + bm.FAR_TYPE_M * 0.45) / (100 + bm.FAR_TYPE_M))
+        self.assertIsNone(bm.hold_rate(st, 96, "FRA-HND", "B748"))  # no 96h cell at all
+
+    def test_a_clashing_publication_says_so(self):
+        nxt = leg(-1.7, "400", "", [[45.0, "D-ABYA"]], 45.0, arr="JFK", duration=500)
+        st = bm.build_stats([], NOW, fit=False, plan=bm.PlanIndex(self.plan(nxt)))
+        st.hold[("overall", "", 36)] = [8, 10]
+        st.hold[("clash:overall", "", 72)] = [3, 10]
+        r = bm.p_target(st, "D-ABYA", nxt, published="D-ABYA", now=NOW, knobs=KNOBS)
+        self.assertAlmostEqual(r["p"], 0.3)
+        self.assertIn("LH717", r["why"])
 
 
 class Idle(unittest.TestCase):

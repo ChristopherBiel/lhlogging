@@ -67,6 +67,32 @@ regime 0.5→0.6%, 1.8→2.1%, 4.6→4.9%, 7.5→7.7%, 13.3→12.8%; swap regime
 0.4→0.3%, 1.8→2.2%, 4.1→4.4%, 7.3→7.7%. The published regime under-predicts at
 its low end (17.5% predicted → 28% observed, n=219) and is close elsewhere.
 
+## Plan clashes and far-out holds (2026-10-06)
+
+**A published tail that clashes with its own plan rarely flies.** The model
+reads every tail's plan as of the moment it predicts (`PlanIndex`,
+`tail_as_of`: published tails, and the truth once the truth pass has it). A
+publication *clashes* when the plan also has the tail on a flight that overlaps
+this one (45 min turn; 0.13% of real consecutive legs turn faster), or its
+previous flight lands at another airport. That is 1–13% of publications, and
+those hold 25–50% of the time against ~80% for consistent ones 24h out. They
+get their own hold cells (three lead groups: ≤24h, 36–72h, 96h+; type →
+overall), and the card says which flight it clashes with.
+
+**Far out, a publication holds per type, not per band.** From 120h out (the
+D+5..D+9 probe) the 747-8's published tail holds ~13% and the A380's ~48%,
+roughly flat across 120–216h. Per-band cells were thin and pulled both toward
+the cross-type rate (747-8 16%, A380 39%). The far bands now share one cell
+per type — each leg counted once, its far bands averaged — pulled only 5
+pseudo-legs toward the other types.
+
+Walk-forward vs the previous model (departures 08-10..10-05): A380 168–192h
+1.74/1.66 vs 2.05 log-loss (top-1 47–50% vs 8–18%); 747-8 144h 2.85 vs 3.02;
+12h better on every fleet (−0.01 to −0.07); everything else within ±0.01
+except the 747-8 at 192–216h (+0.05, n=62, a cold-start artefact: until the
+747-8's own far cell fills it borrows the cross-type rate). Clash
+publications: predicted 31–45%, observed 25–42%.
+
 ## Horizon probe
 
 The feed returns a tail up to D+9 (D+10: no flight). Since 2026-09-24 the 22:00
@@ -76,8 +102,16 @@ after ~3 weeks, rebuild the leg export and read the benchmark's 120h..216h rows.
 If a tail published 5-9 days out beats the history regime, raise the cap — the
 planner then shows real published tails across most of a booking window.
 
+Early look (2026-10-06, 11 probe nights, leave-one-departure-date-out because
+the walk-forward is still cold at 168h+): the A380's far tail is real signal
+(holds ~48% vs 1 in 8; −0.30 nats/leg against withholding it); the 747-8's is
+a ~2× lift for the published tail (10–16% vs 1 in 17) but a wash overall
+(+0.01 nats/leg). The benchmark's "unpublished (same now)" column scores each
+leg again with the publication withheld — the paired answer to whether a far
+publication beats not looking.
+
 ```bash
 ./tools/pull_fis_history.sh
 python3 tools/build_leg_outcomes.py --since 2026-07-21
-python3 tools/benchmark_booking.py            # --type B748, --no-fit, --hold-m, --swap-mix
+python3 tools/benchmark_booking.py            # --type B748, --no-fit, --no-plan, --hold-m, --swap-mix
 ```
