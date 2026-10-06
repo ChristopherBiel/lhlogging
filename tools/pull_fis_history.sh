@@ -37,7 +37,9 @@ mkdir -p "$ROOT/tmp"
 
 # The query goes to psql on stdin rather than through -c, so it needs no shell
 # quoting (the JSON path below has string literals). flight_duration is the
-# block time legs.dep_utc needs to put outstation departures on true UTC.
+# block time legs.dep_utc needs to put outstation departures on true UTC;
+# segments every leg of a flight of several (LH568 FRA-LOS-SSG), as the
+# collector reads them (fetch_flightstatus.SEGMENTS_SQL).
 SQL="COPY (
   SELECT o.run_id, r.started_at AS run_started_at, o.observed_at, o.observed_date,
          o.flight_date, o.airline, o.flight_number, o.seed_type, o.found,
@@ -47,7 +49,15 @@ SQL="COPY (
          o.prev_airline, o.prev_flight_number, o.prev_flight_date,
          o.raw->'legs'->0->>'flightDuration' AS flight_duration,
          o.raw->'aircraftInfo'->>'seatConfig' AS seat_config,
-         o.raw->'aircraftInfo'->>'allegris' AS allegris
+         o.raw->'aircraftInfo'->>'allegris' AS allegris,
+         CASE WHEN jsonb_typeof(o.raw->'legs') = 'array' THEN
+           CASE WHEN jsonb_array_length(o.raw->'legs') > 1 THEN (
+             SELECT jsonb_agg(jsonb_build_array(
+                      l->'departure'->>'departureAirport', l->'arrival'->>'arrivalAirport',
+                      l->'departure'->>'departureScheduledTime',
+                      l->'arrival'->>'arrivalScheduledTime', l->>'flightDuration') ORDER BY i)
+             FROM jsonb_array_elements(o.raw->'legs') WITH ORDINALITY AS t(l, i)) END
+         END AS segments
   FROM flight_status_observations o
   LEFT JOIN batch_runs r ON r.id = o.run_id
   LEFT JOIN (

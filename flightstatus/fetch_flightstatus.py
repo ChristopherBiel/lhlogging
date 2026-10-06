@@ -597,7 +597,8 @@ _LEG_OBS_SQL = """
            o.dep_scheduled, o.arr_scheduled, o.overall_status,
            o.raw->'legs'->0->>'flightDuration' AS flight_duration,
            o.raw->'aircraftInfo'->>'seatConfig' AS seat_config,
-           (o.raw->'aircraftInfo'->>'allegris')::boolean AS allegris
+           (o.raw->'aircraftInfo'->>'allegris')::boolean AS allegris,
+           {segments}
     FROM flight_status_observations o
     LEFT JOIN (
         SELECT DISTINCT ON (btrim(registration)) btrim(registration) AS registration,
@@ -609,6 +610,19 @@ _LEG_OBS_SQL = """
     ORDER BY o.flight_date, o.airline, o.flight_number, o.observed_at
 """
 
+# A flight of several legs (LH568 FRA-LOS-SSG, a diversion): every leg, as
+# legs.look_segments reads them; NULL for the usual single leg. The columns
+# above describe the first leg only.
+SEGMENTS_SQL = """CASE WHEN jsonb_typeof(o.raw->'legs') = 'array' THEN
+             CASE WHEN jsonb_array_length(o.raw->'legs') > 1 THEN (
+               SELECT jsonb_agg(jsonb_build_array(
+                        l->'departure'->>'departureAirport', l->'arrival'->>'arrivalAirport',
+                        l->'departure'->>'departureScheduledTime',
+                        l->'arrival'->>'arrivalScheduledTime', l->>'flightDuration') ORDER BY i)
+               FROM jsonb_array_elements(o.raw->'legs') WITH ORDINALITY AS t(l, i)) END
+           END AS segments"""
+_LEG_OBS_SQL = _LEG_OBS_SQL.replace("{segments}", SEGMENTS_SQL)
+
 _LEG_COLS = ("flight_date", "airline", "flight_number", "dep_iata", "arr_iata",
              "dep_sched_local", "arr_sched_local", "dep_utc", "duration_min", "fleet_type",
              "truth_tail", "truth_status", "cancelled", "latest_tail", "latest_status",
@@ -616,6 +630,8 @@ _LEG_COLS = ("flight_date", "airline", "flight_number", "dep_iata", "arr_iata",
              "n_obs", "n_changes", "n_distinct_tails", "timeline")
 # migration 012 — written only once the columns exist
 _LEG_CABIN_COLS = ("seat_config", "allegris")
+# migration 013 — likewise
+_LEG_SEGMENT_COLS = ("segments",)
 
 
 def _leg_upsert_sql(cols):
@@ -657,6 +673,16 @@ def legs_cabin_schema(conn: psycopg.Connection) -> bool:
         return cur.fetchone()[0] == 2
 
 
+def legs_segments_schema(conn: psycopg.Connection) -> bool:
+    """True once migration 013 (fis_legs.segments) is applied."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_name = 'fis_legs' AND column_name = 'segments'
+        """)
+        return cur.fetchone()[0] == 1
+
+
 def _leg_row(row: dict) -> dict:
     """legs.build_leg output -> fis_legs column values ('' -> NULL). build_leg
     speaks CSV (ISO strings); hand psycopg real datetimes and a Jsonb."""
@@ -683,6 +709,7 @@ def _leg_row(row: dict) -> dict:
         "timeline": Jsonb(row["timeline"]),
         "seat_config": v("seat_config"),
         "allegris": None if v("allegris") is None else bool(row["allegris"]),
+        "segments": Jsonb(json.loads(row["segments"])) if row.get("segments") else None,
     }
 
 
@@ -702,7 +729,8 @@ def refresh_legs(conn: psycopg.Connection, since: date, until: date) -> int:
         row, _changes = legs.build_leg(key, groups[key])
         if row is not None:
             rows.append(_leg_row(row))
-    cols = _LEG_COLS + (_LEG_CABIN_COLS if legs_cabin_schema(conn) else ())
+    cols = (_LEG_COLS + (_LEG_CABIN_COLS if legs_cabin_schema(conn) else ())
+            + (_LEG_SEGMENT_COLS if legs_segments_schema(conn) else ()))
     with conn.cursor() as cur:
         if rows:
             cur.executemany(_leg_upsert_sql(cols), rows)

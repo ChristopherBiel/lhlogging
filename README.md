@@ -368,6 +368,14 @@ layout it is most often published with; each leg keeps its own sold layout
 (`fis_legs.seat_config`, migration 012), which is what the cards, filters and
 planner show.
 
+**A flight number can be several legs.** LH568 is FRA–LOS–SSG and LH569
+SSG–LOS–FRA every day (LH594/595 FRA–ABV–PHC likewise), and a diversion or
+technical stop adds a leg for that day. FIS returns every leg; a leg row is the
+whole itinerary — its ends, gate-to-gate time including the stops — with each leg
+in `fis_legs.segments` (migration 013). The schedule draws one bar per leg, the
+cards say "via LOS", a route search matches a stop (FRA→LOS finds LH568), and the
+map draws each leg.
+
 **Map mode note.** The `/book` world map is self-hosted: the land/border
 outline and airport coordinates are inlined in `app.py` (regenerate with
 `tools/build_book_map.py`) and served from `/book/world.json` and
@@ -516,14 +524,15 @@ docker compose exec app python -m tools.backfill_routes            # dry-run pre
 docker compose exec app python -m tools.backfill_routes --apply    # apply
 ```
 
-**Leg layer (`010`, `012`) and serial numbers (`011`).** All three are additive; the code
+**Leg layer (`010`, `012`, `013`) and serial numbers (`011`).** All are additive; the code
 checks for them and works without. Create the tables/columns and backfill the leg layer
-once from all observations (again after `012`, so history gets each flight's sold layout);
+once from all observations (again after `012` and `013`, so history gets each flight's sold
+layout and the legs of multi-leg flights);
 after that every collector run refreshes the recent window on its own. `011` is filled by
 the next weekly fleet refresh (or run `docker compose exec app python -m lhlogging.fleet_refresh`):
 
 ```bash
-for m in 010_fis_legs 011_aircraft_serial 012_fis_legs_cabin; do
+for m in 010_fis_legs 011_aircraft_serial 012_fis_legs_cabin 013_fis_legs_segments; do
   ssh user@your-server "docker exec -i lhlogging-db-1 psql -U your_db_user -d lhlogging" \
     < db/init/$m.sql
 done

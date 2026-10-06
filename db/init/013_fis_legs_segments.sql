@@ -1,0 +1,19 @@
+-- ============================================================
+-- Flights of several legs (fis_legs)
+-- ============================================================
+-- A flight number can be more than one leg: LH568 is FRA-LOS-SSG and LH569
+-- SSG-LOS-FRA every day, LH594/595 FRA-ABV-PHC, and a diversion or technical
+-- stop adds a leg for that day (LH400 FRA-BOS-JFK). FIS returns every leg; the
+-- leg layer used to keep only the first, so LH569 read as SSG->LOS and the
+-- tail never got home. A leg row is now the whole itinerary -- dep_iata /
+-- arr_iata its ends, duration_min gate to gate including the stops -- and
+-- `segments` keeps each leg for a flight of several:
+--   [{"dep": "FRA", "arr": "LOS", "dep_local": ..., "arr_local": ...,
+--     "duration_min": 380}, {"dep": "LOS", "arr": "SSG", ...}]
+-- (local times as FIS publishes them: the airport's wall clock stamped +0000).
+-- NULL for the usual single leg.
+--
+-- Additive and nullable: the collector and dashboard check for the column and
+-- work without it. After applying, rebuild so history gets the values:
+--   docker compose exec flightstatus python fetch_flightstatus.py --rebuild-legs
+ALTER TABLE fis_legs ADD COLUMN IF NOT EXISTS segments JSONB;

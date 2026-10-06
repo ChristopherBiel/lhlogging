@@ -2,6 +2,7 @@
 
     python3 -m unittest discover tests
 """
+import json
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -95,6 +96,56 @@ class BuildLeg(unittest.TestCase):
     def test_leg_never_found_is_skipped(self):
         o = dict(self.obs[0], found=False)
         self.assertEqual(legs.build_leg(("2026-09-28", "LH", "716"), [o]), (None, []))
+
+
+class MultiLeg(unittest.TestCase):
+    """LH569: SSG 21:00 -> LOS 22:25 (1h25), LOS 23:35 -> FRA 06:50 (6h15),
+    local clocks (Malabo and Lagos UTC+1, Frankfurt UTC+2)."""
+
+    SEGS = [["SSG", "LOS", "2026-10-04T21:00:00.000+0000", "2026-10-04T22:25:00.000+0000", "PT1H25M"],
+            ["LOS", "FRA", "2026-10-04T23:35:00.000+0000", "2026-10-05T06:50:00.000+0000", "PT6H15M"]]
+
+    def look(self, at, reg, status="ONTIME", segs=SEGS):
+        r = look(at, reg, status, dep=fis(2026, 10, 4, 21, 0))
+        # the columns describe the first leg only, as the collector stores them
+        r.update(dep_airport_iata="SSG", arr_airport_iata="LOS",
+                 arr_scheduled=fis(2026, 10, 4, 22, 25), flight_duration="PT1H25M",
+                 segments=json.dumps(segs), seed_type="B789", fleet_type="B789")
+        return r
+
+    def test_itinerary_ends_stop_and_gate_to_gate_time(self):
+        dep = datetime(2026, 10, 4, 20, 0, tzinfo=UTC)
+        row, _ = legs.build_leg(("2026-10-04", "LH", "569"), [
+            self.look(dep - timedelta(hours=30), "D-ABPO"),
+            self.look(dep + timedelta(hours=14), "D-ABPO", "ARRIVED")])
+        self.assertEqual((row["dep_airport"], row["stops"], row["arr_airport"]), ("SSG", "LOS", "FRA"))
+        self.assertEqual(row["duration_min"], 85 + 70 + 375)
+        # anchored on the Frankfurt arrival, backed off the whole itinerary
+        self.assertEqual(row["dep_scheduled_utc"], dep.isoformat())
+        segs = json.loads(row["segments"])
+        self.assertEqual([(g["dep"], g["arr"], g["duration_min"]) for g in segs],
+                         [("SSG", "LOS", 85), ("LOS", "FRA", 375)])
+
+    def test_a_single_leg_flight_has_no_segments(self):
+        dep_utc = datetime(2026, 9, 28, 12, 5, tzinfo=UTC)
+        row, _ = legs.build_leg(("2026-09-28", "LH", "716"), [look(dep_utc - timedelta(hours=30), "D-ABYQ")])
+        self.assertEqual((row["stops"], row["segments"]), ("", ""))
+        self.assertEqual(row["duration_min"], 760)
+
+    def test_a_diversion_ends_where_the_operated_look_says(self):
+        # planned FRA-HND, operated FRA-CTS-HND (a stop added on the day)
+        segs = [["FRA", "CTS", "2026-09-28T14:05:00.000+0000", "2026-09-29T08:00:00.000+0000", "PT11H55M"],
+                ["CTS", "HND", "2026-09-29T10:00:00.000+0000", "2026-09-29T11:35:00.000+0000", "PT1H35M"]]
+        dep_utc = datetime(2026, 9, 28, 12, 5, tzinfo=UTC)
+        planned = [look(dep_utc - timedelta(hours=h), "D-ABYQ") for h in (60, 30, 6)]
+        operated = look(dep_utc + timedelta(hours=20), "D-ABYQ", "ARRIVED")
+        operated["segments"] = segs
+        row, _ = legs.build_leg(("2026-09-28", "LH", "716"), planned + [operated])
+        self.assertEqual((row["dep_airport"], row["stops"], row["arr_airport"]), ("FRA", "CTS", "HND"))
+        self.assertEqual(row["dep_scheduled_utc"], dep_utc.isoformat())
+        # still ahead: the itinerary most looks show
+        row, _ = legs.build_leg(("2026-09-28", "LH", "716"), planned + [dict(planned[-1], segments=segs)])
+        self.assertEqual((row["stops"], row["arr_airport"]), ("", "HND"))
 
 
 if __name__ == "__main__":

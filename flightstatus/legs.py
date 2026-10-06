@@ -22,12 +22,23 @@ An observation is a dict with at least:
     flight_duration    ISO-8601 block time from the payload ('PT12H40M'), optional
     seat_config        the layout this flight is sold with ('F8C80E32M244'), optional
     allegris           bool, optional
+    segments           for a flight of several legs (LH568 FRA-LOS-SSG, a diversion):
+                       FIS's legs as [[dep, arr, dep_sched, arr_sched, duration], ...]
+                       (a list, or its JSON from a CSV export); the columns above
+                       then describe the first leg only. Optional.
+
+A flight number is one leg row however many stops it makes: its endpoints are
+the itinerary's (LH568 = FRA -> SSG, via LOS), its duration gate to gate
+including the stops, and the stops' detail is kept in `segments`. The tail
+flies the whole itinerary, so that is what the fleet's chains need, and what
+the schedule draws.
 """
 from __future__ import annotations
 
 import collections
+import json
 import statistics
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -99,6 +110,58 @@ def dep_utc(dep_sched, arr_sched, dep, arr, duration_min):
     return dep_sched
 
 
+def _fis_time(v):
+    """A FIS time as it comes in `segments`: a datetime as is, or the payload's
+    '2026-10-06T11:50:00.000+0000' (local wall clock stamped +0000)."""
+    if v is None or isinstance(v, datetime):
+        return v
+    s = str(v).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def look_segments(r):
+    """The legs one look's flight consists of: dicts dep / arr / dep_local /
+    arr_local / duration_min (FIS local clocks, see dep_utc). From `segments`
+    for a flight of several legs, else the look's own columns."""
+    segs = r.get("segments")
+    if isinstance(segs, str):
+        segs = json.loads(segs) if segs.strip() else None
+    if segs and len(segs) > 1:
+        return [{"dep": s[0], "arr": s[1], "dep_local": _fis_time(s[2]),
+                 "arr_local": _fis_time(s[3]), "duration_min": iso_duration_min(s[4])}
+                for s in segs]
+    return [{"dep": r.get("dep_airport_iata"), "arr": r.get("arr_airport_iata"),
+             "dep_local": r.get("dep_scheduled"), "arr_local": r.get("arr_scheduled"),
+             "duration_min": iso_duration_min(r.get("flight_duration"))}]
+
+
+def route_of(segs):
+    """('FRA', 'LOS', 'SSG'): the airports an itinerary touches, in order."""
+    return tuple([segs[0]["dep"]] + [s["arr"] for s in segs])
+
+
+def elapsed_min(segs):
+    """Gate-to-gate minutes of an itinerary: its block times plus the ground
+    time at each stop. Both ends of a stop share the stop's local clock, so no
+    time zone is needed. None when a block time or stop time is missing."""
+    total = 0.0
+    for i, s in enumerate(segs):
+        if s["duration_min"] is None:
+            return None
+        total += s["duration_min"]
+        if i + 1 < len(segs):
+            landed, leaves = s["arr_local"], segs[i + 1]["dep_local"]
+            if landed is None or leaves is None:
+                return None
+            total += max(0.0, (leaves - landed).total_seconds() / 60.0)
+    return int(round(total))
+
+
 def fleet_type(row):
     t = (row.get("fleet_type") or "").strip().upper()
     if t:
@@ -147,26 +210,33 @@ def build_leg(key, obs):
     if not found:
         return None, []
 
-    dep_ap = modal([r["dep_airport_iata"] for r in found])
-    arr_ap = modal([r["arr_airport_iata"] for r in found])
-    duration = modal([iso_duration_min(r.get("flight_duration")) for r in found])
-
-    # Lead-time reference: the modal scheduled departure across all looks. A
-    # single re-timed snapshot (or a post-hoc row) can't shift the whole leg.
-    dep_local = modal([r["dep_scheduled"] for r in found])
-    if dep_local is None:
-        return None, []
-    arr_local = modal([r.get("arr_scheduled") for r in found])
-    dep_ref = dep_utc(dep_local, arr_local, dep_ap, arr_ap, duration)
-
-    for r in found:
-        r["lead_h"] = (dep_ref - r["observed_at"]).total_seconds() / 3600.0
-
     # Truth = the tail in a terminal snapshot. Only legs that have one are
     # labelable; the rest are still-in-the-future legs (useful as features).
     terminal = [r for r in found if (r["overall_status"] or "").upper() in TERMINAL
                 and r["registration"]]
     truth = terminal[-1] if terminal else None
+
+    # The itinerary: what the operated look says (a diversion ends where it
+    # ended), else the one most looks show. Its endpoints, times and length
+    # come from the looks that show it.
+    for r in found:
+        r["_segs"] = look_segments(r)
+    route = (route_of(truth["_segs"]) if truth
+             else modal([route_of(r["_segs"]) for r in found]))
+    same = [r for r in found if route_of(r["_segs"]) == route]
+    dep_ap, arr_ap = route[0], route[-1]
+    duration = modal([elapsed_min(r["_segs"]) for r in same])
+
+    # Lead-time reference: the modal scheduled departure across those looks. A
+    # single re-timed snapshot (or a post-hoc row) can't shift the whole leg.
+    dep_local = modal([r["_segs"][0]["dep_local"] for r in same])
+    if dep_local is None:
+        return None, []
+    arr_local = modal([r["_segs"][-1]["arr_local"] for r in same])
+    dep_ref = dep_utc(dep_local, arr_local, dep_ap, arr_ap, duration)
+
+    for r in found:
+        r["lead_h"] = (dep_ref - r["observed_at"]).total_seconds() / 3600.0
     cancelled = any((r["overall_status"] or "").upper() == "CANCELLED" for r in found)
 
     pre = [r for r in found if r["lead_h"] > 0 and r["registration"]]
@@ -177,6 +247,7 @@ def build_leg(key, obs):
         "flight_date": flight_date, "airline": airline, "flight_number": flight_number,
         "dep_airport": dep_ap,
         "arr_airport": arr_ap,
+        "stops": " ".join(a or "?" for a in route[1:-1]),
         "dep_scheduled_utc": dep_ref.isoformat(),
         "dep_hour_berlin": dep_ref.astimezone(BERLIN).hour,
         "dep_dow": dep_ref.astimezone(BERLIN).isoweekday(),
@@ -283,10 +354,18 @@ def build_leg(key, obs):
     for r in pre:
         if not timeline or timeline[-1][1] != r["registration"]:
             timeline.append([round(r["lead_h"], 2), r["registration"]])
+    ref = same[-1]["_segs"]
     row.update({
         "dep_sched_local": dep_local.isoformat(),
         "arr_sched_local": arr_local.isoformat() if arr_local else "",
         "duration_min": duration if duration is not None else "",
+        # a flight of several legs: each one, from the latest look showing this
+        # itinerary (fis_legs.segments, migration 013); '' for one leg
+        "segments": json.dumps([
+            {"dep": s["dep"], "arr": s["arr"],
+             "dep_local": s["dep_local"].isoformat() if s["dep_local"] else None,
+             "arr_local": s["arr_local"].isoformat() if s["arr_local"] else None,
+             "duration_min": s["duration_min"]} for s in ref]) if len(ref) > 1 else "",
         "latest_tail": latest["registration"] or "",
         "latest_status": (latest["overall_status"] or "").upper(),
         "latest_observed_at": latest["observed_at"].isoformat(),
