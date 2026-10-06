@@ -7,7 +7,8 @@ database. A leg is the dict dashboard/app.py builds from a fis_legs row:
 flight_date, flight_number, dep, arr, fleet_type, dep_utc, duration_min,
 truth_tail ('' until operated), cancelled, timeline [[lead_h, tail], ...],
 seat_config (the layout the flight is SOLD with — First can be sold as
-Business on some routes, so it is per flight, not per airframe).
+Business on some routes, so it is per flight, not per airframe), segments
+(the legs of a flight of several: LH568 FRA-LOS-SSG is one row, dep FRA, arr SSG).
 """
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ import statistics
 from collections import Counter, defaultdict
 from datetime import timedelta
 from zoneinfo import ZoneInfo
+
+from booking_model import itinerary
 
 BERLIN = ZoneInfo("Europe/Berlin")
 # German hubs: a network line is drawn and labelled hub -> outstation.
@@ -33,11 +36,13 @@ def route_counts(legs, top=25):
     """[{route, dep, arr, n, median_min}] by frequency."""
     by = defaultdict(list)
     for l in flown(legs):
-        by[(l["dep"], l["arr"])].append(l.get("duration_min"))
+        by[tuple(itinerary(l))].append(l.get("duration_min"))
     out = []
-    for (d, a), durs in by.items():
+    for route, durs in by.items():
+        n = len(durs)
         durs = [x for x in durs if x]
-        out.append({"route": "%s-%s" % (d, a), "dep": d, "arr": a, "n": len(by[(d, a)]),
+        out.append({"route": "-".join(a or "?" for a in route), "dep": route[0],
+                    "arr": route[-1], "n": n,
                     "median_min": int(statistics.median(durs)) if durs else None})
     out.sort(key=lambda r: (-r["n"], r["route"]))
     return out[:top]
@@ -47,7 +52,7 @@ def rotation(legs, top=60):
     """What a tail flies next after each route: [{from, to, n}]."""
     per_tail = defaultdict(list)
     for l in flown(legs):
-        per_tail[l["truth_tail"]].append("%s-%s" % (l["dep"], l["arr"]))
+        per_tail[l["truth_tail"]].append("-".join(a or "?" for a in itinerary(l)))
     pairs = Counter()
     for seq in per_tail.values():
         for a, b in zip(seq, seq[1:]):
@@ -124,17 +129,21 @@ def network(legs, tail_first=None):
     tail_first = tail_first or {}
     by = {}
     for l in flown(legs):
-        if not l.get("dep") or not l.get("arr") or l["dep"] == l["arr"]:
-            continue
-        a, b = pair_key(l["dep"], l["arr"])
-        e = by.setdefault((a, b), {"a": a, "b": b, "n": 0, "types": Counter(),
-                                   "tails": Counter(), "first": Counter()})
-        e["n"] += 1
-        e["types"][l.get("fleet_type") or "?"] += 1
-        e["tails"][l["truth_tail"]] += 1
+        route = itinerary(l)
         f = sells_first(l.get("seat_config"))
-        if f if f is not None else tail_first.get(l["truth_tail"]):
-            e["first"][l["truth_tail"]] += 1
+        sold_first = f if f is not None else tail_first.get(l["truth_tail"])
+        # a flight of several legs draws each of them (FRA-LOS, LOS-SSG)
+        for dep, arr in zip(route, route[1:]):
+            if not dep or not arr or dep == arr:
+                continue
+            a, b = pair_key(dep, arr)
+            e = by.setdefault((a, b), {"a": a, "b": b, "n": 0, "types": Counter(),
+                                       "tails": Counter(), "first": Counter()})
+            e["n"] += 1
+            e["types"][l.get("fleet_type") or "?"] += 1
+            e["tails"][l["truth_tail"]] += 1
+            if sold_first:
+                e["first"][l["truth_tail"]] += 1
     out = [dict(e, types=dict(e["types"]), tails=dict(e["tails"]), first=dict(e["first"]))
            for e in by.values()]
     out.sort(key=lambda e: -e["n"])

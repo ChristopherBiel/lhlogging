@@ -57,11 +57,10 @@ HORIZON = timedelta(hours=144)
 #   conn  bonus for the usual inbound connection: w x (1 + conn x P(this out | inbound))
 DEFAULTS = {"mix": 0.5, "conn": 3.0}
 # Fleets the dashboard runs it for: those whose walk-forward it beat
-# (tools/benchmark_fleet.py, docs/booking_model.md). Not the 787: its chains
-# break (multi-stop flights are stored by their first leg only, the broad tier
-# is looked up sparsely), so the tail that flew was "unreachable" 5-8% of the
-# time and the simulation alone scored far worse than p_target.
-SIM_TYPES = ("B748", "A388", "A359")
+# (tools/benchmark_fleet.py, docs/booking_model.md). The 787 joined once
+# multi-stop flights were stored whole (LH568/569 FRA-LOS-SSG broke its chains:
+# the tail that flew was "unreachable" 5-8% of the time, now 1.2-2.2%).
+SIM_TYPES = ("B748", "A388", "A359", "B789")
 # blend_hard(): share of p_target's weight a tail keeps when no path through
 # the schedule brings it to the airport in time — the plan it rests on can be
 # stale (the tail that flew was "unreachable" for 0-1.2% of legs, most of them

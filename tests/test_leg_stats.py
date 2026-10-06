@@ -111,5 +111,15 @@ class Cabins(unittest.TestCase):
                          [("A", ["D-AIXA", "D-AIXB"]), ("B", ["D-AIVC"])])
 
 
+class MultiLeg(unittest.TestCase):
+    def test_a_flight_of_several_legs_is_one_route_and_draws_each_leg(self):
+        segs = [{"dep": "FRA", "arr": "LOS"}, {"dep": "LOS", "arr": "SSG"}]
+        legs = [dict(leg(d, "FRA", "SSG", "D-ABPO", "568", ftype="B789", dur=525), segments=segs)
+                for d in (0, 2)]
+        self.assertEqual([r["route"] for r in ls.route_counts(legs)], ["FRA-LOS-SSG"])
+        net = {(e["a"], e["b"]): e["n"] for e in ls.network(legs)}
+        self.assertEqual(net, {("FRA", "LOS"): 2, ("LOS", "SSG"): 2})
+
+
 if __name__ == "__main__":
     unittest.main()

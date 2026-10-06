@@ -201,5 +201,38 @@ class Projection(unittest.TestCase):
         self.assertEqual(out[0]["seat_config"], "F8C80E32M244")
 
 
+class Itinerary(unittest.TestCase):
+    LH568 = {"dep": "FRA", "arr": "SSG", "segments": [
+        {"dep": "FRA", "arr": "LOS", "dep_local": "2026-10-04T11:50:00+00:00",
+         "arr_local": "2026-10-04T17:10:00+00:00", "duration_min": 380},
+        {"dep": "LOS", "arr": "SSG", "dep_local": "2026-10-04T18:10:00+00:00",
+         "arr_local": "2026-10-04T19:35:00+00:00", "duration_min": 85}]}
+
+    def test_stops_and_itinerary(self):
+        self.assertEqual(bm.stops(self.LH568), ["LOS"])
+        self.assertEqual(bm.itinerary(self.LH568), ["FRA", "LOS", "SSG"])
+        self.assertEqual(bm.stops({"dep": "FRA", "arr": "HND"}), [])
+
+    def test_a_stop_serves_both_legs_and_the_whole_way_in_order(self):
+        for deps, arrs in ((["FRA"], ["LOS"]), (["LOS"], ["SSG"]), (["FRA"], ["SSG"]),
+                           (["LOS"], None), (None, ["LOS"]), (None, None)):
+            self.assertTrue(bm.serves(self.LH568, deps, arrs), (deps, arrs))
+        for deps, arrs in ((["LOS"], ["FRA"]), (["SSG"], None), (None, ["FRA"]),
+                           (["MUC"], ["SSG"])):
+            self.assertFalse(bm.serves(self.LH568, deps, arrs), (deps, arrs))
+
+    def test_projection_matches_a_stop_and_moves_its_legs(self):
+        base = dict(leg(7, "568", "D-ABPO", arr="SSG"), **self.LH568)
+        legs = [dict(base, dep_utc=base["dep_utc"] - timedelta(days=7 * w),
+                     flight_date=(base["dep_utc"] - timedelta(days=7 * w)).date())
+                for w in (0, 1)]
+        target = (NOW + timedelta(days=7)).date()
+        out = bm.project_schedule(legs, [target], NOW, deps=["LOS"])
+        self.assertEqual([l["flight_number"] for l in out], ["568"])
+        self.assertEqual(out[0]["segments"][1]["dep_local"][:10],
+                         (datetime.fromisoformat("2026-10-04T18:10:00+00:00")
+                          + (target - legs[0]["flight_date"])).date().isoformat())
+
+
 if __name__ == "__main__":
     unittest.main()

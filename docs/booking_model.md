@@ -131,9 +131,9 @@ every 6h, both models on identical information), log-loss 24–96h:
 | 747-8 | 2.001 | **1.934** | 48h 1.965→1.889, 24h 1.192→1.096 |
 | A380 | 1.367 | **1.327** | 12h 0.691→0.578 |
 | A350 | 1.773 | **1.584** | 48h 1.980→1.741 (top-1 53→55%) |
-| 787 | 1.470 | 1.415 | — not enabled: the simulation alone 1.853 |
+| 787 | 1.465 | **1.376** | 48h 1.650→1.537, 24h 1.044→0.956 (after multi-leg flights, below) |
 
-Better at every band with ≥100 legs on the three enabled fleets; beyond 6 days
+Better at every band with ≥100 legs on all four fleets; beyond 6 days
 (and before publication) the served number is `p_target`'s. Calibration
 matches `p_target`'s (747-8 within ~3 points; the A380/A350 keep the same
 over-confidence at the top that the hold rates already had, e.g. A350 94%
@@ -143,9 +143,17 @@ A380 14→8, A350 16→7); the share just above 100% did not (the safety net
 renormalised onto the reachable tails) — the simulation's own share is coherent
 (6–21 of 7k–117k pairs, from data gaps).
 
-Not enabled for the 787: multi-stop flights are stored by their first leg only
-(LH568/569 FRA–LOS–SSG: 110 of its 116 chain breaks) and the broad tier is
-looked up sparsely, so the tail that flew was unreachable 5–8% of the time.
+**Multi-leg flights (migration 013).** The 787 was first left out: the leg
+layer kept only a flight's first leg, so LH568/569 FRA–LOS–SSG read as FRA→LOS
+and SSG→LOS (110 of its 116 chain breaks; the tail that flew was "unreachable"
+5–8% of the time, and the simulation alone scored 1.853). A leg row is now the
+whole itinerary (`legs.py`: ends, gate-to-gate time including stops, each leg
+in `segments`; a diversion ends where the operated look says). 787 chains went
+93.5% → 99.6% continuous, unreachable 1.2–2.2%, the simulation alone 1.491, the
+served number 1.376 — enabled. Its served number is slightly less coherent
+than p_target's (18 vs 8 of 23.8k overlapping pairs above 105%). What is left
+of its fallbacks is coverage: the broad tier is not looked up on every flight
+(LH760/761 DEL, LH756/757 BOM often have one direction missing).
 
 `truth_observed_at` (legs.py, first terminal look) lets the replays use a truth
 only once it was seen — 18–20h after departure (median), not the 2-day lag the

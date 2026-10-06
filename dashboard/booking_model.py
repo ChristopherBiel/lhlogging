@@ -48,7 +48,8 @@ flew). tools/benchmark_booking.py scores the result walk-forward.
 
 A leg is a dict with:
     flight_date, flight_number, dep, arr, fleet_type, dep_utc (aware datetime)
-    duration_min        block time (None when FIS gave none)
+    duration_min        gate to gate, stops included (None when FIS gave none)
+    segments            the legs of a flight of several (optional; see stops())
     truth_tail          '' until the flight has operated
     truth_seen          when the truth was first seen (optional; the dashboard
                         only has truths it has seen)
@@ -61,7 +62,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_left
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 # Lead-time bands (hours before departure) the hold rate is measured at.
 # Mirrors flightstatus/legs.BANDS.
@@ -229,6 +230,29 @@ def conflict_at_band(plan, leg, tail, band):
         plan.memo[k] = plan_conflict(plan, leg, tail,
                                      leg["dep_utc"] - timedelta(hours=band)) is not None
     return plan.memo[k]
+
+
+def stops(leg):
+    """The airports a flight of several legs stops at (LH568 FRA-SSG: ['LOS']).
+    A leg row is the whole itinerary (dep / arr its ends); `segments`, when
+    present, lists each of its legs."""
+    segs = leg.get("segments") or ()
+    return [s.get("arr") for s in segs[:-1]] if len(segs) > 1 else []
+
+
+def itinerary(leg):
+    """['FRA', 'LOS', 'SSG']: every airport the flight touches, in order."""
+    return [leg.get("dep")] + stops(leg) + [leg.get("arr")]
+
+
+def serves(leg, deps=None, arrs=None):
+    """Whether one can fly `leg` from one of `deps` to one of `arrs` (each
+    optional): any airport of its itinerary before any later one, so LH568
+    FRA-LOS-SSG serves FRA->LOS, LOS->SSG and FRA->SSG."""
+    route = itinerary(leg)
+    starts = [i for i, a in enumerate(route[:-1]) if not deps or a in deps]
+    ends = [j for j, a in enumerate(route) if j and (not arrs or a in arrs)]
+    return bool(starts) and bool(ends) and min(starts) < max(ends)
 
 
 def route_key(leg):
@@ -558,6 +582,20 @@ def _clash_why(tail, leg, clash):
             % (tail, other["flight_number"], other.get("arr") or "?", leg.get("dep") or "?"))
 
 
+def _shift_segments(segs, shift):
+    """A flight's legs moved by `shift` (their local times are ISO strings)."""
+    if not segs:
+        return segs
+    out = []
+    for s in segs:
+        s = dict(s)
+        for k in ("dep_local", "arr_local"):
+            if s.get(k):
+                s[k] = (datetime.fromisoformat(s[k]) + shift).isoformat()
+        out.append(s)
+    return out
+
+
 # --- timetable beyond the published window ---------------------------------
 # FIS only knows flights a few days out, so the planner projects the rest: a
 # flight number that operated (on the fleet type) on the same weekday in at
@@ -583,7 +621,7 @@ def project_schedule(legs, dates, now, ftype=None, deps=None, arrs=None):
             continue
         if ftype and leg.get("fleet_type") != ftype:
             continue
-        if (deps and leg.get("dep") not in deps) or (arrs and leg.get("arr") not in arrs):
+        if (deps or arrs) and not serves(leg, deps, arrs):
             continue
         seen[(leg["flight_number"], leg["flight_date"].weekday())].append(leg)
         if leg.get("seat_config"):
@@ -598,6 +636,7 @@ def project_schedule(legs, dates, now, ftype=None, deps=None, arrs=None):
             out.append(dict(ref, flight_date=d,
                             dep_local=ref["dep_local"] + shift if ref.get("dep_local") else None,
                             arr_local=ref["arr_local"] + shift if ref.get("arr_local") else None,
+                            segments=_shift_segments(ref.get("segments"), shift),
                             dep_utc=ref["dep_utc"] + shift, truth_tail="", latest_tail="",
                             latest_status="", timeline=[], first_lead_h=None, projected=True,
                             seat_config=(layouts[fnum].most_common(1)[0][0] if layouts[fnum]

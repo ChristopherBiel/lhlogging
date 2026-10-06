@@ -2398,6 +2398,63 @@ def _digits(s):
     return "".join(c for c in (s or "") if c.isdigit())
 
 
+# Every leg of a flight of several (LH568 FRA-LOS-SSG, a diversion) as
+# [[dep, arr, dep_sched, arr_sched, duration], ...] — the projection the leg
+# layer reads too (flightstatus SEGMENTS_SQL); NULL for the usual single leg.
+_SEGMENTS_SQL = """CASE WHEN jsonb_typeof(o.raw->'legs') = 'array' THEN
+             CASE WHEN jsonb_array_length(o.raw->'legs') > 1 THEN (
+               SELECT jsonb_agg(jsonb_build_array(
+                        l->'departure'->>'departureAirport', l->'arrival'->>'arrivalAirport',
+                        l->'departure'->>'departureScheduledTime',
+                        l->'arrival'->>'arrivalScheduledTime', l->>'flightDuration') ORDER BY i)
+               FROM jsonb_array_elements(o.raw->'legs') WITH ORDINALITY AS t(l, i)) END
+           END"""
+
+
+def _fis_wall(s):
+    """A FIS time string ('2026-10-06T11:50:00.000+0000': the airport's wall
+    clock stamped +0000) -> that aware datetime; None when absent."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(s or "", fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def _iso_or_none(dt):
+    return dt.isoformat() if dt else None
+
+
+def _segment_bars(segs):
+    """A multi-leg flight's legs on the Frankfurt clock: [(dep, arr, start, end,
+    dep_t, arr_t, duration_min)], dep_t / arr_t the local clocks FIS gives.
+    Those carry no offset, but each leg's block time and the ground time at
+    each stop (one airport, one clock) fix the legs relative to each other,
+    and the first end at a German hub fixes them on the Frankfurt clock. None
+    when a time is missing (the caller then draws the first leg alone)."""
+    parsed = [(dep, arr, _fis_wall(ds), _fis_wall(ars), _iso_dur_min(dur))
+              for dep, arr, ds, ars, dur in segs]
+    if any(dt is None or at is None or dur is None for _, _, dt, at, dur in parsed):
+        return None
+    offs, t = [], 0.0
+    for i, (_, _, dt, _, dur) in enumerate(parsed):
+        if i:
+            t += max(0.0, (dt - parsed[i - 1][3]).total_seconds() / 60.0)
+        offs.append((t, t + dur))
+        t += dur
+    base = parsed[0][2]
+    for (dep, arr, dt, at, _), (td, ta) in zip(parsed, offs):
+        if dep in _DE_HUBS:
+            base = dt - timedelta(minutes=td)
+            break
+        if arr in _DE_HUBS:
+            base = at - timedelta(minutes=ta)
+            break
+    return [(dep, arr, base + timedelta(minutes=td), base + timedelta(minutes=ta), dt, at, dur)
+            for (dep, arr, dt, at, dur), (td, ta) in zip(parsed, offs)]
+
+
 def _berlin_fake_utc(dt):
     """Convert a true-UTC datetime to Frankfurt wall-clock, then re-stamp it as
     UTC — so ADS-B actuals plot on the same fake-UTC axis as the FIS bars."""
@@ -2676,27 +2733,34 @@ _LEG_SQL = """
     SELECT flight_date, airline, flight_number, dep_iata, arr_iata, dep_sched_local,
            arr_sched_local, dep_utc, fleet_type, truth_tail, cancelled, latest_tail,
            latest_status, latest_observed_at, first_lead_h, timeline, duration_min,
-           {cabin}
+           {cabin}, {segments}
     FROM fis_legs
 """
-_leg_cabin_cache = {"has": None}
+_leg_cols_cache = {"cabin": None, "segments": None}
 
 
 def _leg_sql(conn):
-    """The fis_legs SELECT, with the sold-layout columns once migration 012 is in."""
-    if not _leg_cabin_cache["has"]:
-        _leg_cabin_cache["has"] = _q1(conn, """
+    """The fis_legs SELECT, with the sold-layout columns once migration 012 is
+    in and the legs of multi-leg flights once 013 is."""
+    if not _leg_cols_cache["cabin"]:
+        _leg_cols_cache["cabin"] = _q1(conn, """
             SELECT count(*) = 2 FROM information_schema.columns
             WHERE table_name = 'fis_legs' AND column_name IN ('seat_config', 'allegris')""")
-    return _LEG_SQL.format(cabin="seat_config, allegris" if _leg_cabin_cache["has"]
-                           else "NULL, NULL")
+    if not _leg_cols_cache["segments"]:
+        _leg_cols_cache["segments"] = _q1(conn, """
+            SELECT count(*) = 1 FROM information_schema.columns
+            WHERE table_name = 'fis_legs' AND column_name = 'segments'""")
+    return _LEG_SQL.format(
+        cabin="seat_config, allegris" if _leg_cols_cache["cabin"] else "NULL, NULL",
+        segments="segments" if _leg_cols_cache["segments"] else "NULL")
 
 
 def _leg_from_row(r):
     (fdate, airline, fnum, dep, arr, dep_l, arr_l, dep_utc, ftype, truth, cancelled,
-     latest, lstatus, lobs, first_lead, timeline, duration, seat, alleg) = r
+     latest, lstatus, lobs, first_lead, timeline, duration, seat, alleg, segments) = r
     return {"flight_date": fdate, "airline": airline, "flight_number": fnum,
             "dep": dep, "arr": arr, "dep_local": dep_l, "arr_local": arr_l,
+            "segments": segments,
             "duration_min": duration, "seat_config": seat, "allegris": alleg,
             "dep_utc": dep_utc, "fleet_type": ftype or "", "truth_tail": truth or "",
             # a truth in fis_legs has been seen, at the latest by the newest look
@@ -2808,12 +2872,19 @@ def _upcoming_legs(conn, *, reg=None, dep=None, arr=None, date_from=None, date_t
         where.append("fleet_type = ANY(%s)"); params.append(list(types))
     if reg:
         where.append("latest_tail = %s"); params.append(reg)
+    # a route matches a stop of a multi-leg flight too (LH568 FRA-LOS-SSG
+    # serves FRA->LOS): the SQL lets such flights through, serves() decides
+    sql = _leg_sql(conn)
+    stop = ("segments IS NOT NULL OR " if _leg_cols_cache["segments"] else "")
     if dep:
-        where.append("dep_iata = ANY(%s)"); params.append(list(dep))
+        where.append("(" + stop + "dep_iata = ANY(%s))"); params.append(list(dep))
     if arr:
-        where.append("arr_iata = ANY(%s)"); params.append(list(arr))
-    rows = _q(conn, _leg_sql(conn) + " WHERE " + " AND ".join(where) + " ORDER BY dep_utc", params)
-    return [_leg_from_row(r) for r in rows]
+        where.append("(" + stop + "arr_iata = ANY(%s))"); params.append(list(arr))
+    rows = _q(conn, sql + " WHERE " + " AND ".join(where) + " ORDER BY dep_utc", params)
+    legs = [_leg_from_row(r) for r in rows]
+    if dep or arr:
+        legs = [l for l in legs if booking_model.serves(l, dep, arr)]
+    return legs
 
 
 def _hold_chip(res):
@@ -2857,7 +2928,7 @@ def api_schedule():
                 a.aircraft_type, a.icao24, o.seed_type, o.dep_airport_iata, o.arr_airport_iata,
                 o.dep_scheduled, o.arr_scheduled, o.overall_status,
                 o.prev_airline, o.prev_flight_number,
-                o.raw->'legs'->0->>'flightDuration'
+                o.raw->'legs'->0->>'flightDuration', """ + _SEGMENTS_SQL + """
             FROM flight_status_observations o
             JOIN aircraft a ON a.registration = o.registration
             WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
@@ -2913,59 +2984,66 @@ def api_schedule():
     types = {}
     icao24_by_reg = {}
     starts, ends = [], []
-    for (fdate, airline, fnum, reg, atype, icao24, seed, dep, arr,
-         dep_t, arr_t, fis_status, pa, pn, dur_iso) in rows:
-        dur = _iso_dur_min(dur_iso)
-        # Frankfurt-local clock: anchor to the German endpoint, size by duration.
-        if dur and dep in _DE_HUBS:
-            start, end = dep_t, dep_t + timedelta(minutes=dur)
-        elif dur and arr in _DE_HUBS and arr_t:
-            start, end = arr_t - timedelta(minutes=dur), arr_t
-        else:
-            start, end = dep_t, (arr_t or dep_t)
-        if end < win_start:
-            continue  # ended before the rolling 24h window
-        starts.append(start)
-        ends.append(end)
-        types[reg] = _CANON_SHORT.get(atype, atype)
-        icao24_by_reg[reg] = icao24
-
-        leg = {
-            "fl": f"{airline}{fnum}", "num": fnum, "fdate": fdate.isoformat(),
-            "dep": dep, "arr": arr,
-            "start": start.isoformat(), "end": end.isoformat(),
-            "dep_t": dep_t.isoformat(), "arr_t": arr_t.isoformat() if arr_t else None,
-            "dur": dur, "seed": seed, "swap": (fdate, fnum) in swapped,
-            "lead": (fdate - today).days, "prev": f"{pa}{pn}" if pn else None,
-            "status": "planned", "act": None,
-        }
-        # Plan-vs-actual overlay for legs whose planned departure is in the past.
-        if start < now_fake:
-            window = timedelta(hours=8)
-            cands = [act for act in actuals.get(reg, [])
-                     if not act["used"] and abs(act["start"] - start) <= window]
-            # prefer an actual whose callsign matches the planned flight number
-            # (robust to tactical callsigns falling through to nearest-in-time)
-            exact = [act for act in cands if _digits(act["cs"]) == fnum]
-            best = (exact[0] if exact
-                    else min(cands, key=lambda act: abs(act["start"] - start)) if cands else None)
-            if best is None:
-                leg["status"] = "missing"
+    for (fdate, airline, fnum, reg, atype, icao24, seed, dep0, arr0,
+         dep_t0, arr_t0, fis_status, pa, pn, dur_iso, segs) in rows:
+        # a flight of several legs (LH568 FRA-LOS-SSG) draws each of them
+        bars = _segment_bars(segs) if segs and len(segs) > 1 else None
+        if bars is None:
+            dur = _iso_dur_min(dur_iso)
+            # Frankfurt-local clock: anchor to the German endpoint, size by duration.
+            if dur and dep0 in _DE_HUBS:
+                start, end = dep_t0, dep_t0 + timedelta(minutes=dur)
+            elif dur and arr0 in _DE_HUBS and arr_t0:
+                start, end = arr_t0 - timedelta(minutes=dur), arr_t0
             else:
-                best["used"] = True
-                delta = round((best["start"] - start).total_seconds() / 60)
-                leg["act"] = {
-                    "start": best["start"].isoformat(), "end": best["end"].isoformat(),
-                    "dep": best["dep"], "arr": best["arr"], "cs": best["cs"], "delta": delta,
-                }
-                same_num = _digits(best["cs"]) == fnum
-                if not best["arr"]:
-                    # still airborne (no arrival yet): trust the flight number
-                    leg["status"] = "tracked" if same_num else "deviation"
+                start, end = dep_t0, (arr_t0 or dep_t0)
+            bars = [(dep0, arr0, start, end, dep_t0, arr_t0, dur)]
+        route = [bars[0][0]] + [b[1] for b in bars]
+        for seg, (dep, arr, start, end, dep_t, arr_t, dur) in enumerate(bars, 1):
+            if end < win_start:
+                continue  # ended before the rolling 24h window
+            starts.append(start)
+            ends.append(end)
+            types[reg] = _CANON_SHORT.get(atype, atype)
+            icao24_by_reg[reg] = icao24
+
+            leg = {
+                "fl": f"{airline}{fnum}", "num": fnum, "fdate": fdate.isoformat(),
+                "dep": dep, "arr": arr,
+                "start": start.isoformat(), "end": end.isoformat(),
+                "dep_t": dep_t.isoformat(), "arr_t": arr_t.isoformat() if arr_t else None,
+                "dur": dur, "seed": seed, "swap": (fdate, fnum) in swapped,
+                "lead": (fdate - today).days, "prev": f"{pa}{pn}" if pn else None,
+                "status": "planned", "act": None,
+                "seg": seg, "nseg": len(bars), "route": route,
+            }
+            # Plan-vs-actual overlay for legs whose planned departure is in the past.
+            if start < now_fake:
+                window = timedelta(hours=8)
+                cands = [act for act in actuals.get(reg, [])
+                         if not act["used"] and abs(act["start"] - start) <= window]
+                # prefer an actual whose callsign matches the planned flight number
+                # (robust to tactical callsigns falling through to nearest-in-time)
+                exact = [act for act in cands if _digits(act["cs"]) == fnum]
+                best = (exact[0] if exact
+                        else min(cands, key=lambda act: abs(act["start"] - start)) if cands else None)
+                if best is None:
+                    leg["status"] = "missing"
                 else:
-                    leg["status"] = ("tracked" if (best["dep"] == dep and best["arr"] == arr)
-                                     else "deviation")
-        by_reg[reg].append(leg)
+                    best["used"] = True
+                    delta = round((best["start"] - start).total_seconds() / 60)
+                    leg["act"] = {
+                        "start": best["start"].isoformat(), "end": best["end"].isoformat(),
+                        "dep": best["dep"], "arr": best["arr"], "cs": best["cs"], "delta": delta,
+                    }
+                    same_num = _digits(best["cs"]) == fnum
+                    if not best["arr"]:
+                        # still airborne (no arrival yet): trust the flight number
+                        leg["status"] = "tracked" if same_num else "deviation"
+                    else:
+                        leg["status"] = ("tracked" if (best["dep"] == dep and best["arr"] == arr)
+                                         else "deviation")
+            by_reg[reg].append(leg)
 
     # Actual legs with no matching plan (positioning, tactical, or unseeded).
     for reg, acts in actuals.items():
@@ -3084,8 +3162,23 @@ def api_schedule_flight(airline, number, fdate):
         else:
             _hold = (_hold_probability(stab, _lead, f"{dep or '?'}-{arr or '?'}",
                                        _CANON_SHORT.get(at, at)) if _lead >= 0 else None)
-        leg = (raw.get("legs") or [{}])[0]
+        all_legs = raw.get("legs") or [{}]
+        leg = all_legs[0]
         depj, arrj = leg.get("departure") or {}, leg.get("arrival") or {}
+        legs_out = []
+        if len(all_legs) > 1:
+            # a flight of several legs: its end is the last leg's arrival
+            arrj = all_legs[-1].get("arrival") or {}
+            arr = arrj.get("arrivalAirport") or arr
+            arr_t = _fis_wall(arrj.get("arrivalScheduledTime")) or arr_t
+            for lg in all_legs:
+                dj, aj = lg.get("departure") or {}, lg.get("arrival") or {}
+                legs_out.append({
+                    "dep": dj.get("departureAirport"), "arr": aj.get("arrivalAirport"),
+                    "dep_sched": _iso_or_none(_fis_wall(dj.get("departureScheduledTime"))),
+                    "arr_sched": _iso_or_none(_fis_wall(aj.get("arrivalScheduledTime"))),
+                    "dep_gate": dj.get("departureGate"), "arr_gate": aj.get("arrivalGate"),
+                    "duration": lg.get("flightDuration"), "status": lg.get("overallStatus")})
         ac = raw.get("aircraftInfo") or {}
         cs = [(m.get("marketingFlightAirlineIndicator") or "") + (m.get("marketingFlightNumber") or "")
               for m in (leg.get("marketingFlightNumbers") or [])]
@@ -3100,7 +3193,8 @@ def api_schedule_flight(airline, number, fdate):
             "arr_sched": arr_t.isoformat() if arr_t else None,
             "dep_term": depj.get("departureTerminal"), "dep_gate": depj.get("departureGate"),
             "arr_term": arrj.get("arrivalTerminal"), "arr_gate": arrj.get("arrivalGate"),
-            "duration": leg.get("flightDuration"), "status": st,
+            "duration": leg.get("flightDuration") if not legs_out else None, "status": st,
+            "legs": legs_out, "via": [l["arr"] for l in legs_out[:-1]],
             "codeshares": [c for c in cs if c],
             "prev": f"{pa}{pn}" if pn else None,
             "prev_date": pd.isoformat() if pd else None,
@@ -3182,7 +3276,7 @@ def api_book():
         sold = legs[i]["seat_config"] if legs is not None else None
         flights.append({
             "flight": f"{airline}{fnum}", "number": fnum, "flight_date": fdate.isoformat(),
-            "dep": d, "arr": a,
+            "dep": d, "arr": a, "via": booking_model.stops(legs[i]) if legs is not None else [],
             "dep_sched": dep_t.isoformat() if dep_t else None,
             "arr_sched": arr_t.isoformat() if arr_t else None,
             "reg": r_reg, "type": short,
@@ -3275,6 +3369,7 @@ def api_book_plan():
         flights.append({
             "flight": f"{leg['airline']}{leg['flight_number']}", "number": leg["flight_number"],
             "flight_date": leg["flight_date"].isoformat(), "dep": leg["dep"], "arr": leg["arr"],
+            "via": booking_model.stops(leg),
             "dep_sched": leg["dep_local"].isoformat() if leg["dep_local"] else None,
             "arr_sched": leg["arr_local"].isoformat() if leg["arr_local"] else None,
             "type": _CANON_SHORT.get(leg["fleet_type"], leg["fleet_type"]),
@@ -3427,7 +3522,7 @@ def api_airframe(reg):
         res = _p_target(stats, reg, leg, published=pub, now=now)
         nxt.append({"flight": f"{leg['airline']}{leg['flight_number']}",
                     "number": leg["flight_number"], "flight_date": leg["flight_date"].isoformat(),
-                    "dep": leg["dep"], "arr": leg["arr"],
+                    "dep": leg["dep"], "arr": leg["arr"], "via": booking_model.stops(leg),
                     "dep_sched": leg["dep_local"].isoformat() if leg["dep_local"] else None,
                     "hold": _hold_chip(res)})
     idle = booking_model.idle_days(stats, reg)
@@ -3458,7 +3553,8 @@ def api_airframe(reg):
         "window_weeks": booking_model.HISTORY_WEEKS,
         "upcoming": nxt,
         "recent": [{"flight": f"{l['airline']}{l['flight_number']}", "number": l["flight_number"],
-                    "flight_date": l["flight_date"].isoformat(), "dep": l["dep"], "arr": l["arr"]}
+                    "flight_date": l["flight_date"].isoformat(), "dep": l["dep"], "arr": l["arr"],
+                    "via": booking_model.stops(l)}
                    for l in reversed(flown[-12:])],
         "generated": now.isoformat(),
     })
@@ -4562,8 +4658,12 @@ def api_book_map():
         stats, _hist = _booking_model(conn)
         if stats is not None:
             legs = _upcoming_legs(conn)
+            # each leg of a multi-leg flight departs where it departs (LH568
+            # FRA-LOS-SSG: one departure at FRA, one at LOS)
             rows = [(l["flight_date"], l["airline"], l["flight_number"], l["latest_tail"],
-                     l["fleet_type"], l["dep"], l["arr"], l["seat_config"]) for l in legs]
+                     l["fleet_type"], d, a, l["seat_config"])
+                    for l in legs
+                    for d, a in zip(booking_model.itinerary(l), booking_model.itinerary(l)[1:])]
         else:
             rows = [r[:7] + (None,) for r in _latest_assignments(conn)]
         names = {a["code"]: a["name"] for a in _book_airports(conn)}
@@ -4878,7 +4978,7 @@ async function init(){
         title=(l.fl||'actual')+'  '+l.dep+' \\u2192 '+l.arr+'\\n\\u2713 recorded (ADS-B) \\u00b7 no matching plan'
           +'\\n'+fmt(l.start)+' \\u2192 '+fmt(l.end);
       } else {
-        title=l.fl+'  '+l.dep+' \\u2192 '+l.arr
+        title=l.fl+'  '+l.dep+' \\u2192 '+l.arr+(l.nseg>1?'  (leg '+l.seg+' of '+l.route.join('\\u2013')+')':'')
           +'\\nDep '+fmt(l.dep_t)+' ('+l.dep+')'+(l.arr_t?'\\nArr '+fmt(l.arr_t)+' ('+l.arr+')':'')
           +(dur?'\\nFlight '+dur:'')+'  \\u00b7  '+a.type
           +(l.prev?'\\nprev: '+l.prev:'')+(l.lead!=null?'\\nlead: +'+l.lead+'d':'')+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
@@ -4889,13 +4989,13 @@ async function init(){
           title+='\\n\\u2713 tracked: '+l.act.dep+'\\u2192'+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')+'  ['+ds+' vs plan]';
         } else if(st==='missing'){ title+='\\n\\u2014 no ADS-B track found yet'; }
       }
-      if(l.num && l.fdate) legByKey[l.num+'|'+l.fdate]=l;   // remember for the enriched modal
+      if(l.num && l.fdate) legByKey[l.num+'|'+l.fdate+'|'+(l.seg||1)]=l;   // remember for the enriched modal
       // unplanned "extra" legs have no flight number → carry the actual track on data-* for openActual()
       const actAttrs = st==='extra'
         ? ' data-cs="'+(l.fl||'')+'" data-dep="'+l.dep+'" data-arr="'+l.arr+'" data-start="'+l.start+'" data-end="'+l.end+'"'
         : '';
       html+='<div class="gantt-flight '+tc+' '+stCls+(l.swap?' is-swap':'')+' clk" style="left:'+left+'%;width:'+width+'%"'
-        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+(l.fl||'')+'" data-num="'+(l.num||'')+'" data-fdate="'+(l.fdate||'')+'"'+actAttrs
+        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+(l.fl||'')+'" data-num="'+(l.num||'')+'" data-fdate="'+(l.fdate||'')+'" data-seg="'+(l.seg||1)+'"'+actAttrs
         +' title="'+title.replace(/"/g,'&quot;')+'">'
         +(l.swap?'<span class="swapchip">SWAP</span>':'')
         +'<span class="lbl">'+dsp.arrow+' '+dsp.stn+(flnum?'<span class="fl">'+flnum+'</span>':'')+'</span></div>';
@@ -4996,8 +5096,8 @@ function confChip(hold, reg){
 function fmtD(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'}); }
 function isoDur(s){ if(!s) return ''; const m=s.match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/); if(!m) return ''; return (m[1]?m[1]+'h':'')+(m[2]?String(m[2]).padStart(2,'0')+'m':''); }
 function closeFl(){ $('fl-modal').classList.remove('show'); }
-function openFlight(num,fdate){
-  const leg=legByKey[num+'|'+fdate]||null;   // already-loaded leg carries the ADS-B actual
+function openFlight(num,fdate,seg){
+  const leg=legByKey[num+'|'+fdate+'|'+(seg||1)]||null;   // already-loaded leg carries the ADS-B actual
   const b=$('fl-modal-body'); b.innerHTML='<div class="empty">Loading\\u2026</div>'; $('fl-modal').classList.add('show');
   fetch('/api/schedule/flight/LH/'+num+'/'+fdate).then(r=>r.json()).then(d=>renderFlight(d,leg))
     .catch(()=>{ b.innerHTML='<button class="close" onclick="closeFl()">\\u00d7</button><div class="empty">Failed to load.</div>'; });
@@ -5035,7 +5135,7 @@ function renderFlight(d,leg){
   const b=$('fl-modal-body');
   let h='<button class="close" onclick="closeFl()">\\u00d7</button>';
   if(d.error){ b.innerHTML=h+'<div class="empty">'+d.error+'</div>'; return; }
-  h+='<h3>'+d.flight+(d.dep_iata?'  \\u00b7  '+d.dep_iata+'\\u2192'+d.arr_iata:'')+'</h3>';
+  h+='<h3>'+d.flight+(d.dep_iata?'  \\u00b7  '+[d.dep_iata].concat(d.via||[],[d.arr_iata]).join('\\u2192'):'')+'</h3>';
   h+='<div class="sub">'+[d.dep_name,d.arr_name].filter(Boolean).join(' \\u2192 ')+'  \\u00b7  '+fmtD(d.flight_date)+'</div>';
   if(d.reassigned){ h+='<div class="reassign-banner">\\u26a0 Reassigned \\u2014 originally <b>'+(d.original_reg||'?')+'</b>, now <b>'+(d.current_reg||'?')+'</b></div>'; }
   h+=confChip(d.hold, d.current_reg);
@@ -5050,9 +5150,15 @@ function renderFlight(d,leg){
       if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
       h+=row('Cabin',cb.join(' \\u00b7 '));
     }
-    h+=row('Departure',fmt(d.dep_sched)+(d.dep_term?' \\u00b7 T'+d.dep_term:'')+(d.dep_gate?' \\u00b7 Gate '+d.dep_gate:''));
-    h+=row('Arrival',fmt(d.arr_sched)+(d.arr_term?' \\u00b7 T'+d.arr_term:'')+(d.arr_gate?' \\u00b7 Gate '+d.arr_gate:''));
-    if(dur) h+=row('Flight time',dur);
+    if(d.legs&&d.legs.length>1){   // a flight of several legs: each with its own (local) times
+      d.legs.forEach((g,i)=>{ const gd=isoDur(g.duration);
+        h+=row('Leg '+(i+1)+' '+g.dep+'\\u2192'+g.arr, fmt(g.dep_sched)+' \\u2192 '+fmt(g.arr_sched)
+          +(gd?' \\u00b7 '+gd:'')+(g.dep_gate?' \\u00b7 Gate '+g.dep_gate:'')); });
+    } else {
+      h+=row('Departure',fmt(d.dep_sched)+(d.dep_term?' \\u00b7 T'+d.dep_term:'')+(d.dep_gate?' \\u00b7 Gate '+d.dep_gate:''));
+      h+=row('Arrival',fmt(d.arr_sched)+(d.arr_term?' \\u00b7 T'+d.arr_term:'')+(d.arr_gate?' \\u00b7 Gate '+d.arr_gate:''));
+      if(dur) h+=row('Flight time',dur);
+    }
     if(d.status) h+=row('Status',d.status);
     if(d.codeshares&&d.codeshares.length) h+=row('Codeshare',d.codeshares.join(', '));
     if(d.prev) h+=row('Previous leg',d.prev+(d.prev_date?' ('+fmtD(d.prev_date)+')':''));
@@ -5074,7 +5180,7 @@ function renderFlight(d,leg){
   b.innerHTML=h;
 }
 $('gantt').addEventListener('click', e=>{ const f=e.target.closest('.gantt-flight'); if(!f) return;
-  if(f.dataset.num) openFlight(f.dataset.num, f.dataset.fdate);
+  if(f.dataset.num) openFlight(f.dataset.num, f.dataset.fdate, f.dataset.seg);
   else if(f.dataset.dep) openActual(f.dataset); });
 $('fl-modal').addEventListener('click', e=>{ if(e.target.id==='fl-modal') closeFl(); });
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeFl(); });
@@ -5399,7 +5505,7 @@ function drawResults(){
     const reassigned = f.reassigned ? ' &middot; <span style="color:var(--amber)">&#9888; reassigned before</span>' : '';
     h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'">'
       + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+lead+'</div>'
-      + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+'</div>'
+      + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+viaTxt(f.via)+'</div>'
       + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
       + '<div class="tail">'+(WATCH.has(f.reg)?'<span class="star">&#9733;</span>':'')+tlink(f.reg)
       + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span>'
@@ -5460,7 +5566,7 @@ function drawPlan(){
   fs.slice(0, 150).forEach(f => {
     h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'" data-src="'+f.source+'">'
       + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+leadTxt(f.flight_date)+'</div>'
-      + '<div class="route"><div class="pair">'+esc(f.dep)+' &rarr; '+esc(f.arr)+'</div>'
+      + '<div class="route"><div class="pair">'+esc(f.dep)+' &rarr; '+esc(f.arr)+viaTxt(f.via)+'</div>'
       + '<div class="sub">'+esc(f.flight)+' &middot; dep '+fmtClock(f.dep_sched)+' &middot; <span class="src src-'+f.source+'">'+srcLabel(f.source)+'</span></div>'
       + '<div class="why">'+esc(f.why)+'</div>'
       + ((t.cabin && t.cabin.F && f.cabin && !f.cabin.F)
@@ -5548,7 +5654,7 @@ function renderFlight(d){
   const b = $('fl-modal-body');
   let h = '<button class="close" onclick="closeFl()">&times;</button>';
   if(d.error){ b.innerHTML = h+'<div class="empty">'+d.error+'</div>'; return; }
-  h += '<h3>'+d.flight+(d.dep_iata?'  &middot;  '+d.dep_iata+'&rarr;'+d.arr_iata:'')+'</h3>';
+  h += '<h3>'+d.flight+(d.dep_iata?'  &middot;  '+[d.dep_iata].concat(d.via||[],[d.arr_iata]).map(esc).join('&rarr;'):'')+'</h3>';
   h += '<div class="sub">'+[d.dep_name,d.arr_name].filter(Boolean).join(' &rarr; ')+'  &middot;  '+fmtD(d.flight_date)+'</div>';
   if(d.reassigned){ h += '<div class="reassign-banner">&#9888; Reassigned &mdash; originally <b>'+(d.original_reg||'?')+'</b>, now <b>'+(d.current_reg||'?')+'</b></div>'; }
   h += confChip(d.hold, d.current_reg);
@@ -5563,9 +5669,15 @@ function renderFlight(d){
       const tot = (d.cabin.F||0)+(d.cabin.C||0)+(d.cabin.E||0)+(d.cabin.M||0);
       h += row('Cabin',cb.join(' &middot; ')+' &middot; '+tot+' seats');
     }
-    h += row('Departure',fmt(d.dep_sched)+(d.dep_term?' &middot; T'+d.dep_term:'')+(d.dep_gate?' &middot; Gate '+d.dep_gate:''));
-    h += row('Arrival',fmt(d.arr_sched)+(d.arr_term?' &middot; T'+d.arr_term:'')+(d.arr_gate?' &middot; Gate '+d.arr_gate:''));
-    if(dur) h += row('Flight time',dur);
+    if(d.legs && d.legs.length > 1){   // a flight of several legs: each with its own (local) times
+      d.legs.forEach((g,i) => { const gd = isoDur(g.duration);
+        h += row('Leg '+(i+1)+' '+esc(g.dep)+'&rarr;'+esc(g.arr), fmt(g.dep_sched)+' &rarr; '+fmt(g.arr_sched)
+          +(gd?' &middot; '+gd:'')+(g.dep_gate?' &middot; Gate '+esc(g.dep_gate):'')); });
+    } else {
+      h += row('Departure',fmt(d.dep_sched)+(d.dep_term?' &middot; T'+d.dep_term:'')+(d.dep_gate?' &middot; Gate '+d.dep_gate:''));
+      h += row('Arrival',fmt(d.arr_sched)+(d.arr_term?' &middot; T'+d.arr_term:'')+(d.arr_gate?' &middot; Gate '+d.arr_gate:''));
+      if(dur) h += row('Flight time',dur);
+    }
     if(d.status) h += row('Status',d.status);
     if(d.codeshares&&d.codeshares.length) h += row('Codeshare',d.codeshares.join(', '));
     if(d.prev) h += row('Previous leg',d.prev+(d.prev_date?' ('+fmtD(d.prev_date)+')':''));
@@ -5610,6 +5722,8 @@ const MAP = { on:false, svg:null, marks:[], byCode:{}, sel:null, pending:null,
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+// stops of a flight of several legs (LH568 FRA -> SSG via LOS)
+function viaTxt(v){ return (v && v.length) ? ' via '+v.map(esc).join(', ') : ''; }
 function svgEl(tag, attrs){
   const e = document.createElementNS(SVGNS, tag);
   for(const k in attrs) e.setAttribute(k, attrs[k]);
@@ -6172,6 +6286,7 @@ _AIRFRAME_HTML = """\
 const $ = id => document.getElementById(id);
 const REG = decodeURIComponent(location.pathname.split('/').pop() || '').toUpperCase();
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+function viaTxt(v){ return (v && v.length) ? ' via '+v.map(esc).join(', ') : ''; }
 function tcls(t){ return ({'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'})[t] || 'tother'; }
 function fmtDay(iso){ if(!iso) return ''; return new Date(iso.length===10 ? iso+'T00:00:00Z' : iso).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}); }
 function fmtClock(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
@@ -6233,7 +6348,7 @@ function upcomingBlock(d){
   if(!u.length) return '<div class="empty">Not published on any flight in the next days.</div>';
   let h = '<table><tr><th>Date</th><th>Flight</th><th>Route</th><th class="r">Dep</th><th class="r">Holds</th></tr>';
   u.forEach(l => {
-    h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+'</td>'
+    h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+viaTxt(l.via)+'</td>'
       + '<td class="r">'+fmtClock(l.dep_sched)+'</td>'
       + '<td class="r pct" title="'+(l.hold ? 'how often a tail published '+l.hold.band+'h out still flies it ('+l.hold.basis+', n='+l.hold.n+')' : '')+'">'+(l.hold ? Math.round(l.hold.p*100)+'%' : '&mdash;')+'</td></tr>';
   });
@@ -6270,7 +6385,7 @@ function recentBlock(d){
   const r = d.recent || [];
   if(!r.length) return '<div class="empty">No operated legs in the last weeks.</div>';
   let h = '<table><tr><th>Date</th><th>Flight</th><th>Route</th></tr>';
-  r.forEach(l => { h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+'</td></tr>'; });
+  r.forEach(l => { h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+viaTxt(l.via)+'</td></tr>'; });
   return h + '</table>';
 }
 function loadPhoto(){
