@@ -15,18 +15,20 @@ TZ=Europe/Berlin
 #      and now fund high-cadence tracking closer in.
 #
 # So coverage is split into a DEEP tier (B748 + A388, ~33 numbers) tracked every
-# ~2.6h at D+1/D+2, and a BROAD tier (787/A350) that keeps the whole near window
-# but gets a single far look at D+3.
+# ~2.6h at D+1/D+2, a WIDE tier (787/A350, ~78 numbers) that gets the deep
+# tier's cheap extras (D+2 on sweep-lite, D+3 on sweep-full, D+4 on the far
+# pass; since 2026-10-06) but no pulses and no D+5..D+9 probe, and a BROAD rest
+# (chained short-haul legs, strays) with the near window and one far look at D+3.
 #
 #   00:10 pulse        deep tier x D+1/D+2                            ~66
 #   02:00 pulse                                                       ~66
 #   02:45 watch 4h     red-eyes (the 03:45/05:00 departures)           ~5
-#   03:30 far pass     broad D+3; deep D+1..D+4 — the deep near       ~221
-#                      slices ride along because nothing else runs
-#                      03:00-05:00 and the pulse cadence would gap there
-#   05:45 sweep-lite   truth D-1/D-2 + forecast D0/D1                 ~400
-#                      (FIS_LOOKAHEAD_DAYS=1), + deep D+2 — overnight
-#                      re-plans, done before the first bank departs
+#   03:30 far pass     D+3 all; deep + wide D+4; deep D+1/D+2 — the   ~303
+#                      deep near slices ride along because nothing else
+#                      runs 03:00-05:00 and the pulse cadence would gap
+#   05:45 sweep-lite   truth D-1/D-2 + forecast D0/D1                 ~480
+#                      (FIS_LOOKAHEAD_DAYS=1), + deep/wide D+2 —
+#                      overnight re-plans, done before the first bank
 #   09:00 pulse                                                       ~66
 #   10:30 watch 4.5h   midday bank        (deps ~11:00-15:00)         ~32
 #   11:35 pulse                                                       ~66
@@ -34,13 +36,19 @@ TZ=Europe/Berlin
 #   14:10 pulse                                                       ~66
 #   15:30 watch 4.5h   late-afternoon bank(deps ~16:00-20:00)         ~47
 #   16:45 pulse                                                       ~66
-#   18:15 sweep-full   truth + D0..D2, + deep D+3 (closes the 39h     ~467
-#                      far->sweep seam) — D0 is queried first
+#   18:15 sweep-full   truth + D0..D2, + deep/wide D+3 (closes the    ~620
+#                      39h far->sweep seam) — D0 is queried first
 #                      (priority sort), so the evening bank departs on
 #                      fresh data; also sets tomorrow's plan
 #   21:15 watch 4.5h   evening bank + just-after-midnight departures  ~30
 #   22:00 pulse + horizon probe: deep x D+1/D+2, then D+5..D+9       ~231
-#                                                          total    ~1865/day
+#                                                          total    ~2100/day
+#
+# The wide tier's extras (+~234/day) were chosen by thinning the deep tier's own
+# history to the broad schedule and scoring the booking model on the same legs:
+# sweep D+2/D+3 + far D+4 recover ~80% of what the full deep schedule buys
+# 24-96h out; the pulses (~14 lookups per number a day) only the last ~20%
+# (docs/flightstatus_schedule.md, 2026-10-06).
 #
 # Combined with the three sweeps, a deep-tier leg gets 10 looks/day at D+1/D+2
 # with a maximum gap of ~2.8h — tight enough to date a reassignment to a few

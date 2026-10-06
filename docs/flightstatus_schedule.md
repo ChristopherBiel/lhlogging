@@ -68,8 +68,9 @@ Split the catalog by fleet type and spend the far-lead budget on cadence:
 
 | tier | types | numbers | coverage |
 |---|---|---|---|
-| **deep** | B748, A388 | ~33 | D-2…D+2 sweeps, D+3/D+4 far, **7 pulse passes/day at D+1/D+2** |
-| **broad** | A359, B789 (+ strays) | ~89 | D-2…D+2 sweeps, single far look at D+3 |
+| **deep** | B748, A388 | ~33 | D-2…D+2 sweeps (+1 day), D+1…D+4 far, **7 pulse passes/day at D+1/D+2**, D+5…D+9 probe |
+| **wide** (since 2026-10-06) | B789, A359 (787/A350) | ~78 | D-2…D+2 sweeps (+1 day), D+3/D+4 far |
+| **broad** | everything else (chained short-haul legs, strays) | — | D-2…D+2 sweeps, single far look at D+3 |
 
 Tiering is resolved from the *observed* tail — the modal fleet type of each
 flight number over the last `FIS_DEEP_TIER_DAYS` (6) days, joined through
@@ -118,6 +119,41 @@ a-time flock are all unchanged. A pulse is smaller than several existing watch
 passes, so the burst shape the block risk actually depends on is no different —
 there are simply more of them.
 
+## Wide tier: the deep tier's cheap extras for the 787/A350 (2026-10-06)
+
+Upgrading the 787/A350 to the deep schedule would roughly double the request
+volume (+~1,660 lookups/day: each deep number costs ~28 lookups a day, a broad
+one ~6.7). To see which parts of the deep schedule earn their cost, the deep
+tier's own history was thinned to the broad schedule — pulses, the far pass's
+D+1/D+2/D+4, the sweeps' extra day and the probe removed — and the booking
+model (`tools/benchmark_fleet.py --all-legs`, identical legs) scored on each
+variant. Served log-loss, mean over 24/48/72/96h (lower is better):
+
+| variant | B748 | A388 | lookups/number/day over broad |
+|---|---|---|---|
+| full deep schedule | 2.009 | 1.405 | ~21 |
+| extras, no pulses (far D+1…D+4, sweeps +1 day, probe) | 2.021 | 1.427 | ~10 |
+| **lean: sweeps +1 day, far D+4** | 2.029 | 1.431 | **~3** |
+| pulses only | 2.064 | 1.462 | ~14 |
+| broad schedule | 2.130 | 1.523 | 0 |
+
+The lean extras recover ~80% of the deep schedule's 24–96h advantage (96h top-1
+B748 27% vs 14%, A388 44% vs 32%); the pulses buy the last ~20%, mostly inside
+24h; the far pass's D+1/D+2 add almost nothing on top of the morning sweep
+2.5h later. The 787/A350 should gain at least as much: at equal lead a fresh
+snapshot holds markedly more often (A359 48h: 66% if ≤3h old vs 52% if 12h+;
+its median snapshot age at 48h was ~25h), and in July, when the broad tier
+still looked at D+4/D+5, the published tail held 54% (A359) / 50% (B789) 120h
+out — A380-like.
+
+So the wide tier gets the lean extras: **+~234 lookups/day (~+13%)**, the far
+pass ~303, sweep-lite ~480, sweep-full ~620 (`FIS_MAX_LOOKUPS` raised to 800 to
+keep the headroom). Not taken: the wide-tier pulses (+~1,090/day for the last
+~20%) and a D+5..D+9 probe for it (+~390/day) — the latter only pays off once
+the booking pages show tails past D+4 (`BOOK_HORIZON_DAYS`). Blocking comes in
+waves (4–8% of lookups late Aug/early Sep and 09-28..10-02) that did not track
+volume at ~1.6–2k/day; what a doubled volume would do is unmeasured.
+
 ## Regime boundaries
 
 Any analysis of this data must filter on `flight_date`, because the cadence has
@@ -129,6 +165,8 @@ changed four times and staleness statistics are meaningless across the seams:
 | 2026-07-17…19 | **sweeps crashing** (zero-padded chained flight numbers, fixed in e9ec83e) — watch passes only |
 | 2026-07-21 | far pass split out (50df930); first stable 8-slot regime |
 | 2026-07-26 | this schedule: tiering + pulses |
+| 2026-09-24 | 22:00 pulse also probes the deep tier at D+5..D+9 |
+| 2026-10-06 | wide tier (787/A350): sweeps +1 day, far D+4 |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.

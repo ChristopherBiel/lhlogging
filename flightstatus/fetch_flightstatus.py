@@ -19,8 +19,10 @@ issue same-origin `fetch()`es from inside the page.
 
 Coverage is tiered by fleet type. The *deep* tier (B748 + A388) is tracked at
 high cadence in the D+1/D+2 window so we can date a reassignment to a few hours
-rather than a day; the *broad* tier (787/A350) keeps the full near window but
-only one far look. Measured 2026-07-26: reassignment hazard barely varies with
+rather than a day; the *wide* tier (787/A350) gets the deep tier's extra sweep
+day and far D+4, but no pulses and no D+5..D+9 probe; everything else (the
+*broad* tier: chained short-haul legs, strays) keeps the near window and one
+far look. Measured 2026-07-26: reassignment hazard barely varies with
 lead time (~1-1.7 changes per 100 leg-hours from D0 out to D+5), so what limits
 us is not how far ahead we look but how often — with two looks a day, changes
 land in ~23h-wide brackets and the time of day they happen is unrecoverable.
@@ -91,6 +93,9 @@ FAR_MIN_DAYS = int(os.environ.get("FIS_FAR_MIN_DAYS", "3"))
 # is the tail that ends up flying 0-5% of the time, so those lookups bought
 # almost no label value and now fund the deep-tier pulses instead.
 FAR_MAX_DAYS = int(os.environ.get("FIS_FAR_MAX_DAYS", "3"))
+# Deep and wide tiers reach D+4: for the booking model a published tail at D+4
+# is worth far more than a label (A350 holds ~57% at 96h vs an ~11% history
+# guess), see WIDE_TYPES.
 FAR_DEEP_MAX_DAYS = int(os.environ.get("FIS_FAR_DEEP_MAX_DAYS", "4"))
 
 # --- tiering ----------------------------------------------------------------
@@ -110,6 +115,17 @@ PULSE_OFFSETS = [int(d) for d in os.environ.get(
 DEEP_LOOKAHEAD_BONUS = int(os.environ.get("FIS_DEEP_LOOKAHEAD_BONUS", "1"))
 # How far back to look when deciding which numbers are deep-tier.
 DEEP_TIER_DAYS = int(os.environ.get("FIS_DEEP_TIER_DAYS", "6"))
+# Wide tier (2026-10-06): the other widebodies get the deep tier's cheap extras
+# -- the extra lookahead day on both sweeps (D+2 on lite, D+3 on full) and D+4
+# on the far pass -- but not its pulses or the D+5..D+9 probe. Measured by
+# thinning the deep tier's own history to the broad schedule and scoring the
+# booking model on the same legs: those extras (~3 lookups per number a day)
+# recover ~80% of what the full deep schedule (~21 more) buys 24-96h out; the
+# pulses add the last ~20% at ~14 lookups per number a day, and the far pass's
+# D+1/D+2 almost nothing on top of the morning sweep 2.5h later. Same modal-
+# observed-type resolution as the deep tier; a number in neither is broad.
+WIDE_TYPES = [t.strip() for t in os.environ.get(
+    "FIS_WIDE_TYPES", "B789,B788,B78X,A359,A35K").split(",") if t.strip()]
 # Truth pass: also query the last N days so FIS returns the *actually-operated*
 # tail (overallStatus ARRIVED) as ground truth for calibration. FIS only keeps a
 # rolling few-days window of past flights, so the twice-daily job must catch them
@@ -142,11 +158,11 @@ BLOCKED_STATUS = "blocked"  # batch_runs.status for a run the breaker stopped
 # follow that chain a couple of hops to fill the gaps. Capped to stay gentle.
 CHAIN_HOPS = int(os.environ.get("FIS_CHAIN_HOPS", "2"))
 # Catalog sweep (120+ numbers) x (BACKFILL_DAYS + 1 + LOOKAHEAD_DAYS) date
-# slices ≈ 600 steady-state for the near sweep now that D+3..FAR_MAX_DAYS is
-# split off into its own unhurried --far pass (see below) — comfortably under
-# this cap again. Work is priority-ordered by lead time, so if this cap does
-# still bite it drops the least-valuable far-future lookups first.
-MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "700"))
+# slices, plus chained legs: ~540 for sweep-full until 2026-10-06, ~620 since
+# the wide tier gets its extra lookahead day (raised from 700 to keep the same
+# headroom). Work is priority-ordered by lead time, so if this cap does still
+# bite it drops the least-valuable far-future lookups first.
+MAX_LOOKUPS = int(os.environ.get("FIS_MAX_LOOKUPS", "800"))
 # Distil caps successful lookups per browser session (~100-115). Recycle the
 # browser context (fresh cf_clearance) every N lookups to stay under it — needed
 # once chain expansion pushes a run past ~120 lookups.
@@ -363,7 +379,17 @@ def catalog_candidates(conn: psycopg.Connection) -> list[dict]:
 
 
 def deep_numbers(conn: psycopg.Connection) -> dict:
-    """Flight numbers whose recent FIS history is dominated by a deep-tier type.
+    """Flight numbers of the deep tier (see tier_numbers)."""
+    return tier_numbers(conn, DEEP_TYPES, "deep")
+
+
+def wide_numbers(conn: psycopg.Connection) -> dict:
+    """Flight numbers of the wide tier (787/A350, see WIDE_TYPES)."""
+    return tier_numbers(conn, WIDE_TYPES, "wide")
+
+
+def tier_numbers(conn: psycopg.Connection, types: list, label: str) -> dict:
+    """Flight numbers whose recent FIS history is dominated by one of `types`.
 
     Keyed off the tail actually observed (registration -> `aircraft`), not
     `fis_flight_catalog.seed_type`: that column records why a number was first
@@ -393,12 +419,12 @@ def deep_numbers(conn: psycopg.Connection) -> dict:
                 SELECT flight_number, fleet_type FROM modal
                 WHERE rn = 1 AND fleet_type = ANY(%(types)s)
                 """,
-                {"days": DEEP_TIER_DAYS, "types": DEEP_TYPES},
+                {"days": DEEP_TIER_DAYS, "types": types},
             )
             return {r[0]: r[1] for r in cur.fetchall()}
     except Exception as e:  # noqa: BLE001 - tiering is an optimisation, never fatal
         conn.rollback()
-        log(f"deep-tier query failed, treating every number as broad tier: {e}")
+        log(f"{label}-tier query failed, treating those numbers as broad tier: {e}")
         return {}
 
 
@@ -1127,24 +1153,27 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
         return 0
 
     today = date.today()
-    # Target dates are per-tier: the deep tier gets an extra lookahead day on the
-    # near sweeps and, on the far pass, the pulse offsets too (nothing else runs
-    # between 03:00 and 05:00, so the pulse cadence would otherwise have a hole).
+    # Target dates are per-tier: the deep and wide tiers get an extra lookahead
+    # day on the near sweeps and D+4 on the far pass; the deep tier's far pass
+    # also carries the pulse offsets (nothing else runs between 03:00 and 05:00,
+    # so the pulse cadence would otherwise have a hole).
     deep = deep_numbers(conn)
+    wide = {n: t for n, t in wide_numbers(conn).items() if n not in deep}
     if far:
         # No backfill/truth (only future dates) and no D0 (the near sweeps and
         # watches already keep today fresh).
         past: list[date] = []
         broad_future = [today + timedelta(days=d)
                         for d in range(FAR_MIN_DAYS, FAR_MAX_DAYS + 1)]
-        deep_future = [today + timedelta(days=d)
+        wide_future = [today + timedelta(days=d)
                        for d in range(FAR_MIN_DAYS, FAR_DEEP_MAX_DAYS + 1)]
-        deep_future += [today + timedelta(days=d) for d in PULSE_OFFSETS]
+        deep_future = wide_future + [today + timedelta(days=d) for d in PULSE_OFFSETS]
         base: list[date] = []
     else:
         broad_future = [today + timedelta(days=d) for d in range(1, LOOKAHEAD_DAYS + 1)]
         deep_future = [today + timedelta(days=d)
                        for d in range(1, LOOKAHEAD_DAYS + DEEP_LOOKAHEAD_BONUS + 1)]
+        wide_future = deep_future
         past = [today - timedelta(days=d) for d in range(1, BACKFILL_DAYS + 1)]  # truth pass
         # Sweep D0 (today) too: same-day tail swaps only show up on today's slice, so
         # skipping it lets an already-captured assignment go stale. It's a forecast
@@ -1153,11 +1182,13 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
         base = [today, *past]
 
     def targets_for(number: str) -> list:
-        return sorted(set(base) | set(deep_future if number in deep else broad_future))
+        future = (deep_future if number in deep else
+                  wide_future if number in wide else broad_future)
+        return sorted(set(base) | set(future))
 
     # Chained legs may reference any day in the swept window; the union spans D0,
     # so it already bounds chain reachability.
-    targets = sorted(set(base) | set(broad_future) | set(deep_future))
+    targets = sorted(set(base) | set(broad_future) | set(wide_future) | set(deep_future))
     window_dates = set(targets)
 
     # Truth pass: skip past (number, date) pairs already settled — their tail
@@ -1168,12 +1199,14 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
     # Far mode never chains — discovery is the near sweeps' job (see above).
     chain_hops = 0 if far else CHAIN_HOPS
     n_deep = sum(1 for s in candidates if s["flight_number"] in deep)
+    n_wide = sum(1 for s in candidates if s["flight_number"] in wide)
     log(f"source={source_label}: {len(candidates)} flight numbers x dates "
         f"{targets[0]}..{targets[-1]} "
         f"(backfill={BACKFILL_DAYS if not far else 0}, "
         f"lookahead={LOOKAHEAD_DAYS if not far else f'{FAR_MIN_DAYS}-{FAR_MAX_DAYS}'}, "
         f"chain_hops={chain_hops}, "
-        f"deep={n_deep}/{len(candidates)} to {max(deep_future) if deep_future else '-'})")
+        f"deep={n_deep}/{len(candidates)} to {max(deep_future) if deep_future else '-'}, "
+        f"wide={n_wide}/{len(candidates)} to {max(wide_future) if wide_future else '-'})")
     log("flight numbers: " + ", ".join(f"LH{s['flight_number']}({s['seed_type']})" for s in candidates))
 
     # Work queue of (flight_number, date, seed_type, hop), deduped by (num, date).
@@ -1203,7 +1236,8 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
         for w in work:
             by_offset[(w[1] - today).days] += 1
         log(f"dry-run: {len(work)} planned lookups ({n_truth} truth / {len(work) - n_truth} forecast, "
-            f"{sum(1 for w in work if w[0] in deep)} deep-tier); "
+            f"{sum(1 for w in work if w[0] in deep)} deep-tier, "
+            f"{sum(1 for w in work if w[0] in wide)} wide-tier); "
             f"{skipped_truth} past pairs skipped as already-settled")
         log("dry-run: by lead offset: "
             + ", ".join(f"D{o:+d}={by_offset[o]}" for o in sorted(by_offset)))
