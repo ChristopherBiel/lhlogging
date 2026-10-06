@@ -50,6 +50,8 @@ A leg is a dict with:
     flight_date, flight_number, dep, arr, fleet_type, dep_utc (aware datetime)
     duration_min        block time (None when FIS gave none)
     truth_tail          '' until the flight has operated
+    truth_seen          when the truth was first seen (optional; the dashboard
+                        only has truths it has seen)
     timeline            [[lead_h, tail], ...] one entry per published change
     first_lead_h        lead of our first pre-departure look (None if none)
     cancelled           bool
@@ -155,14 +157,17 @@ def leg_key(leg):
 
 
 def tail_as_of(leg, now):
-    """The tail the plan had on `leg` at `now`: the truth once it has landed
-    with the truth pass, else the last publication taken before `now` (before
+    """The tail the plan had on `leg` at `now`: the truth once it was seen
+    (`truth_seen`, the first terminal look; without one, TRUTH_LAG after
+    departure), else the last publication taken before `now` (before
     departure, for a flight that has left)."""
     dep = leg.get("dep_utc")
     if dep is None or leg.get("cancelled"):
         return None
-    if leg.get("truth_tail") and dep <= now - TRUTH_LAG:
-        return leg["truth_tail"]
+    if leg.get("truth_tail") and dep <= now:
+        seen = leg.get("truth_seen")
+        if (seen <= now) if seen is not None else (dep <= now - TRUTH_LAG):
+            return leg["truth_tail"]
     lead = (dep - now).total_seconds() / 3600.0
     return tail_at(leg.get("timeline") or [], leg.get("first_lead_h"), max(lead, 0.0))
 

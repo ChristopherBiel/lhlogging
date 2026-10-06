@@ -2698,6 +2698,8 @@ def _leg_from_row(r):
             "dep": dep, "arr": arr, "dep_local": dep_l, "arr_local": arr_l,
             "duration_min": duration, "seat_config": seat, "allegris": alleg,
             "dep_utc": dep_utc, "fleet_type": ftype or "", "truth_tail": truth or "",
+            # a truth in fis_legs has been seen, at the latest by the newest look
+            "truth_seen": lobs if truth else None,
             "cancelled": bool(cancelled), "latest_tail": latest or "",
             "latest_status": lstatus or "", "latest_observed_at": lobs,
             "first_lead_h": first_lead, "timeline": timeline or []}

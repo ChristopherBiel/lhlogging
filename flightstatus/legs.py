@@ -183,6 +183,10 @@ def build_leg(key, obs):
         "seed_type": modal([r["seed_type"] for r in found]),
         "truth_tail": truth["registration"] if truth else "",
         "truth_status": (truth["overall_status"] or "").upper() if truth else "",
+        # when the truth was first seen (the first terminal look): the offline
+        # replays may only use it from then on (not stored in fis_legs, where a
+        # truth is by definition already seen)
+        "truth_observed_at": terminal[0]["observed_at"].isoformat() if truth else "",
         "cancelled": int(cancelled),
         "n_obs": len(found),
         "n_obs_pre_dep": len(pre),

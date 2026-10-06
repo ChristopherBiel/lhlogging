@@ -70,6 +70,8 @@ def load(path):
                 "fleet_type": r["fleet_type"],
                 "dep_utc": datetime.fromisoformat(r["dep_scheduled_utc"]),
                 "duration_min": int(r["duration_min"]) if r.get("duration_min") else None,
+                "truth_seen": (datetime.fromisoformat(r["truth_observed_at"])
+                               if r.get("truth_observed_at") else None),
                 "truth_tail": r["truth_tail"],
                 "timeline": json.loads(r["timeline"] or "[]"),
                 "first_lead_h": float(r["first_lead_h"]) if r["first_lead_h"] else None,
