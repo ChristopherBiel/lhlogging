@@ -2,8 +2,9 @@
 
 What the `/book` planner's percentages are, what they rest on, and how well
 they score. Code: `dashboard/booking_model.py` (shared with the benchmark),
+`dashboard/fleet_sim.py` (the fleet simulation on top of it),
 `flightstatus/legs.py` (the leg layer it reads), `tools/benchmark_booking.py`
-(walk-forward scoring). Measured 2026-09-24 over 4,579 settled widebody legs
+and `tools/benchmark_fleet.py` (walk-forward scoring). Measured 2026-09-24 over 4,579 settled widebody legs
 departing 2026-08-11..09-24, each scored using only what was known before it.
 
 ## The question
@@ -92,6 +93,68 @@ Walk-forward vs the previous model (departures 08-10..10-05): A380 168–192h
 except the 747-8 at 192–216h (+0.05, n=62, a cold-start artefact: until the
 747-8's own far cell fills it borrows the cross-type rate). Clash
 publications: predicted 31–45%, observed 25–42%.
+
+## Fleet simulation (2026-10-06)
+
+`p_target` judges each flight on its own, so it could give a tail swap odds on
+a flight while that tail was flying to Tokyo, or high odds on two flights that
+leave at once. The fleet's physics are close to absolute (`tools/fleet_state_report.py`):
+a tail's next leg leaves from where its last one landed (99.5–99.9% for the
+747-8, A380 and A350), 99% of hub departures are out-and-back trips, and the
+tail that flew was on the ground at the hub at departure 99.2–99.6% of the time,
+when only ~7 of 18 747-8s (4 of 8 A380s, 7 of 31 A350s) were.
+
+`dashboard/fleet_sim.py` plays each fleet's next 6 days forward, 400 times,
+flight by flight: a flight goes to a tail on the ground at its airport in time;
+the tail is then away until it lands at the other end (so a return goes to
+whoever flew out). The published tail keeps the flight with `p_target`'s hold
+rate, corrected for how often the simulation still has it there; otherwise a
+tail on the ground is drawn by its history share, with a bonus when it came in
+on the flight's usual inbound connection (the inbound predicts the next
+outbound 24% / 54% / 38% for 747-8 / A380 / A350). It runs with every model
+build (~1 s for all fleets) in the warmer.
+
+**The served number** is half the simulation, half `p_target` — with the
+`p_target` odds of tails that cannot reach the airport in time by *any* path
+through the schedule cut to a tenth (`blend_hard`). The simulation alone is too
+sure of itself: the tail that flew was often one it had elsewhere (a stale
+look, a chain of swaps), so `p_target` stays as a safety net. Cutting that net
+by the simulation's sampled positions scored worse; cutting it by the hard
+rule scored best (the tail that flew was "unreachable" for 0–1.2% of legs,
+nearly all inside 12h: swaps after our last look).
+
+Walk-forward (`tools/benchmark_fleet.py`, departures 08-10..10-05, snapshots
+every 6h, both models on identical information), log-loss 24–96h:
+
+| fleet | p_target | served | best band gains |
+|---|---|---|---|
+| 747-8 | 2.001 | **1.934** | 48h 1.965→1.889, 24h 1.192→1.096 |
+| A380 | 1.367 | **1.327** | 12h 0.691→0.578 |
+| A350 | 1.773 | **1.584** | 48h 1.980→1.741 (top-1 53→55%) |
+| 787 | 1.470 | 1.415 | — not enabled: the simulation alone 1.853 |
+
+Better at every band with ≥100 legs on the three enabled fleets; beyond 6 days
+(and before publication) the served number is `p_target`'s. Calibration
+matches `p_target`'s (747-8 within ~3 points; the A380/A350 keep the same
+over-confidence at the top that the hold rates already had, e.g. A350 94%
+predicted → 90% observed). Two flights a tail cannot both fly: the share of
+overlapping pairs where some tail gets >105% between them fell (747-8 15→11,
+A380 14→8, A350 16→7); the share just above 100% did not (the safety net
+renormalised onto the reachable tails) — the simulation's own share is coherent
+(6–21 of 7k–117k pairs, from data gaps).
+
+Not enabled for the 787: multi-stop flights are stored by their first leg only
+(LH568/569 FRA–LOS–SSG: 110 of its 116 chain breaks) and the broad tier is
+looked up sparsely, so the tail that flew was unreachable 5–8% of the time.
+
+`truth_observed_at` (legs.py, first terminal look) lets the replays use a truth
+only once it was seen — 18–20h after departure (median), not the 2-day lag the
+model assumed before; the dashboard has only truths it has seen.
+
+```bash
+python3 tools/fleet_state_report.py            # the physics above
+python3 tools/benchmark_fleet.py --type B748   # --conn, --samples, --horizon-h
+```
 
 ## Horizon probe
 
