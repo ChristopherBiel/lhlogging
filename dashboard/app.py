@@ -2466,7 +2466,7 @@ def _allegris_tails(conn):
 # flight's own layout lives on its leg (fis_legs.seat_config, migration 012).
 _SEAT_RE = re.compile(r"([FCEM])(\d+)")
 _CABIN_TTL_S = 600
-_cabin_cache = {"ts": 0.0, "map": {}}
+_cabin_cache = {"ts": 0.0, "map": {}, "sub": {}}
 
 
 def _parse_seat_config(s):
@@ -2475,30 +2475,69 @@ def _parse_seat_config(s):
     return cabins or None
 
 
-def _cabin_configs(conn):
-    """Registration -> its physical cabin: the seatConfig it is most often
-    published with over the last 45 days (latest breaks ties, so a refit
-    takes over as it becomes the majority)."""
+def _refresh_cabins(conn):
+    """A tail's physical cabin and sub-fleet code: the (seatConfig,
+    aircraftSubType) pair it is most often published with over the last 45
+    days (latest breaks ties, so a refit takes over as it becomes the
+    majority). Taking the pair keeps the two consistent — a far-out plan can
+    briefly carry another type's equipment fields (D-ABTK, a 747-400, showed
+    74H/C88 for LH422 on 2026-09-21)."""
     nowts = datetime.now(timezone.utc).timestamp()
     if nowts - _cabin_cache["ts"] < _CABIN_TTL_S:
-        return _cabin_cache["map"]
+        return
     try:
         rows = _q(conn, """
-            SELECT DISTINCT ON (reg) reg, seat FROM (
+            SELECT DISTINCT ON (reg) reg, seat, sub FROM (
                 SELECT btrim(registration) AS reg, raw->'aircraftInfo'->>'seatConfig' AS seat,
+                       raw->'aircraftInfo'->>'aircraftSubType' AS sub,
                        count(*) AS n, max(observed_at) AS last
                 FROM flight_status_observations
                 WHERE found AND registration IS NOT NULL
                   AND raw->'aircraftInfo'->>'seatConfig' IS NOT NULL
                   AND observed_at >= NOW() - INTERVAL '45 days'
-                GROUP BY 1, 2
+                GROUP BY 1, 2, 3
             ) x
             ORDER BY reg, n DESC, last DESC
         """)
     except Exception:
-        return _cabin_cache["map"]  # stale beats a 500 mid-request
-    _cabin_cache.update(ts=nowts, map={r[0]: r[1] for r in rows})
+        return  # stale beats a 500 mid-request
+    _cabin_cache.update(ts=nowts, map={r[0]: r[1] for r in rows},
+                        sub={r[0]: r[2] for r in rows if r[2]})
+
+
+def _cabin_configs(conn):
+    """Registration -> its physical cabin (seatConfig string)."""
+    _refresh_cabins(conn)
     return _cabin_cache["map"]
+
+
+def _tail_subtypes(conn):
+    """Registration -> its physical sub-fleet code (FIS aircraftSubType)."""
+    _refresh_cabins(conn)
+    return _cabin_cache["sub"]
+
+
+# ── Seat maps (aeroLOPA, link only) ────────────────────────────────────
+# FIS's aircraftSubType names the cabin version, and aeroLOPA's Lufthansa
+# pages follow the same codes. Checked 2026-10-06 against their published seat
+# counts: 388 = 8F 78J 52W 371M ("2014 cabin"), 38A = 8F 68J 52W 371M ("2026
+# cabin"), 789 = Allegris 28J 28W 231M, 78S = 26J 21W 247M, 35S = 30J 26W 262M.
+# A code not listed (e.g. a new delivery) falls back to the airline index.
+_AEROLOPA = "https://www.aerolopa.com/"
+_AEROLOPA_SLUGS = {
+    "74H": "lh-74h-m", "74P": "lh-74p-m", "744": "lh-744-m",
+    "359": "lh-359", "35P": "lh-35p", "35S": "lh-35s",
+    "343": "lh-343", "346": "lh-346-1",
+    "388": "lh-388-m", "38A": "lh-388-2-m",
+    "789": "lh-789-2", "78S": "lh-789-1",
+}
+
+
+def _seat_map(sub_type):
+    """{code, url} of the aeroLOPA seat map for a sub-fleet code (index if unknown)."""
+    code = (sub_type or "").strip().upper()
+    return {"code": code or None, "url": _AEROLOPA + _AEROLOPA_SLUGS.get(code, "lh"),
+            "exact": code in _AEROLOPA_SLUGS}
 
 
 def _reassignment_stability(conn):
@@ -2969,6 +3008,7 @@ def api_schedule_flight(airline, number, fdate):
             mleg = _leg_from_row(found[0]) if found else None
         stab = _reassignment_stability(conn) if mleg is None else None
         alleg = _allegris_tails(conn)
+        subs = _tail_subtypes(conn)
     finally:
         conn.close()
 
@@ -3011,6 +3051,7 @@ def api_schedule_flight(airline, number, fdate):
         out.update({
             "current_reg": reg, "current_type": _CANON_SHORT.get(at, at) if at else None,
             "allegris": bool(ac.get("allegris")),  # this flight's payload, not the tail-set
+            "seat_map": _seat_map(subs.get((reg or "").strip())) if reg else None,
             "cabin": _parse_seat_config(ac.get("seatConfig")),
             "dep_iata": dep, "arr_iata": arr,
             "dep_name": depj.get("departureAirportName"), "arr_name": arrj.get("arrivalAirportName"),
@@ -3167,6 +3208,7 @@ def api_book_plan():
         own = _upcoming_legs(conn, reg=target, date_from=today, date_to=horizon, types=None)
         alleg = _allegris_tails(conn)
         cabins = _cabin_configs(conn)
+        subs = _tail_subtypes(conn)
     finally:
         conn.close()
 
@@ -3212,6 +3254,7 @@ def api_book_plan():
         "target": {
             "reg": target, "type": _CANON_SHORT.get(ttype, ttype), "type_code": ttype,
             "allegris": target in alleg, "cabin": _parse_seat_config(cabins.get(target)),
+            "seat_map": _seat_map(subs.get(target)),
             "last_flown": stats.last_flown[target].isoformat() if target in stats.last_flown else None,
             "idle_days": round(idle, 1) if idle is not None else None,
             "fit": stats.fit.get(ttype),
@@ -3316,6 +3359,7 @@ def api_airframe(reg):
         upcoming = _upcoming_legs(conn, reg=reg, types=None)
         seen = _adsb_last_seen(conn, ac[0][0].strip()) if ac else None
         cabins = _cabin_configs(conn)
+        subs = _tail_subtypes(conn)
         alleg = _allegris_tails(conn)
     finally:
         conn.close()
@@ -3350,7 +3394,9 @@ def api_airframe(reg):
     return jsonify({
         "reg": reg,
         "type": _CANON_SHORT.get(ftype, ftype), "type_code": ftype,
-        "fis_type": ai.get("aircraftType"), "sub_type": ai.get("aircraftSubType"),
+        "fis_type": ai.get("aircraftType"),
+        "sub_type": subs.get(reg) or ai.get("aircraftSubType"),
+        "seat_map": _seat_map(subs.get(reg) or ai.get("aircraftSubType")),
         "model": ac[0][2] if ac else None, "serial": ac[0][5] if ac else None,
         "icao24": ac[0][0].strip() if ac else None,
         "active": bool(ac[0][3]) if ac else None,
@@ -4957,6 +5003,8 @@ function renderFlight(d,leg){
     const dur=isoDur(d.duration);
     h+='<div class="det-grid">';
     h+=row('Aircraft',(d.current_reg||'?')+(d.current_type?' \\u00b7 '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
+    if(d.seat_map){ const sc=String(d.seat_map.code||'').replace(/[^A-Za-z0-9]/g,'');
+      h+=row('Seat map','<a href="'+d.seat_map.url+'" target="_blank" rel="noopener">'+(d.seat_map.exact?sc+' on aeroLOPA':'aeroLOPA (Lufthansa)')+' \\u2192</a>'); }
     if(d.cabin){
       const cb=[]; if(d.cabin.F)cb.push('<b>First '+d.cabin.F+'</b>'); if(d.cabin.C)cb.push('Business '+d.cabin.C);
       if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
@@ -5325,6 +5373,12 @@ function drawResults(){
 
 /* ── Plan mode: every candidate flight for one target tail, ranked by P ── */
 let PLAN = null, PSORT = 'p';
+// the aeroLOPA seat map for a tail's sub-fleet code (opens their site)
+function seatMapLink(sm){
+  if(!sm || !sm.url) return '';
+  return '<a class="tlink" href="'+esc(sm.url)+'" target="_blank" rel="noopener">'
+    + (sm.exact ? esc(sm.code)+' seat map' : 'seat maps')+' &rarr;</a>';
+}
 // a tail anywhere on the page opens its airframe profile (cabin, where it flies)
 function tlink(reg){ return reg ? '<a class="tlink" href="/airframe/'+encodeURIComponent(reg)+'">'+esc(reg)+'</a>' : '?'; }
 function pctText(p){ const v = p * 100; return v >= 10 ? Math.round(v)+'%' : (v >= 1 ? v.toFixed(1)+'%' : (v > 0 ? '&lt;1%' : '0%')); }
@@ -5341,7 +5395,8 @@ function drawPlan(){
   let h = '<div class="tsum"><div class="tsum-head"><span class="treg">'+tlink(t.reg)+'</span>'
     + '<span class="tbadge '+tcls(t.type)+'">'+esc(t.type)+'</span>'
     + (t.allegris ? '<span class="abadge">ALLEGRIS</span>' : '') + cabinBadges(t.cabin)
-    + (t.cabin ? '<span class="tcab">'+cabinText(t.cabin)+'</span>' : '') + '</div>';
+    + (t.cabin ? '<span class="tcab">'+cabinText(t.cabin)+'</span>' : '')
+    + (t.seat_map ? '<span class="tcab">'+seatMapLink(t.seat_map)+'</span>' : '') + '</div>';
   const idle = t.idle_days;
   h += '<div class="tsum-line">' + (idle == null ? 'No operated flight in the last weeks.'
     : (idle > 3 ? '&#9888; Has not flown for '+Math.floor(idle)+' days &mdash; possibly in maintenance.'
@@ -5461,6 +5516,7 @@ function renderFlight(d){
     const dur = isoDur(d.duration);
     h += '<div class="det-grid">';
     h += row('Aircraft',(d.current_reg ? tlink(d.current_reg) : '?')+(d.current_type?' &middot; '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
+    if(d.seat_map) h += row('Seat map', seatMapLink(d.seat_map));
     if(d.cabin){
       const cb=[]; if(d.cabin.F)cb.push('<b>First '+d.cabin.F+'</b>'); if(d.cabin.C)cb.push('Business '+d.cabin.C);
       if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
@@ -6104,6 +6160,8 @@ function cabinBlock(d){
   h += '<span class="k">Seatback IFE</span><span class="v">'+yn(a.ife)+'</span>';
   h += '<span class="k">USB power</span><span class="v">'+yn(a.usb_power)+'</span>';
   if(a.livery) h += '<span class="k">Livery</span><span class="v">'+esc(a.livery)+'</span>';
+  if(d.seat_map) h += '<span class="k">Seat map</span><span class="v"><a class="tail-link" href="'+esc(d.seat_map.url)+'" target="_blank" rel="noopener">'
+    + (d.seat_map.exact ? esc(d.seat_map.code)+' layout on aeroLOPA' : 'Lufthansa seat maps on aeroLOPA')+' &rarr;</a></span>';
   h += '</div>';
   if(d.first_not_sold && d.first_not_sold.length){
     h += '<div class="note"><b>First isn&rsquo;t sold on every flight.</b> First is a route product: on these routes the '+esc(d.type)+' fleet was published without a First cabin (last '+d.window_weeks+' weeks, legs without First / legs): '

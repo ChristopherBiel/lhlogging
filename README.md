@@ -342,8 +342,11 @@ assignment is to still hold by departure.
   which cabin variant of its fleet it is, the routes where the fleet's First is
   not on sale, its cabin history, whether it is in service (last operated
   leg + last ADS-B position), where it flies (share of each route's legs),
-  where it is published next with hold rates, and a click-to-load
-  planespotters.net photo (nothing is requested from them before the click).
+  where it is published next with hold rates, a link to the aeroLOPA seat map
+  of its cabin version (chosen by the FIS sub-fleet code, e.g. `38A` = the
+  2026 A380 cabin; also in the planner summary and the flight popup), and a
+  click-to-load planespotters.net photo (nothing is requested from them before
+  the click).
   Linked from every tail on `/book`, `/schedule`, `/insights` and `/fleet`.
 - **`/schedule`** — per-airframe upcoming timeline from the latest snapshot of
   each flight, grouped by tail.
