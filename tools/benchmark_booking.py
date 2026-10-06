@@ -92,6 +92,9 @@ def main():
                     help="use booking_model.DEFAULTS for every type instead of fitting per type")
     ap.add_argument("--hold-m", type=float, default=bm.HOLD_M)
     ap.add_argument("--swap-mix", type=float, default=bm.SWAP_MIX)
+    ap.add_argument("--all-legs", action="store_true",
+                    help="score every leg at every lead, those with nothing published yet in "
+                         "the history regime (compares collection schedules on the same legs)")
     ap.add_argument("--no-plan", action="store_true",
                     help="no plan index: no clash checks (the pre-clash model)")
     ap.add_argument("--quiet", action="store_true", help="scores only, no reliability tables")
@@ -131,7 +134,7 @@ def main():
             lead = PRE_LEAD_H if sc == "pre" else sc
             now = leg["dep_utc"] - timedelta(hours=lead)
             pub = None if sc == "pre" else bm.tail_at(leg["timeline"], leg["first_lead_h"], lead)
-            if sc != "pre" and pub is None:
+            if sc != "pre" and pub is None and not args.all_legs:
                 continue  # we had no look that early for this leg
             st = stats_for(now)
             fleet = set(st.fleet.get(leg["fleet_type"]) or ())

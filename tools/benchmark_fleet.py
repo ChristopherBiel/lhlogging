@@ -63,6 +63,9 @@ def main():
     ap.add_argument("--conn", type=float, default=fs.DEFAULTS["conn"])
     ap.add_argument("--horizon-h", type=float, default=fs.HORIZON.total_seconds() / 3600,
                     help="simulate this far ahead; beyond it the served number is the model's")
+    ap.add_argument("--all-legs", action="store_true",
+                    help="score every leg at every lead, those with nothing published yet "
+                         "too (compares collection schedules on the same legs)")
     ap.add_argument("--quiet", action="store_true", help="scores only, no reliability tables")
     args = ap.parse_args()
     ftype = args.type.upper()
@@ -116,7 +119,7 @@ def main():
             lead = PRE_LEAD_H if sc == "pre" else sc
             snap = floor_snap(leg["dep_utc"] - timedelta(hours=lead), args.snap_h)
             pub = bm.tail_as_of(leg, snap)
-            if sc != "pre" and pub is None:
+            if sc != "pre" and pub is None and not args.all_legs:
                 continue
             if sc == "pre" and pub is not None:
                 continue  # "pre" means nothing published yet

@@ -173,6 +173,8 @@ def main():
     ap.add_argument("--since", help="only legs with flight_date >= this date")
     ap.add_argument("--all-types", action="store_true",
                     help="keep narrowbody/unknown legs too (default: widebody only)")
+    ap.add_argument("--out", default=str(TMP / "leg_outcomes.csv"),
+                    help="leg table to write (tail_changes.csv goes next to it)")
     args = ap.parse_args()
 
     rows = prepare(load(args.csv))
@@ -204,8 +206,11 @@ def main():
     changes = [c for c in changes
                if (c["flight_date"], c["airline"], c["flight_number"]) in kept]
 
-    TMP.mkdir(exist_ok=True)
-    out_legs, out_ch = TMP / "leg_outcomes.csv", TMP / "tail_changes.csv"
+    out_legs = Path(args.out)
+    out_legs.parent.mkdir(parents=True, exist_ok=True)
+    out_ch = out_legs.with_name(out_legs.stem.replace("leg_outcomes", "tail_changes") + ".csv")
+    if out_ch == out_legs:
+        out_ch = out_legs.with_name(out_legs.stem + "_changes.csv")
     if legs:
         with open(out_legs, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(legs[0].keys()))
