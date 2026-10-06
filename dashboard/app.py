@@ -19,6 +19,7 @@ import psycopg.rows
 from dotenv import load_dotenv
 
 import booking_model
+import fleet_sim
 import leg_stats
 from flask import (
     Flask,
@@ -2664,7 +2665,7 @@ def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
 # applied: /book then keeps the day-lead stability chip above.
 _MODEL_TTL_S = 600
 _MODEL_HISTORY_DAYS = booking_model.HISTORY_WEEKS * 7 + booking_model.VALIDATION_DAYS + 3
-_model_cache = {"ts": 0.0, "stats": None, "legs": None}
+_model_cache = {"ts": 0.0, "stats": None, "legs": None, "sims": {}}
 # Planner date range: default and cap, in days from today.
 PLAN_DEFAULT_DAYS = 14
 PLAN_MAX_DAYS = 21
@@ -2724,10 +2725,42 @@ def _build_model(conn):
     legs = [_leg_from_row(r) for r in rows]
     ahead = _upcoming_legs(conn, date_from=date.today(),
                            date_to=date.today() + timedelta(days=_PLAN_AHEAD_DAYS), types=None)
-    stats = booking_model.build_stats(legs, datetime.now(timezone.utc),
-                                      plan=booking_model.PlanIndex(legs + ahead))
-    _model_cache.update(ts=datetime.now(timezone.utc).timestamp(), stats=stats, legs=legs)
+    now = datetime.now(timezone.utc)
+    stats = booking_model.build_stats(legs, now, plan=booking_model.PlanIndex(legs + ahead))
+    _model_cache.update(ts=now.timestamp(), stats=stats, legs=legs,
+                        sims=_simulate_fleets(stats, legs, ahead, now))
     return True
+
+
+def _simulate_fleets(stats, hist, ahead, now):
+    """fleet_sim results per fleet type it is enabled for (fleet_sim.SIM_TYPES,
+    the fleets whose walk-forward it beat). The schedule: what FIS lists, plus
+    the timetable projection for flights it does not list yet (the 787/A350
+    tier is only looked up to D+3). A failure leaves that fleet on p_target."""
+    have = {(l["flight_date"], l["flight_number"]) for l in ahead}
+    dates = [now.date() + timedelta(days=i) for i in range(fleet_sim.HORIZON.days + 2)]
+    conn_hist = fleet_sim.connections(hist, now)
+    sims = {}
+    for ftype in fleet_sim.SIM_TYPES:
+        projected = [l for l in booking_model.project_schedule(hist, dates, now, ftype=ftype)
+                     if (l["flight_date"], l["flight_number"]) not in have]
+        try:
+            sims[ftype] = fleet_sim.simulate(stats, ahead + projected, now, ftype,
+                                             fleet_sim.HORIZON, conn=conn_hist)
+        except Exception:
+            pass
+    return sims
+
+
+def _p_target(stats, target, leg, published=None, now=None):
+    """P(target flies leg) as served: booking_model.p_target, sharpened by the
+    fleet simulation for the fleets and lead times it covers (fleet_sim.p_fleet
+    falls back to p_target everywhere else)."""
+    res = (_model_cache.get("sims") or {}).get(leg.get("fleet_type"))
+    if res is None:
+        return booking_model.p_target(stats, target, leg, published=published, now=now)
+    fleet = sorted(stats.fleet.get(leg.get("fleet_type")) or ())
+    return fleet_sim.p_fleet(res, stats, target, leg, published=published, now=now, fleet=fleet)
 
 
 def _booking_model(conn):
@@ -3046,7 +3079,7 @@ def api_schedule_flight(airline, number, fdate):
         _lead = (fdate_d - date.today()).days
         if mleg is not None:
             pub = _published(mleg)
-            _hold = (_hold_chip(booking_model.p_target(stats, pub, mleg, published=pub))
+            _hold = (_hold_chip(_p_target(stats, pub, mleg, published=pub))
                      if pub else None)
         else:
             _hold = (_hold_probability(stab, _lead, f"{dep or '?'}-{arr or '?'}",
@@ -3138,11 +3171,10 @@ def api_book():
         tview = None
         if legs is not None:
             pub = _published(legs[i])
-            hold = (_hold_chip(booking_model.p_target(stats, pub, legs[i], published=pub, now=now))
+            hold = (_hold_chip(_p_target(stats, pub, legs[i], published=pub, now=now))
                     if pub else None)
             if target:
-                tview = _target_view(booking_model.p_target(stats, target, legs[i],
-                                                            published=pub, now=now))
+                tview = _target_view(_p_target(stats, target, legs[i], published=pub, now=now))
         else:
             hold = _hold_probability(stab, lead, f"{d or '?'}-{a or '?'}", short)
         # the layout this flight is sold with (a route without First publishes
@@ -3237,7 +3269,7 @@ def api_book_plan():
 
     flights = []
     for leg, pub, source in cands:
-        res = booking_model.p_target(stats, target, leg, published=pub, now=now)
+        res = _p_target(stats, target, leg, published=pub, now=now)
         if res["regime"] == "departed":
             continue
         flights.append({
@@ -3392,7 +3424,7 @@ def api_airframe(reg):
         pub = _published(leg)
         if pub != reg:
             continue
-        res = booking_model.p_target(stats, reg, leg, published=pub, now=now)
+        res = _p_target(stats, reg, leg, published=pub, now=now)
         nxt.append({"flight": f"{leg['airline']}{leg['flight_number']}",
                     "number": leg["flight_number"], "flight_date": leg["flight_date"].isoformat(),
                     "dep": leg["dep"], "arr": leg["arr"],
