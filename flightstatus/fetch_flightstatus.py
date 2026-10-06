@@ -768,10 +768,71 @@ def refresh_legs(conn: psycopg.Connection, since: date, until: date) -> int:
     return len(rows)
 
 
+# A tail FIS publishes on widebody flights, typed as something else in
+# `aircraft`, is a stale registry entry: the fleet jobs enrich new tails from the
+# OpenSky registry, which still lists D-ABQA..D-ABQD as the Dash 8 Q400s that
+# carried those registrations before Lufthansa's 787-9s did. Typed DH8D, their
+# flights fell out of every 787 set (leg layer, booking model, schedule). FIS is
+# Lufthansa's own record of the aircraft on the flight, so it wins — but only
+# to replace a non-widebody type with a widebody one, never to re-label one
+# widebody as another (a manual correction or a sub-type stays untouched).
+_FLEET_TYPE_SQL = """
+    WITH seen AS (
+        SELECT btrim(registration) AS reg, aircraft_type AS fis_type, count(*) AS n,
+               row_number() OVER (PARTITION BY btrim(registration)
+                                  ORDER BY count(*) DESC) AS rk
+        FROM flight_status_observations
+        WHERE found AND registration IS NOT NULL AND aircraft_type IS NOT NULL
+          AND observed_at > NOW() - make_interval(days => %(days)s)
+        GROUP BY 1, 2
+    )
+    SELECT s.reg, s.fis_type, s.n, a.icao24, a.aircraft_type
+    FROM seen s
+    JOIN (  -- the row every reader resolves a registration to (as in _LEG_OBS_SQL)
+        SELECT DISTINCT ON (btrim(registration)) btrim(registration) AS reg, icao24,
+               aircraft_type
+        FROM aircraft
+        ORDER BY btrim(registration), is_active DESC, last_seen_date DESC NULLS LAST
+    ) a ON a.reg = s.reg
+    WHERE s.rk = 1 AND (a.aircraft_type IS NULL OR NOT (a.aircraft_type = ANY(%(wide)s)))
+"""
+FLEET_TYPE_DAYS = 14
+FLEET_TYPE_MIN_LOOKS = 3
+
+
+def fix_fleet_types(conn: psycopg.Connection) -> int:
+    """Re-type tails FIS keeps publishing on widebody flights that `aircraft`
+    calls something else (see _FLEET_TYPE_SQL). Returns how many rows changed;
+    never fatal."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_FLEET_TYPE_SQL, {"days": FLEET_TYPE_DAYS, "wide": list(legs.WIDEBODY)})
+            rows = cur.fetchall()
+            fixed = 0
+            for reg, fis_type, n, icao24, old in rows:
+                code = legs.FIS_TYPE_MAP.get((fis_type or "").strip().lower())
+                if code not in legs.WIDEBODY or n < FLEET_TYPE_MIN_LOOKS:
+                    continue
+                cur.execute("""
+                    UPDATE aircraft SET aircraft_type = %s, aircraft_subtype = %s,
+                                        updated_at = NOW()
+                    WHERE icao24 = %s""", (code, fis_type, icao24))
+                fixed += cur.rowcount
+                log(f"fleet type: {reg} ({icao24}) {old or '-'} -> {code} "
+                    f"(FIS: {fis_type}, {n} looks)")
+        conn.commit()
+        return fixed
+    except Exception as e:  # noqa: BLE001 - a data fix, never fatal
+        conn.rollback()
+        log(f"fleet type check error (non-fatal): {e}")
+        return 0
+
+
 def refresh_recent_legs(conn: psycopg.Connection) -> None:
-    """Post-run hook: refresh the leg layer for D-LEGS_REFRESH_DAYS onwards.
-    Derived data only — must never fail the run, and is a no-op until the
-    migration is applied."""
+    """Post-run hook: re-type stale widebody tails (fix_fleet_types), then
+    refresh the leg layer for D-LEGS_REFRESH_DAYS onwards. Derived data only —
+    must never fail the run, and is a no-op until the migration is applied."""
+    fix_fleet_types(conn)
     try:
         if not legs_schema(conn):
             return
@@ -791,6 +852,7 @@ def rebuild_all_legs() -> int:
         if not legs_schema(conn):
             log("fis_legs absent — apply db/init/010_fis_legs.sql first")
             return 1
+        fix_fleet_types(conn)  # so the rebuilt legs carry the corrected types
         with conn.cursor() as cur:
             cur.execute("SELECT MIN(flight_date), MAX(flight_date) FROM flight_status_observations")
             lo, hi = cur.fetchone()

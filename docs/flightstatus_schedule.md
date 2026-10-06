@@ -154,6 +154,13 @@ the booking pages show tails past D+4 (`BOOK_HORIZON_DAYS`). Blocking comes in
 waves (4–8% of lookups late Aug/early Sep and 09-28..10-02) that did not track
 volume at ~1.6–2k/day; what a doubled volume would do is unmeasured.
 
+**Fleet types.** `fix_fleet_types` (after every run and before
+`--rebuild-legs`) re-types a tail FIS keeps publishing on widebody flights when
+`aircraft` calls it something that isn't a widebody: the fleet jobs enrich new
+tails from the OpenSky registry, which still lists D-ABQA..D-ABQD as the Dash 8
+Q400s that carried those registrations before Lufthansa's 787-9s, so their
+flights had fallen out of every 787 set (and of the wide tier).
+
 ## Regime boundaries
 
 Any analysis of this data must filter on `flight_date`, because the cadence has
