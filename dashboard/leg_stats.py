@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections import Counter, defaultdict
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from booking_model import BANDS_H, HISTORY_WEEKS, TRUTH_LAG, arr_utc, itinerary, tail_at
@@ -36,6 +36,12 @@ MIN_N = 30
 # This long without a recorded flight, a tail is out of the rotation (99% of
 # hub turns are under 54 hours).
 LONG_STOP = timedelta(days=3)
+# The leg layer is complete only from here. Before it the collector covered
+# part of the fleets (a tenth of the A350s) and crashed on 17-19 July, so a
+# day without a flight is as likely a hole in the data as a tail on the
+# ground: 27-63% of tail-days are empty before this date, 3-11% after. The
+# calendar and the news never look further back.
+COMPLETE_FROM = date(2026, 7, 21)
 # A hub stop up to this long is a turnaround: the tail takes one of the next
 # day's flights at the latest.
 TURN_MAX = timedelta(hours=36)
@@ -590,8 +596,9 @@ def events(legs, now, recent=RECENT, before=BEFORE):
             days = ((b or horizon) - a).days
             where = ", last at %s" % at if at else ""
             if b is None:
-                add(state, "grounded", a, reg, "no flight since %s (%d days%s)"
-                    % (_day(a), days, where))
+                # no day count: the stop is only settled up to the truth
+                # horizon, and a count that stops two days short reads wrong
+                add(state, "grounded", a, reg, "no flight since %s%s" % (_day(a), where))
             elif b >= cut and b - a >= NEWS_STOP:
                 nxt = next(l for l in ls if l["dep_utc"] == b)
                 add(news, "returned", b, reg, "flying again after %d days without a flight%s: %s"
@@ -665,6 +672,8 @@ def insights(legs, hist, families, family, now, weeks=WINDOW_WEEKS):
     fleet types}, in display order."""
     cut = now - timedelta(weeks=weeks)
     inside = lambda l: l.get("dep_utc") is not None and cut <= l["dep_utc"] < now
+    legs = [l for l in legs if l.get("dep_utc") is not None
+            and l["dep_utc"].astimezone(timezone.utc).date() >= COMPLETE_FROM]
     fleets = []
     for name, members in families.items():
         fl = [l for l in hist if l.get("fleet_type") in members and inside(l)]

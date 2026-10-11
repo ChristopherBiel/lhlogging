@@ -884,8 +884,10 @@ function calendarFig(D) {
     const longest = C.tails.flatMap(t => t.stops.filter(s => !s.open).map(s => ({t, s}))).sort((a, b) => b.s.days - a.s.days)[0];
     const busiest = C.tails.slice().sort((a, b) => b.per_day - a.per_day)[0];
     const parts = done.length ? ['On a typical day ', [typical + ' of the ' + N + ' ' + name + ' tails'], ' fly. '] : [];
-    if (out.length) parts.push([out.map(t => t.reg).join(', ')], (out.length > 1 ? ' have' : ' has') +
-      ' no recorded flight for ' + out.map(t => Math.round(t.stops.find(s => s.open).days)).join(' and ') + ' days. ');
+    // dated, not counted: the count is only settled up to the truth horizon
+    const since = t => { const s = t.stops.find(x => x.open); return s.from > 0 ? dayLabel(dateAt(Math.floor(s.from))) : 'before ' + dayLabel(start); };
+    if (out.length) parts.push([out.map(t => t.reg).join(' and ')], (out.length > 1 ? ' have' : ' has') +
+      ' no recorded flight since ' + out.map(since).join(' and ') + '. ');
     else parts.push('None is out of the rotation right now. ');
     if (longest) parts.push('The longest stop that has ended was ' + longest.t.reg + '’s, ', [Math.round(longest.s.days) + ' days'], '. ');
     if (busiest) parts.push('The hardest-worked tail, ' + busiest.reg + ', averages ', [busiest.per_day.toFixed(1) + ' block hours'], ' a day.');

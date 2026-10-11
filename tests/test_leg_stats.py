@@ -315,6 +315,16 @@ class Payload(unittest.TestCase):
         empty = ls.insights([], legs, families, "A350", now)       # a fleet nobody has seen yet
         self.assertEqual(json.loads(json.dumps(empty))["calendar"]["tails"], [])
 
+    def test_the_calendar_and_the_news_start_where_the_data_is_complete(self):
+        # before COMPLETE_FROM a missing flight is a hole in the data, not a stop
+        early = leg(-60, "FRA", "HND", "D-ABYA")                    # 3 July
+        self.assertLess(early["flight_date"], ls.COMPLETE_FROM)
+        legs = [early] + [leg(d, "FRA", "HND", "D-ABYA") for d in range(10)]
+        d = ls.insights(legs, legs, {"B748": ("B748",)}, "B748", T0 + timedelta(days=12))
+        self.assertEqual(d["calendar"]["start"], "2026-09-01")
+        self.assertEqual(d["calendar"]["tails"][0]["stops"], [])
+        self.assertEqual(d["events"]["recent"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
