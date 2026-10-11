@@ -105,7 +105,8 @@ lhlogging/
 ├── dashboard/                      # Monitoring UI + fleet-catching pages
 │   ├── app.py                      # Flask app: / (monitor), /book, /schedule, /insights, /fleet
 │   ├── leg_stats.py                # Descriptive statistics over the leg layer (/insights, /airframe)
-│   ├── static/                     # Stylesheets, fonts and the /insights figures (js/insights.js)
+│   ├── monitor_stats.py            # The monitor: the collector's plan vs. its runs, hubs, fleet use
+│   ├── static/                     # Stylesheets, fonts and the figures (js/figure.js, home.js, insights.js)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── db/
@@ -300,18 +301,39 @@ ADS-B pipeline can only observe after the fact.
 
 ## Dashboard
 
-The dashboard runs on port **8080**. The `/` monitor page auto-refreshes every
-30 seconds; the fleet-catching pages below are driven by the nightly FIS
-snapshots.
+The dashboard runs on port **8080**. The `/` monitor says how the site itself
+runs; the fleet-catching pages below are driven by the FIS snapshots.
 
-**`/` — Monitor** (auto-refreshing system + fleet overview):
-- System health — last run status, result details, and timing for each job (state poller, flight detector, fleet discovery, fleet refresh)
-- Fleet breakdown — active/retired aircraft counts by type
-- Flight metrics — today, 7-day, and all-time counts (excludes `needs_review` flights)
-- Daily trend chart — flights and unique callsigns over the last 14 days
-- Recent errors — any job failures in the last 48 hours (hidden when all clear)
-- Top routes — most frequent city pairs (30-day window)
-- Fleet table — sortable/filterable list with a "Needs Review" checkbox to find aircraft missing type or registration data
+**`/` — Monitor** (how the site runs, and the big picture of what it logged):
+- **Status, in sentences** — when the schedule was last read, how far ahead
+  each fleet's plan is known, and any slot of the schedule reader that keeps
+  failing, with the flight day only it reads. Below it, the last run of every
+  collector. This block refreshes every minute.
+- **Schedule reads by flight day** — every run of the last two days
+  against the flight days it read, per fleet group (747-8/A380 and 787/A350):
+  read, failed, planned-but-never-asked, or still planned; with the planned
+  reads a day at each distance, and the flights that have a tail right now.
+- **Collector runs** — all runs of the
+  last 28 days on the clock, as long as they took, and the share of each
+  slot's runs that went wrong.
+- **Hub departures by time of day** — Frankfurt's and Munich's departures by day
+  and quarter-hour over eight weeks, above them a median day's arrival and
+  departure waves.
+- **Aircraft utilisation** — every active aircraft as flights a
+  day against flight hours a day, with each type's median.
+
+The figures are kept bare on this page — a plain title and the plot. What each
+one found, its legend, how it was measured and the table behind it fold out
+under "How to read this".
+
+The collector's side comes from `batch_runs`, `flight_status_observations` and
+`fis_legs`; the two figures on what was flown from the ADS-B `flights` table,
+the only source that covers the whole fleet. The queries and the arithmetic
+are `dashboard/monitor_stats.py` (unit-tested; its copy of the schedule
+reader's plan is checked against `flightstatus/crontab` by the tests), the
+figures hand-drawn SVG in `dashboard/static/js/home.js`.
+`python3 tools/preview_monitor.py --pull` shows the page locally on the rows
+of the production database (read-only), without a database here.
 
 ### Fleet-catching pages
 

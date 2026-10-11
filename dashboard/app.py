@@ -1,6 +1,6 @@
 """
-LHLogging monitoring dashboard.
-Serves a single-page HTML dashboard and a /api/stats JSON endpoint.
+LHLogging dashboard: the monitor (start page) and the fleet-catching pages,
+each an HTML shell plus the JSON endpoints it reads.
 """
 import json
 import os
@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 import booking_model
 import fleet_sim
 import leg_stats
+import monitor_stats
 from flask import (
     Flask,
     Response,
@@ -88,210 +89,67 @@ def favicon_svg():
     return send_from_directory(app.static_folder, "favicon.svg", max_age=86400)
 
 
-@app.route("/api/stats")
-def api_stats():
+def _asset_v(*files):
+    """The newest mtime of a page's scripts and stylesheets, for their URLs.
+    The figures live in static/js (too much to keep in a string, and a real
+    file can be syntax-checked) and change together with the payload they
+    draw, so a browser must never run last week's script on this week's data."""
+    try:
+        return int(max(os.path.getmtime(os.path.join(app.static_folder, f)) for f in files))
+    except OSError:
+        return 0
+
+
+# ── Monitor (the start page) ────────────────────────────────────────
+# How the site runs (which collector runs read what, and what that leaves
+# known) and the big picture of what it has logged. monitor_stats.py owns the
+# queries and everything computed from their rows; this only runs them, in two
+# parts with their own cache: the collector's side is cheap and moves with
+# every run, the flown-data side scans eight weeks of flights.
+_MON_PARTS = {
+    "collector": (60, ("runs", "lookups", "known", "collectors", "ledger"),
+                  lambda rows, now: monitor_stats.collector(rows, now, _INSIGHT_FAMILIES)),
+    "data": (900, ("hubs", "use"),
+             lambda rows, now: monitor_stats.data(rows, now, _INSIGHT_FAMILIES)),
+}
+_mon_cache = {}
+
+
+def _mon_part(part):
+    ttl, names, build = _MON_PARTS[part]
+    ts, data = _mon_cache.get(part, (0.0, None))
+    if data is not None and time.time() - ts < ttl:
+        return data
     try:
         conn = _db()
-    except Exception as e:
-        return jsonify({"error": str(e)}), 503
+        try:
+            with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                rows = {}
+                for name in names:
+                    cur.execute(monitor_stats.QUERIES[name])
+                    rows[name] = cur.fetchall()
+        finally:
+            conn.close()
+        data = build(rows, datetime.now(timezone.utc))
+    except Exception:
+        if data is None:
+            raise
+        return data  # stale beats a blank page
+    _mon_cache[part] = (time.time(), data)
+    return data
 
-    try:
-        stats = {}
 
-        # --- Fleet counts ---
-        stats["aircraft_active"] = _q1(conn, "SELECT COUNT(*) FROM aircraft WHERE is_active")
-        stats["aircraft_total"] = _q1(conn, "SELECT COUNT(*) FROM aircraft")
-        stats["aircraft_retired"] = stats["aircraft_total"] - stats["aircraft_active"]
-
-        # --- Flight counts (only completed flights with known departure) ---
-        stats["flights_today"] = _q1(
-            conn,
-            "SELECT COUNT(*) FROM flights WHERE flight_date = CURRENT_DATE"
-            " AND departure_airport_icao IS NOT NULL AND NOT needs_review",
-        )
-        stats["flights_7d"] = _q1(
-            conn,
-            "SELECT COUNT(*) FROM flights WHERE flight_date >= CURRENT_DATE - 7"
-            " AND departure_airport_icao IS NOT NULL AND NOT needs_review",
-        )
-        stats["flights_total"] = _q1(
-            conn,
-            "SELECT COUNT(*) FROM flights WHERE departure_airport_icao IS NOT NULL"
-            " AND NOT needs_review",
-        )
-
-        # --- DB size ---
-        stats["db_size"] = _q1(
-            conn, "SELECT pg_size_pretty(pg_database_size(current_database()))"
-        )
-
-        # --- Recent errors (last 48h) ---
-        rows = _q(
-            conn,
-            """
-            SELECT run_type, started_at, finished_at,
-                   aircraft_total, aircraft_ok, aircraft_error,
-                   flights_upserted, status, error_detail
-            FROM batch_runs
-            WHERE status != 'ok'
-              AND started_at > NOW() - INTERVAL '48 hours'
-            ORDER BY started_at DESC
-            """,
-        )
-        stats["recent_errors"] = [
-            {
-                "run_type": r[0],
-                "started_at": r[1].isoformat() if r[1] else None,
-                "finished_at": r[2].isoformat() if r[2] else None,
-                "aircraft_total": r[3],
-                "aircraft_ok": r[4],
-                "aircraft_error": r[5],
-                "flights_upserted": r[6],
-                "status": r[7],
-                "error_detail": r[8],
-            }
-            for r in rows
-        ]
-
-        # --- Currently airborne ---
-        stats["aircraft_airborne"] = _q1(
-            conn,
-            """
-            SELECT COUNT(DISTINCT icao24)
-            FROM positions
-            WHERE on_ground = FALSE
-              AND captured_at = (SELECT MAX(captured_at) FROM positions)
-            """,
-        ) or 0
-
-        # --- Pending flights (departed, not yet landed) ---
-        stats["flights_pending"] = _q1(
-            conn, "SELECT COUNT(*) FROM flights WHERE arrival_airport_icao IS NULL"
-        ) or 0
-
-        # --- Minutes since last position poll ---
-        stats["last_poll_age_minutes"] = _q1(
-            conn,
-            "SELECT ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(captured_at))) / 60) FROM positions",
-        )
-
-        # --- Last run per type ---
-        for run_type in ("state_poller", "flight_detector", "fleet_discovery", "fleet_refresh", "flightstatus"):
-            row = _q(
-                conn,
-                """
-                SELECT started_at, finished_at, aircraft_total, aircraft_ok,
-                       aircraft_error, flights_upserted, status, error_detail
-                FROM batch_runs
-                WHERE run_type = %s
-                ORDER BY started_at DESC
-                LIMIT 1
-                """,
-                (run_type,),
-            )
-            if row:
-                r = row[0]
-                stats[f"last_{run_type}"] = {
-                    "started_at": r[0].isoformat() if r[0] else None,
-                    "finished_at": r[1].isoformat() if r[1] else None,
-                    "aircraft_total": r[2],
-                    "aircraft_ok": r[3],
-                    "aircraft_error": r[4],
-                    "flights_upserted": r[5],
-                    "status": r[6],
-                    "error_detail": r[7],
-                }
-            else:
-                stats[f"last_{run_type}"] = None
-
-        # --- Aircraft type breakdown (active fleet) ---
-        rows = _q(
-            conn,
-            """
-            SELECT COALESCE(aircraft_type, 'unknown'), COUNT(*)
-            FROM aircraft
-            WHERE is_active
-            GROUP BY aircraft_type
-            ORDER BY COUNT(*) DESC
-            """,
-        )
-        stats["aircraft_types"] = [{"type": r[0], "count": r[1]} for r in rows]
-
-        # --- Aircraft that flew in last 7 days by type ---
-        rows = _q(
-            conn,
-            """
-            SELECT COALESCE(a.aircraft_type, 'unknown'), COUNT(DISTINCT a.icao24)
-            FROM flights f
-            JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE f.flight_date >= CURRENT_DATE - 7
-              AND a.is_active
-              AND NOT f.needs_review
-            GROUP BY a.aircraft_type
-            ORDER BY COUNT(DISTINCT a.icao24) DESC
-            """,
-        )
-        stats["aircraft_flew_7d"] = [{"type": r[0], "count": r[1]} for r in rows]
-
-        # --- Top 20 routes last 30 days ---
-        rows = _q(
-            conn,
-            """
-            SELECT COALESCE(departure_airport_icao, '?'),
-                   COALESCE(arrival_airport_icao, '?'),
-                   COUNT(*) AS cnt
-            FROM flights
-            WHERE flight_date >= CURRENT_DATE - 30
-              AND departure_airport_icao IS NOT NULL
-              AND arrival_airport_icao IS NOT NULL
-              AND NOT needs_review
-            GROUP BY 1, 2
-            ORDER BY cnt DESC
-            LIMIT 20
-            """,
-        )
-        stats["top_routes"] = [
-            {"dep": r[0], "arr": r[1], "count": r[2]} for r in rows
-        ]
-
-        # --- Flights per day last 14 days ---
-        rows = _q(
-            conn,
-            """
-            SELECT flight_date::text, COUNT(*)
-            FROM flights
-            WHERE flight_date >= CURRENT_DATE - 13
-              AND NOT needs_review
-            GROUP BY flight_date
-            ORDER BY flight_date
-            """,
-        )
-        stats["flights_per_day"] = [{"date": r[0], "count": r[1]} for r in rows]
-
-        # --- Unique callsigns (flight numbers) per day last 14 days ---
-        rows = _q(
-            conn,
-            """
-            SELECT flight_date::text, COUNT(DISTINCT callsign)
-            FROM flights
-            WHERE flight_date >= CURRENT_DATE - 13
-              AND callsign IS NOT NULL
-              AND callsign != ''
-              AND NOT needs_review
-            GROUP BY flight_date
-            ORDER BY flight_date
-            """,
-        )
-        stats["callsigns_per_day"] = [{"date": r[0], "count": r[1]} for r in rows]
-
-        stats["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
-
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 500
-
-    conn.close()
-    return jsonify(stats)
+@app.route("/api/monitor")
+def api_monitor():
+    """The start page's payload. A part that cannot be built is named under
+    `errors` and left out, so one failing query costs a figure, not the page."""
+    out = {"generated": datetime.now(timezone.utc).isoformat()}
+    for part in _MON_PARTS:
+        try:
+            out.update(_mon_part(part))
+        except Exception as e:
+            out.setdefault("errors", {})[part] = str(e)
+    return jsonify(out), (503 if len(out.get("errors", {})) == len(_MON_PARTS) else 200)
 
 
 _HTML = """\
@@ -304,342 +162,43 @@ _HTML = """\
 <link rel="stylesheet" href="/static/css/fonts.css">
 <link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
 <link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/home.css">
+<link rel="stylesheet" href="/static/css/figure.css?v={{ v }}">
+<link rel="stylesheet" href="/static/css/home.css?v={{ v }}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body class="fp" data-fp-intensity="02">
 <div class="container">
-
   <div class="header">
     <div class="brand">
       <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>LH&middot;Fleet <span>Monitor</span></h1>
-        <div class="fp-label model">FLT-MON &middot; Fleet Telemetry</div>
+        <div class="fp-label model">FLT-MON &middot; How the site runs</div>
       </div>
     </div>
     <nav class="nav">
-      <a href="/book">Book</a>
-      <a href="/schedule">Schedule</a>
-      <a href="/fleet">Fleet DB</a>
-      <a href="/insights">Insights</a>
+      <a class="nav-link" href="/schedule">Schedule</a>
+      <a class="nav-link" href="/book">Book</a>
+      <a class="nav-link" href="/insights">Insights</a>
+      <a class="nav-link" href="/fleet">Fleet DB</a>
     </nav>
-    <span class="updated" id="last-updated"></span>
   </div>
-
-  
-  <div id="error-banner"></div>
-
-  <!-- Health strip -->
-  <div class="health-strip" id="health-strip"></div>
-
-  <!-- Key metrics -->
-  <div class="section">
-    <div class="section-label">Fleet</div>
-    <div class="metrics" id="fleet-metrics"></div>
-  </div>
-
-  <div class="section">
-    <div class="section-label">Flights</div>
-    <div class="metrics" id="flight-metrics"></div>
-  </div>
-
-  <!-- Flight trend chart -->
-  <div class="section">
-    <div class="card">
-      <div class="section-label">Daily flights &amp; unique routes (14d)</div>
-      <div class="chart-legend">
-        <span><span class="swatch" style="background:var(--fp-dv-1)"></span>Flights</span>
-        <span><span class="swatch" style="background:var(--fp-dv-3)"></span>Unique callsigns</span>
-      </div>
-      <div class="chart-bars" id="flight-chart" style="height:80px"></div>
-      <div class="chart-labels" id="flight-chart-labels"></div>
-    </div>
-  </div>
-
-  <!-- Fleet by type -->
-  <div class="section">
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--fp-space-2)">
-        <div class="section-label" style="margin-bottom:0">Aircraft by type</div>
-        <div style="font-size:var(--fp-text-xxs);color:var(--muted)">
-          <span style="color:var(--fp-dv-6)">In DB</span>
-          <span style="margin:0 var(--fp-space-1)">/</span>
-          <span style="color:var(--fp-dv-1)">Flew 7d</span>
-        </div>
-      </div>
-      <div id="type-chart"></div>
-    </div>
-  </div>
-
-  <!-- Recent errors (48h) -->
-  <div class="section" id="errors-section" style="display:none">
-    <div class="card">
-      <div class="section-label">Errors (last 48h)</div>
-      <div id="error-list"></div>
-    </div>
-  </div>
-
-  <!-- Top routes -->
-  <div class="section">
-    <div class="card">
-      <div class="section-label">Top routes (30d)</div>
-      <div id="route-list"></div>
-    </div>
-  </div>
-
-  <!-- System -->
-  <div class="section">
-    <div class="card" id="system-info" style="font-size:var(--fp-text-xs);color:var(--muted)"></div>
-  </div>
-
+  <div id="body"><p class="empty">Loading&hellip;</p></div>
 </div>
-
-<div class="tooltip" id="tooltip"></div>
-
-<script>
-const $ = id => document.getElementById(id);
-const fmt = n => n == null ? '\u2014' : n.toLocaleString();
-
-function ago(iso) {
-  if (!iso) return '\u2014';
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.floor(s/60) + 'm ago';
-  if (s < 86400) return Math.floor(s/3600) + 'h ago';
-  return Math.floor(s/86400) + 'd ago';
-}
-
-function badge(status) {
-  const c = status === 'ok' ? 'badge-ok' : status === 'running' ? 'badge-running' : 'badge-error';
-  return '<span class="fp-chip ' + c + '">' + status + '</span>';
-}
-
-// Tooltip
-const tip = $('tooltip');
-document.addEventListener('mousemove', e => {
-  if (tip.style.display === 'block') {
-    tip.style.left = (e.clientX + 10) + 'px';
-    tip.style.top = (e.clientY - 28) + 'px';
-  }
-});
-
-function showTip(text, e) {
-  tip.textContent = text;
-  tip.style.display = 'block';
-  tip.style.left = (e.clientX + 10) + 'px';
-  tip.style.top = (e.clientY - 28) + 'px';
-}
-function hideTip() { tip.style.display = 'none'; }
-
-async function refresh() {
-  let data;
-  try {
-    const r = await fetch('/api/stats');
-    data = await r.json();
-  } catch(e) {
-    $('error-banner').style.display = 'block';
-    $('error-banner').textContent = 'Connection error: ' + e;
-    return;
-  }
-  if (data.error) {
-    $('error-banner').style.display = 'block';
-    $('error-banner').textContent = data.error;
-    return;
-  }
-  $('error-banner').style.display = 'none';
-
-  // Health strip
-  const sp = data.last_state_poller;
-  const fd = data.last_flight_detector;
-  const fdisc = data.last_fleet_discovery;
-  const fr = data.last_fleet_refresh;
-  const pollAge = data.last_poll_age_minutes;
-  const spOk = sp && sp.status === 'ok' && (pollAge === null || pollAge <= 10);
-  const fdOk = fd && fd.status === 'ok';
-  const frOk = fr && fr.status === 'ok';
-  const frRecent = fr && fr.started_at &&
-    (Date.now() - new Date(fr.started_at).getTime()) < 8 * 86400 * 1000;
-  const fdiscOk = fdisc && fdisc.status === 'ok';
-  const fdiscRecent = fdisc && fdisc.started_at &&
-    (Date.now() - new Date(fdisc.started_at).getTime()) < 7 * 3600 * 1000;
-  // Flight-status (FIS) runs nightly; classify blocked vs broken vs stale so a
-  // silent outage (the kind a retry can't fix) is visible at a glance.
-  const fs = data.last_flightstatus;
-  const fsAgeH = fs && fs.started_at ? (Date.now() - new Date(fs.started_at).getTime()) / 3600000 : null;
-  const fsFresh = fsAgeH !== null && fsAgeH <= 26;            // one healthy run within ~a day
-  // blocked = nothing found in a finished run, or the collector's circuit breaker stopped it
-  const fsBlocked = fs && (fs.status === 'blocked'
-    || (fs.status === 'ok' && (fs.aircraft_ok || 0) === 0 && (fs.aircraft_total || 0) > 0));
-  const fsOk = fs && fs.status === 'ok' && (fs.aircraft_ok || 0) > 0 && fsFresh;
-  const fsColor = !fs ? 'var(--red)'
-    : fs.status === 'error' ? 'var(--red)'
-    : fsBlocked ? 'var(--amber)'
-    : !fsFresh ? 'var(--amber)'
-    : fsOk ? 'var(--green)' : 'var(--amber)';
-  const fsNote = !fs ? '' : fs.status === 'error' ? ' \\u00b7 error'
-    : fsBlocked ? ' \\u00b7 blocked' : !fsFresh ? ' \\u00b7 stale' : '';
-
-  function healthDetail(run, type) {
-    if (!run) return '';
-    let detail = '';
-    if (type === 'state_poller') detail = fmt(run.aircraft_ok) + ' seen, ' + fmt(run.flights_upserted) + ' stored';
-    else if (type === 'flight_detector') detail = fmt(run.flights_upserted) + ' flights';
-    else if (type === 'fleet_discovery') detail = fmt(run.aircraft_ok) + ' discovered';
-    else if (type === 'flightstatus') detail = fmt(run.aircraft_ok) + ' found, ' + fmt(run.aircraft_error) + ' blocked';
-    else detail = fmt(run.aircraft_ok) + '/' + fmt(run.aircraft_total) + ' updated';
-    return '<div style="font-size:var(--fp-text-xxs);color:var(--muted);margin-top:var(--fp-space-1)">' + detail + '</div>';
-  }
-
-  $('health-strip').innerHTML =
-    '<div class="health-item">' +
-      '<div class="label">State Poller</div>' +
-      '<div class="info"><span class="dot" style="background:' + (spOk ? 'var(--green)' : sp ? 'var(--amber)' : 'var(--red)') + '"></span>' +
-      (pollAge !== null && pollAge !== undefined ? pollAge + 'm ago' : (sp ? ago(sp.started_at) : 'never')) + '</div>' +
-      healthDetail(sp, 'state_poller') +
-    '</div>' +
-    '<div class="health-item">' +
-      '<div class="label">Flight Detector</div>' +
-      '<div class="info"><span class="dot" style="background:' + (fdOk ? 'var(--green)' : fd ? 'var(--red)' : 'var(--red)') + '"></span>' +
-      (fd ? ago(fd.started_at) : 'never') + '</div>' +
-      healthDetail(fd, 'flight_detector') +
-    '</div>' +
-    '<div class="health-item">' +
-      '<div class="label">Discovery</div>' +
-      '<div class="info"><span class="dot" style="background:' + (fdiscOk && fdiscRecent ? 'var(--green)' : !fdiscRecent ? 'var(--amber)' : 'var(--red)') + '"></span>' +
-      (fdisc ? ago(fdisc.started_at) : 'never') + '</div>' +
-      healthDetail(fdisc, 'fleet_discovery') +
-    '</div>' +
-    '<div class="health-item">' +
-      '<div class="label">Fleet Refresh</div>' +
-      '<div class="info"><span class="dot" style="background:' + (frOk && frRecent ? 'var(--green)' : !frRecent ? 'var(--amber)' : 'var(--red)') + '"></span>' +
-      (fr ? ago(fr.started_at) : 'never') + '</div>' +
-      healthDetail(fr, 'fleet_refresh') +
-    '</div>' +
-    '<div class="health-item">' +
-      '<div class="label">Schedule (FIS)</div>' +
-      '<div class="info"><span class="dot" style="background:' + fsColor + '"></span>' +
-      (fs ? ago(fs.started_at) + fsNote : 'never') + '</div>' +
-      healthDetail(fs, 'flightstatus') +
-    '</div>' +
-    '<div class="health-item">' +
-      '<div class="label">Airborne Now</div>' +
-      '<div class="info" style="font-weight:600;font-size:var(--fp-text-base)">' + fmt(data.aircraft_airborne) + ' <span style="font-weight:400;font-size:var(--fp-text-xxs);color:var(--muted)">aircraft</span></div>' +
-    '</div>';
-
-  // Fleet metrics
-  $('fleet-metrics').innerHTML =
-    '<div class="metric"><div class="label">Active</div><div class="value">' + fmt(data.aircraft_active) + '</div></div>' +
-    '<div class="metric"><div class="label">Retired</div><div class="value">' + fmt(data.aircraft_retired) + '</div></div>' +
-    '<div class="metric"><div class="label">Total</div><div class="value">' + fmt(data.aircraft_total) + '</div></div>';
-
-  // Flight metrics
-  $('flight-metrics').innerHTML =
-    '<div class="metric"><div class="label">Today</div><div class="value">' + fmt(data.flights_today) + '</div></div>' +
-    '<div class="metric"><div class="label">7 Days</div><div class="value">' + fmt(data.flights_7d) + '</div></div>' +
-    '<div class="metric"><div class="label">All Time</div><div class="value">' + fmt(data.flights_total) + '</div></div>' +
-    '<div class="metric"><div class="label">Pending</div><div class="value" style="color:var(--amber)">' + fmt(data.flights_pending) + '</div></div>';
-
-  // Flight trend chart (dual: flights + callsigns)
-  const days = data.flights_per_day || [];
-  const csdays = data.callsigns_per_day || [];
-  const csMap = {};
-  csdays.forEach(d => csMap[d.date] = d.count);
-  const maxF = days.length ? Math.max(...days.map(d => d.count), 1) : 1;
-
-  $('flight-chart').innerHTML = days.map(d => {
-    const h = Math.max(3, Math.round(d.count / maxF * 76));
-    const csCount = csMap[d.date] || 0;
-    const csH = Math.max(0, Math.round(csCount / maxF * 76));
-    return '<div style="flex:1;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-end;height:80px" ' +
-      'onmouseenter="showTip(\\'' + d.date + ': ' + d.count + ' flights, ' + csCount + ' callsigns\\', event)" onmouseleave="hideTip()">' +
-      '<div style="height:' + h + 'px;background:var(--fp-dv-1);border-radius:0;position:relative">' +
-      (csH > 0 ? '<div style="position:absolute;bottom:0;left:0;right:0;height:' + Math.min(csH, h) + 'px;background:var(--fp-dv-3);border-radius:0"></div>' : '') +
-      '</div></div>';
-  }).join('');
-
-  if (days.length >= 2) {
-    $('flight-chart-labels').innerHTML =
-      '<span>' + days[0].date.slice(5) + '</span><span>' + days[days.length-1].date.slice(5) + '</span>';
-  }
-
-  // Aircraft type chart with flew-in-7d overlay
-  const types = data.aircraft_types || [];
-  const flew = data.aircraft_flew_7d || [];
-  const flewMap = {};
-  flew.forEach(f => flewMap[f.type] = f.count);
-  const maxT = types.length ? types[0].count : 1;
-
-  $('type-chart').innerHTML = types.map(t => {
-    const pct = Math.round(t.count / maxT * 100);
-    const flewCount = flewMap[t.type] || 0;
-    const flewPct = Math.round(flewCount / maxT * 100);
-    return '<div class="hbar-row">' +
-      '<div class="hbar-label">' + t.type + '</div>' +
-      '<div class="hbar-track">' +
-        '<div class="hbar-fill" style="width:' + pct + '%;background:var(--fp-dv-6);position:relative">' +
-          '<div style="position:absolute;top:0;left:0;height:100%;width:' + (t.count > 0 ? Math.round(flewCount / t.count * 100) : 0) + '%;background:var(--fp-dv-1);border-radius:0"></div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="hbar-count">' + t.count + '</div>' +
-      '<div class="hbar-flew">' + (flewCount || '\u2014') + '</div>' +
-    '</div>';
-  }).join('');
-
-  // Recent errors (48h)
-  const errors = data.recent_errors || [];
-  if (errors.length) {
-    $('errors-section').style.display = '';
-    $('error-list').innerHTML = errors.map(r =>
-      '<div class="batch-row">' +
-        '<div class="batch-type">' + r.run_type.replace('_', ' ') + '</div>' +
-        '<div class="batch-time">' + ago(r.started_at) + '</div>' +
-        '<div class="batch-detail">' +
-          (r.error_detail || r.status) +
-        '</div>' +
-        badge(r.status) +
-      '</div>'
-    ).join('');
-  } else {
-    $('errors-section').style.display = 'none';
-  }
-
-  // Top routes
-  const routes = data.top_routes || [];
-  $('route-list').innerHTML = routes.slice(0, 15).map(r =>
-    '<div class="route-row">' +
-      '<div class="route-pair">' + r.dep + '<span class="arrow">\u2192</span>' + r.arr + '</div>' +
-      '<div class="route-count">' + r.count + '</div>' +
-    '</div>'
-  ).join('');
-
-  // System info
-  $('system-info').innerHTML =
-    'DB size: <span style="color:var(--text)">' + (data.db_size || '\u2014') + '</span>' +
-    '<span style="margin:0 var(--fp-space-2);color:var(--border)">\u00b7</span>' +
-    'Aircraft: <span style="color:var(--text)">' + fmt(data.aircraft_total) + '</span>' +
-    '<span style="margin:0 var(--fp-space-2);color:var(--border)">\u00b7</span>' +
-    'Flights: <span style="color:var(--text)">' + fmt(data.flights_total) + '</span>';
-
-  $('last-updated').textContent = new Date().toLocaleTimeString();
-}
-
-refresh();
-setInterval(refresh, 30000);
-</script>
-<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
-  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 var(--fp-space-2)">&middot;</span>
-  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
+<footer>
+  <a href="/impressum">Impressum</a> <span class="sep">&middot;</span> <a href="/datenschutz">Datenschutz</a>
 </footer>
+<div class="tip" id="tip" hidden></div>
+<script src="/static/js/figure.js?v={{ v }}"></script>
+<script src="/static/js/home.js?v={{ v }}"></script>
 </body>
-</html>
-"""
+</html>"""
 
 
 @app.route("/")
 def index():
-    return render_template_string(_HTML)
+    return render_template_string(_HTML, v=_asset_v(
+        "js/figure.js", "js/home.js", "css/figure.css", "css/home.css"))
 
 
 # ── Legal Pages ─────────────────────────────────────────────────────
@@ -6100,17 +5659,6 @@ _INSIGHTS_HTML = """\
 <script src="/static/js/insights.js?v={{ v }}"></script>
 </body>
 </html>"""
-
-
-def _asset_v(*files):
-    """The newest mtime of a page's scripts and stylesheets, for their URLs.
-    The figures live in static/js (too much to keep in a string, and a real
-    file can be syntax-checked) and change together with the payload they
-    draw, so a browser must never run last week's script on this week's data."""
-    try:
-        return int(max(os.path.getmtime(os.path.join(app.static_folder, f)) for f in files))
-    except OSError:
-        return 0
 
 
 @app.route("/insights")
