@@ -272,7 +272,7 @@ ADS-B pipeline can only observe after the fact.
   | mode | what it does | ~lookups |
   |---|---|---|
   | *(none)* | near sweep, D-2…D+2 — owns discovery, pairing, catalog lifecycle, `previousFlight` chaining, coverage audit | 400–470 |
-  | `--far` | far pass, broad tier D+3 / deep tier D+1…D+4, read-only against the catalog | ~220 |
+  | `--far` | far pass, D+3 for every number, D+4 for the deep and wide tiers, the deep tier's D+1/D+2 first; read-only against the catalog | ~310 |
   | `--watch H` | re-check only flights departing within the next H hours | 5–50 |
   | `--pulse` | re-check only the deep tier at D+1/D+2, several times a day | ~66 |
   | `--flight LH716 --date …` | ad-hoc single lookup, prints JSON (`tools/fis_lookup.sh`) | 1 |

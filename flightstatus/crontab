@@ -23,15 +23,17 @@ TZ=Europe/Berlin
 #   00:10 pulse        deep tier x D+1/D+2                            ~66
 #   02:00 pulse                                                       ~66
 #   02:45 watch 4h     red-eyes (the 03:45/05:00 departures)           ~5
-#   03:30 far pass     D+3 all; deep + wide D+4; deep D+1/D+2 — the   ~303
-#                      deep near slices ride along because nothing else
-#                      runs 03:00-05:00 and the pulse cadence would gap
+#   03:30 pulse        nothing else runs 03:00-05:00, so the pulse     ~66
+#                      cadence would gap here (the far pass's place
+#                      until 2026-10-12, see "Far pass by day" below)
 #   05:45 sweep-lite   truth D-1/D-2 + forecast D0/D1                 ~480
 #                      (FIS_LOOKAHEAD_DAYS=1), + deep/wide D+2 —
 #                      overnight re-plans, done before the first bank
 #   09:00 pulse                                                       ~66
 #   10:30 watch 4.5h   midday bank        (deps ~11:00-15:00)         ~32
-#   11:35 pulse                                                       ~66
+#   11:20 far pass     D+3 all; deep + wide D+4; deep D+1/D+2 — it    ~311
+#                      asks the nearest days first, so it is the
+#                      midday pulse with ~245 more lookups behind it
 #   13:00 watch 4.5h   afternoon bank     (deps ~13:30-17:30)         ~40
 #   14:10 pulse                                                       ~66
 #   15:30 watch 4.5h   late-afternoon bank(deps ~16:00-20:00)         ~47
@@ -51,21 +53,36 @@ TZ=Europe/Berlin
 # (docs/flightstatus_schedule.md, 2026-10-06).
 #
 # Combined with the three sweeps, a deep-tier leg gets 10 looks/day at D+1/D+2
-# with a maximum gap of ~2.8h — tight enough to date a reassignment to a few
+# with a maximum gap of ~3h — tight enough to date a reassignment to a few
 # hours instead of the ~23h brackets the old two-sweep cadence produced.
 #
 # Sweeps refresh the whole catalog window (near: D-2..D+2, plus discovery/
 # pairing/lifecycle); the far pass extends read-only to D+3 (D+4 deep); watch
 # passes re-check only flights departing in the next few hours; pulse passes
 # re-check only the deep tier at D+1/D+2. run_nightly.sh jitters each start
-# (10 min for pulses so the cadence holds, 15 for watches so the bank timing
-# holds, 30 for sweeps/far since neither is time-critical) and skips the slot if
-# a previous run is still active (flock), so slots never overlap into doubled
-# request rates. Every slot has >=23 min of margin to the next at worst-case
+# (10 min for pulses and the far pass so the cadence holds, 15 for watches so
+# the bank timing holds, 30 for the sweeps, which are not time-critical) and
+# skips the slot if a previous run is still active (flock), so slots never
+# overlap into doubled request rates. Every slot has >=23 min of margin to the next at worst-case
 # jitter + duration; a skipped pulse just widens one bracket. When the feed
 # blocks us outright, a run stops after FIS_MAX_CONSECUTIVE_BLOCKS (10) blocked
 # lookups in a row instead of crawling on with backoff for hours and making the
 # flock skip the next slots (lost evening/morning sweeps, 2026-09-29/10-01).
+#
+# Far pass by day (2026-10-12): it ran at 03:30 until then, in the hours where
+# lufthansa.com often serves the timetable page without its bot check — and a
+# session that was not checked has every lookup refused (02:00-06:30 Berlin;
+# the retry cannot help, a fresh session loads the same page). 37 of the 53 runs
+# that went wrong in four weeks were in the four night slots, and from 8 Oct the
+# far pass failed every night. It is the only read of D+4 for the 787/A350 and
+# one of two of their D+3, so those days went missing on the pages. It now has
+# the 11:35 pulse's place, and 03:30 a plain pulse in exchange: the hours around
+# noon are the cleanest in the log (11h and 13h: not one day in 22 with a fifth
+# of the lookups refused; 09h is clean too but leaves no room before the watch).
+# It starts at 11:20 rather than 11:35, with the pulses' 10 min of jitter, to be
+# done before the 13:00 watch: ~311 lookups take 55-65 min by day, so it ends
+# by ~12:35 at the latest. The deep tier's afternoon bracket widens from 2.6h to
+# 2.8h (3.0h at worst-case jitter); lookups per day are unchanged.
 #
 # Horizon probe (2026-09-24): FIS publishes a tail up to D+9 (D+10 returns no
 # flight at all), and awards are booked ~1-2 weeks out, so what a D+5..D+9
@@ -79,11 +96,11 @@ TZ=Europe/Berlin
 10  0 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 0   2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 45  2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4 >> /var/log/lhlogging/flightstatus.log 2>&1
-30  3 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 /app/run_nightly.sh --far >> /var/log/lhlogging/flightstatus.log 2>&1
+30  3 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 45  5 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 FIS_LOOKAHEAD_DAYS=1 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
 0   9 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 30 10 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
-35 11 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
+20 11 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --far >> /var/log/lhlogging/flightstatus.log 2>&1
 0  13 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
 10 14 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
 30 15 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1

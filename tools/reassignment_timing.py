@@ -41,7 +41,7 @@ import collections
 import math
 import random
 import statistics
-from datetime import timedelta
+from datetime import date, timedelta
 
 from build_leg_outcomes import (BERLIN, DEFAULT_CSV, WIDEBODY, _d, _ts, build_leg, load,
                                 prepare)
@@ -56,10 +56,15 @@ LEAD_BINS = [(0, 3), (3, 6), (6, 12), (12, 24), (24, 36), (36, 48),
 # the crontab, and note that a long sweep's later lookups spill into the
 # following hours (a run is ~90 min of point queries, not an instant).
 PASSES = [(0, 10, "00:10 pulse"), (2, 0, "02:00 pulse"), (2, 45, "02:45 watch"),
-          (3, 30, "03:30 far"), (5, 45, "05:45 sweep-lite"), (9, 0, "09:00 pulse"),
-          (10, 30, "10:30 watch"), (11, 35, "11:35 pulse"), (13, 0, "13:00 watch"),
+          (3, 30, "03:30 pulse"), (5, 45, "05:45 sweep-lite"), (9, 0, "09:00 pulse"),
+          (10, 30, "10:30 watch"), (11, 20, "11:20 far"), (13, 0, "13:00 watch"),
           (14, 10, "14:10 pulse"), (15, 30, "15:30 watch"), (16, 45, "16:45 pulse"),
           (18, 15, "18:15 sweep-full"), (21, 15, "21:15 watch"), (22, 0, "22:00 pulse")]
+# Until 2026-10-11 the far pass ran at 03:30 and 11:35 had a pulse (they swapped
+# places on 2026-10-12, see flightstatus/crontab).
+SWAPPED = date(2026, 10, 12)
+PASSES_BEFORE = [(3, 30, "03:30 far") if p[:2] == (3, 30) else (11, 35, "11:35 pulse") if p[:2] == (11, 20) else p
+                 for p in PASSES]
 
 
 def bin_label(lo, hi):
@@ -73,11 +78,12 @@ def which_pass(dt):
     which this handles correctly, since the next slot is always further out than
     the previous one runs."""
     local = dt.astimezone(BERLIN)
+    passes = PASSES if local.date() >= SWAPPED else PASSES_BEFORE
     best = None
-    for hour, minute, name in PASSES:
+    for hour, minute, name in passes:
         if (hour, minute) <= (local.hour, local.minute):
             best = name
-    return best or PASSES[-1][2]  # before the first slot = last night's
+    return best or passes[-1][2]  # before the first slot = last night's
 
 
 def build(rows, since, want_types, all_types):

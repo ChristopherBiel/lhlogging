@@ -270,8 +270,8 @@ function recordFig(D) {
   const worst = C.slots.reduce((a, st) => st.bad / Math.max(st.n, 1) > a.bad / Math.max(a.n, 1) ? st : a, C.slots[0]);
   const parts = ['In the last ' + N + ' days ', [wrong + ' of ' + all], ' planned runs went wrong'];
   if (wrong) {
-    parts.push(', ', [nightBad + ' of them'], ' in the ' + night.length + ' slots between 02:00 and 06:30. The worst is the ',
-               [worst.at + ' ' + KIND[worst.kind]], ': ' + worst.bad + ' of ' + worst.n);
+    parts.push(', ', [nightBad + ' of them'], ' in the ' + night.length + ' slots between 02:00 and 06:30. The worst slot is ',
+               [worst.at], ': ' + worst.bad + ' of ' + worst.n);
     if (worst.streak > 1) parts.push(', the last ' + worst.streak + ' in a row');
   }
   parts.push('.');
@@ -299,7 +299,7 @@ function recordFig(D) {
       const d = dayIso(i), wd = new Date(d + 'T00:00:00Z').getUTCDay();
       if (wd === 1) {
         line(s, L, crisp(rowY(i)), L + pw, crisp(rowY(i)), 'grid');
-        text(s, L - 8, rowY(i) + rh - 2, (tight ? '' : 'Mon ') + isoDay(d), 't-row', 'end');
+        if (i < N - 1) text(s, L - 8, rowY(i) + rh - 2, (tight ? '' : 'Mon ') + isoDay(d), 't-row', 'end');   // the last row says "today"
       }
     }
     text(s, L - 8, rowY(N - 1) + rh - 2, 'today', 't-strong', 'end');
@@ -355,8 +355,8 @@ function recordFig(D) {
         hover.setAttribute('x', crisp(h.x)); hover.setAttribute('y', crisp(h.y));
         hover.setAttribute('width', h.w); hover.setAttribute('height', rh);
         hover.style.display = '';
-        const st = r.slot >= 0 ? C.slots[r.slot] : null, d = C.per_day[r.day];
-        showTip(ev, longDay(dayIso(r.day)) + ' · ' + (st ? st.at + ' ' + KIND[st.kind] : KIND.manual), [
+        const d = C.per_day[r.day];                                 // r.at, r.kind: the slot as it was that day
+        showTip(ev, longDay(dayIso(r.day)) + ' · ' + (r.kind ? r.at + ' ' + KIND[r.kind] : KIND.manual), [
           {key: 'ran', val: r.state === 'skipped' ? '—' : hhmm(r.s) + '–' + hhmm(r.e), sub: r.state === 'skipped' ? '' : (r.e - r.s) + ' min'},
           {key: 'found', val: r.state === 'skipped' ? '—' : r.found + ' of ' + r.total, sub: r.blocked ? r.blocked + ' blocked' : ''},
           {key: 'that day', val: num(d.found) + ' of ' + num(d.total), sub: d.blocked ? d.blocked + ' blocked' : ''}],
@@ -377,7 +377,10 @@ function recordFig(D) {
     'ahead; the 22:00 one, P+, also probes days 5 to 9), W a watch (the next hours’ departures), F the far pass (days 3 and 4), ' +
     'S a sweep (two days back to two or three ahead, every fleet). A run “went wrong” when nothing came back, when it was ' +
     'stopped after ten blocked lookups in a row, when a tenth of it was blocked, or when it did not start. ' +
-    'Lufthansa’s site decides what gets blocked; nothing here says why.';
+    'Lufthansa’s site decides what gets blocked; nothing here says why.' +
+    (C.changes || []).map(ch => ' The plan changed on ' + isoDay(ch.day) + ': ' +
+      ch.slots.map(c => 'the ' + c.was.at + ' ' + KIND[c.was.kind] + ' became the ' + c.now.at + ' ' + KIND[c.now.kind]).join(', ') +
+      '. A slot is a place in the day, so its share counts the runs before and after.').join('');
   return f;
 }
 

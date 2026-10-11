@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "dashboard"))
 import monitor_stats as ms  # noqa: E402
 
 B = ms.BERLIN
-NOW = datetime(2026, 10, 11, 16, 49, tzinfo=B)          # a Sunday afternoon
+NOW = datetime(2026, 10, 18, 16, 49, tzinfo=B)          # a Sunday afternoon, six days into the present plan
 TODAY = NOW.date()
 FAMILIES = {"B748": ("B748",), "A388": ("A388",), "B787": ("B788", "B789", "B78X"), "A350": ("A359", "A35K")}
 SLOT = {hhmm: i for i, (hhmm, _k) in enumerate(ms.SLOTS)}
@@ -45,7 +45,7 @@ def healthy(days=30, but=()):
     """Every slot of the last `days` days served, except (day, 'HH:MM') in `but`."""
     out = []
     for d in range(-days, 1):
-        for hhmm, _kind in ms.SLOTS:
+        for hhmm, _kind, _wait in ms.plan(TODAY + timedelta(days=d)):      # the slot's time that day
             if (d, hhmm) in but or at(d, hhmm, 40) > NOW:
                 continue
             out.append(run(d, hhmm))
@@ -104,7 +104,31 @@ class Plan(unittest.TestCase):
         self.assertEqual((per["wide"][1], per["wide"][3], per["wide"][4]), (2, 2, 1))
         self.assertNotIn(5, per["wide"])
         self.assertEqual((ms.horizon("deep"), ms.horizon("wide")), (9, 4))
-        self.assertEqual(ms.readers("wide", 4), [SLOT["03:30"]])           # one run reads their day 4
+        self.assertEqual(ms.readers("wide", 4), [SLOT["11:20"]])           # one run reads their day 4
+
+    def test_a_day_is_judged_by_the_plan_it_ran_under(self):
+        # the far pass and a pulse swapped places on 12 Oct 2026
+        swap = date(2026, 10, 12)
+        self.assertEqual((ms.plan(swap - timedelta(days=1))[3], ms.plan(swap - timedelta(days=1))[7]),
+                         (("03:30", "far", 30), ("11:35", "pulse", 10)))
+        self.assertEqual((ms.plan(swap)[3], ms.plan(swap)[7]), (("03:30", "pulse", 10), ("11:20", "far", 10)))
+        self.assertEqual([len(ms.plan(swap - timedelta(days=d))) for d in (1, 0)], [15, 15])
+        on = lambda day, h, m: datetime(day.year, day.month, day.day, h, m, tzinfo=B)
+        mk = lambda start: {"id": next(_ids), "status": "ok", "started_at": start, "finished_at": start + timedelta(minutes=11),
+                            "total": 64, "found": 64, "blocked": 0, "detail": None}
+        before, after = swap - timedelta(days=1), swap
+        runs = [mk(on(before, 3, 58)), mk(on(before, 11, 38)), mk(on(after, 3, 33)), mk(on(after, 11, 25))]
+        slots, extra = ms.match(runs, on(before, 0, 0), on(after, 23, 59), NOW)
+        got = [(s["at"].strftime("%d %H:%M"), s["kind"], s["slot"]) for s in slots if s["run"]]
+        self.assertEqual(got, [("11 03:30", "far", 3), ("11 11:35", "pulse", 7), ("12 03:30", "pulse", 3), ("12 11:20", "far", 7)])
+        self.assertEqual(extra, [])
+        rec = ms.record(slots, extra, NOW)                                 # both days are inside the 28
+        self.assertEqual(rec["changes"], [{"day": "2026-10-12", "slots": [
+            {"slot": 3, "was": {"at": "03:30", "kind": "far"}, "now": {"at": "03:30", "kind": "pulse"}},
+            {"slot": 7, "was": {"at": "11:35", "kind": "pulse"}, "now": {"at": "11:20", "kind": "far"}}]}])
+        self.assertEqual(sorted((r["at"], r["kind"]) for r in rec["runs"]),
+                         [("03:30", "far"), ("03:30", "pulse"), ("11:20", "far"), ("11:35", "pulse")])
+        self.assertEqual(ms.changes(swap + timedelta(days=1), swap + timedelta(days=30)), [])
 
     def test_the_queries_take_no_parameters(self):
         for name, sql in ms.QUERIES.items():
@@ -115,9 +139,9 @@ class Plan(unittest.TestCase):
 class Runs(unittest.TestCase):
     def test_outcome(self):
         self.assertEqual(ms.outcome(run(0, "09:00"), NOW), "ok")
-        self.assertEqual(ms.outcome(stopped(0, "03:30"), NOW), "failed")
+        self.assertEqual(ms.outcome(stopped(0, "11:20"), NOW), "failed")
         self.assertEqual(ms.outcome(run(0, "05:45", total=317, found=281, blocked=10, status="blocked"), NOW), "cut")
-        self.assertEqual(ms.outcome(run(0, "03:30", total=220, found=103, blocked=112), NOW), "cut")
+        self.assertEqual(ms.outcome(run(0, "11:20", total=220, found=103, blocked=112), NOW), "cut")
         self.assertEqual(ms.outcome(run(0, "02:45", total=7, found=0, blocked=7), NOW), "failed")   # under the breaker
         self.assertEqual(ms.outcome(run(0, "02:45", total=0, found=0), NOW), "ok")                  # nothing to watch
         self.assertEqual(ms.outcome(run(0, "16:45", status="running"), NOW), "running")
@@ -125,27 +149,28 @@ class Runs(unittest.TestCase):
         self.assertEqual(ms.outcome(None, NOW), "skipped")
 
     def test_a_slot_finds_its_run_inside_the_random_wait(self):
-        late = run(0, "03:30", plus=29)                      # the far pass may wait 30 min
+        late = run(0, "05:45", plus=29)                      # a sweep may wait 30 min
         hand = run(0, "07:40")                               # nobody's slot
         slots, extra = ms.match([late, hand, run(0, "09:00")], at(0, "00:00"), at(1, "00:00"), NOW)
         by = {s["at"].strftime("%H:%M"): s for s in slots}
-        self.assertIs(by["03:30"]["run"], late)
+        self.assertIs(by["05:45"]["run"], late)
         self.assertEqual(by["09:00"]["state"], "ok")
-        self.assertEqual(by["05:45"]["state"], "skipped")    # hours ago, and nothing ran
+        self.assertEqual(by["03:30"]["state"], "skipped")    # hours ago, and nothing ran
         self.assertEqual(by["16:45"]["state"], "planned")    # may still be waiting to start
         self.assertEqual(by["22:00"]["state"], "planned")
         self.assertEqual(extra, [hand])
 
     def test_the_record_counts_what_went_wrong_and_the_running_streak(self):
-        bad = {(d, "03:30") for d in (-3, -2, -1, 0)} | {(-9, "03:30")}
-        runs = healthy(but=bad) + [stopped(d, "03:30") for d in (-3, -2, -1, 0)]      # day -9: no run at all
+        # day -9 was under the plan before: the slot was the 11:35 pulse then, and nothing ran
+        bad = {(d, "11:20") for d in (-3, -2, -1, 0)} | {(-9, "11:35")}
+        runs = healthy(but=bad) + [stopped(d, "11:20") for d in (-3, -2, -1, 0)]
         slots, extra = ms.match(runs, NOW - timedelta(days=29), NOW + ms.READS_AHEAD, NOW)
         rec = ms.record(slots, extra, NOW)
-        far = rec["slots"][SLOT["03:30"]]
-        self.assertEqual((far["n"], far["bad"], far["streak"]), (28, 5, 4))
+        far = rec["slots"][SLOT["11:20"]]
+        self.assertEqual((far["n"], far["bad"], far["streak"]), (28, 5, 4))          # one record through the change
         self.assertEqual(far["last_ok"], (TODAY - timedelta(days=4)).isoformat())
         self.assertEqual(rec["slots"][SLOT["09:00"]]["bad"], 0)
-        self.assertEqual([k["slot"] for k in rec["skipped"]], [SLOT["03:30"]])
+        self.assertEqual([(k["slot"], k["at"], k["kind"]) for k in rec["skipped"]], [(SLOT["11:20"], "11:35", "pulse")])
         self.assertEqual(rec["per_day"][-1]["blocked"], 10)
         self.assertEqual(len(rec["runs"]), sum(st["n"] for st in rec["slots"]) - 1)   # all but the skipped one
 
@@ -162,9 +187,9 @@ class Reads(unittest.TestCase):
         return {(c["tier"], c["lead"]): c["state"] for c in slot["cells"]}, out
 
     def test_a_stopped_far_pass_leaves_its_days_missed(self):
-        far = stopped(0, "03:30")
+        far = stopped(0, "11:20")
         # the ten lookups it got out were day 1 of the 747-8: six seeded as such, four as A359
-        cells, out = self.cells([far], [self.lookup(far, 1, "B748", 6, 0), self.lookup(far, 1, "A359", 4, 0)], "03:30")
+        cells, out = self.cells([far], [self.lookup(far, 1, "B748", 6, 0), self.lookup(far, 1, "A359", 4, 0)], "11:20")
         self.assertEqual(cells[("deep", 1)], "failed")
         self.assertNotIn(("wide", 1), cells)                 # not a 787/A350 read: the far pass has none on day 1
         self.assertEqual((cells[("wide", 3)], cells[("wide", 4)], cells[("deep", 4)]), ("missed",) * 3)
@@ -207,25 +232,30 @@ class Coverage(unittest.TestCase):
         self.assertEqual(cov["B748"]["usual"], 22)
 
     def test_before_the_far_pass_day_4_is_not_yet_due(self):
-        early = at(0, "03:00")
+        early = at(0, "11:00")
         cov = {c["id"]: c for c in ms.coverage(self.rows(wide_to=3), early, FAMILIES)}
         self.assertEqual({x["lead"]: x["state"] for x in cov["A350"]["cells"]}[4], "unread")
 
-    def test_the_headline_names_the_failing_run_and_the_day_only_it_reads(self):
-        night = ("02:00", "03:30")
-        bad = {(d, h) for d in (-3, -2, -1, 0) for h in night}
+    def lines(self, bad, rows):
         runs = healthy(but=bad) + [stopped(d, h) for d, h in bad]
         slots, extra = ms.match(runs, NOW - timedelta(days=29), NOW + ms.READS_AHEAD, NOW)
-        rec = ms.record(slots, extra, NOW)
-        lines = ms.headline(slots, rec, ms.coverage(self.rows(), NOW, FAMILIES), NOW)
-        text = [(h["level"], "".join(p if isinstance(p, str) else p[0] for p in h["parts"])) for h in lines]
+        lines = ms.headline(slots, ms.record(slots, extra, NOW), ms.coverage(rows, NOW, FAMILIES), NOW)
+        return [(h["level"], "".join(p if isinstance(p, str) else p[0] for p in h["parts"])) for h in lines]
+
+    def test_the_headline_names_the_failing_runs_and_the_day_only_they_read(self):
+        text = self.lines({(d, h) for d in (-3, -2, -1, 0) for h in ("03:30", "11:20")}, self.rows())
         self.assertEqual(text[0][0], "ok")
         self.assertIn("Schedule last read", text[0][1])
-        self.assertEqual(text[1], ("ok", "747-8 and A380: plan known through Mon 19 Oct."))
-        self.assertEqual(text[2], ("bad", "787 and A350: plan known through Tue 13 Oct, 2 days short "
+        self.assertEqual(text[1], ("ok", "747-8 and A380: plan known through Mon 26 Oct."))
+        self.assertEqual(text[2], ("bad", "787 and A350: plan known through Tue 20 Oct, 2 days short "
                                           "of what should have been read by now."))
-        self.assertEqual(text[-1], ("bad", "The 02:00 pulse and 03:30 far pass have failed 4 days running. "
-                                           "The 03:30 far pass is the only read of day 4 for the 787 and A350."))
+        self.assertEqual(text[-1], ("bad", "The 03:30 and 11:20 runs have failed 4 days running. "
+                                           "The 11:20 far pass is the only read of day 4 for the 787 and A350."))
+        alone = self.lines({(d, "11:20") for d in (-1, 0)}, self.rows())
+        self.assertEqual(alone[-1], ("bad", "The 11:20 run has failed 2 days running. "
+                                            "It is the only read of day 4 for the 787 and A350."))
+        night = self.lines({(d, h) for d in (-2, -1, 0) for h in ("02:00", "03:30")}, self.rows(wide_to=4))
+        self.assertEqual(night[-1], ("bad", "The 02:00 and 03:30 runs have failed 3 days running."))   # no day depends on them
 
     def test_a_quiet_day_says_so(self):
         runs = healthy()

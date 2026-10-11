@@ -49,13 +49,22 @@ KIND_NAME = {"pulse": "pulse", "probe": "pulse and probe", "watch": "watch",
              "far": "far pass", "lite": "morning sweep", "full": "evening sweep"}
 # the 15 slots of a day, Berlin time
 SLOTS = (
-    ("00:10", "pulse"), ("02:00", "pulse"), ("02:45", "watch"), ("03:30", "far"),
-    ("05:45", "lite"), ("09:00", "pulse"), ("10:30", "watch"), ("11:35", "pulse"),
+    ("00:10", "pulse"), ("02:00", "pulse"), ("02:45", "watch"), ("03:30", "pulse"),
+    ("05:45", "lite"), ("09:00", "pulse"), ("10:30", "watch"), ("11:20", "far"),
     ("13:00", "watch"), ("14:10", "pulse"), ("15:30", "watch"), ("16:45", "pulse"),
     ("18:15", "full"), ("21:15", "watch"), ("22:00", "probe"),
 )
 # each start is delayed by a random wait of up to this many minutes
-JITTER_MIN = {"pulse": 10, "probe": 10, "watch": 15, "far": 30, "lite": 30, "full": 30}
+JITTER_MIN = {"pulse": 10, "probe": 10, "watch": 15, "far": 10, "lite": 30, "full": 30}
+# What the plan was before it changed: {first day of the new plan: {slot:
+# (start, kind, longest wait)}}. A day is judged by the plan it ran under. A
+# slot keeps its number through a change, so its record runs on: it is a place
+# in the day, whatever pass has it.
+EARLIER = {
+    # the far pass left the night, where most of its runs were refused, for
+    # noon, and swapped places with a pulse
+    date(2026, 10, 12): {3: ("03:30", "far", 30), 7: ("11:35", "pulse", 10)},
+}
 # how long a pass of each kind takes when nothing is known yet (minutes)
 TYPICAL_MIN = {"pulse": 11, "probe": 45, "watch": 6, "far": 60, "lite": 85, "full": 100}
 FIRST_LEAD, LAST_LEAD = -2, 9
@@ -189,15 +198,38 @@ def _at(day, hhmm):
     return datetime.combine(day, time(int(h), int(m)), tzinfo=BERLIN)
 
 
+def plan(day):
+    """The slots in force on `day`: [(start, kind, longest wait in minutes)]."""
+    out = [(hhmm, kind, JITTER_MIN[kind]) for hhmm, kind in SLOTS]
+    for since in sorted(EARLIER, reverse=True):          # undo the changes made after that day
+        if day < since:
+            for i, was in EARLIER[since].items():
+                out[i] = was
+    return out
+
+
+def changes(first, last):
+    """The changes of plan that took effect in [first, last], oldest first:
+    [{day, slots: [{slot, was: {at, kind}, now: {at, kind}}]}]."""
+    out = []
+    for since in sorted(EARLIER):
+        if first <= since <= last:
+            new = plan(since)
+            out.append({"day": since.isoformat(), "slots": [
+                {"slot": i, "was": {"at": was[0], "kind": was[1]}, "now": {"at": new[i][0], "kind": new[i][1]}}
+                for i, was in sorted(EARLIER[since].items())]})
+    return out
+
+
 def slots_between(start, end):
     """Every planned slot whose nominal start lies in [start, end)."""
     out = []
     day = start.astimezone(BERLIN).date()
     while day <= end.astimezone(BERLIN).date():
-        for i, (hhmm, kind) in enumerate(SLOTS):
+        for i, (hhmm, kind, wait) in enumerate(plan(day)):
             at = _at(day, hhmm)
             if start <= at < end:
-                out.append({"at": at, "kind": kind, "slot": i})
+                out.append({"at": at, "kind": kind, "slot": i, "wait": wait})
         day += timedelta(days=1)
     return out
 
@@ -250,7 +282,7 @@ def match(runs, start, end, now):
     runs = sorted((r for r in runs if r.get("started_at")), key=lambda r: r["started_at"])
     used, out = set(), []
     for s in slots_between(start, end):
-        latest = s["at"] + timedelta(minutes=JITTER_MIN[s["kind"]])
+        latest = s["at"] + timedelta(minutes=s["wait"])
         run = next((r for r in runs if r["id"] not in used
                     and s["at"] - timedelta(minutes=1) <= r["started_at"] <= latest + timedelta(minutes=5)), None)
         if run is not None:
@@ -361,7 +393,7 @@ def _due(tier, now, back=11):
     once a slot that reads it lies behind us (start, longest wait, typical run)."""
     due = set()
     for s in slots_between(now - timedelta(days=back), now):
-        done = s["at"] + timedelta(minutes=JITTER_MIN[s["kind"]] + TYPICAL_MIN[s["kind"]])
+        done = s["at"] + timedelta(minutes=s["wait"] + TYPICAL_MIN[s["kind"]])
         if done <= now:
             for lead in READS[s["kind"]].get(tier, ()):
                 due.add(s["at"].date() + timedelta(days=lead))
@@ -424,14 +456,16 @@ def record(slots, extra, now, days=RECORD_DAYS):
              for hhmm, kind in SLOTS]
     open_streak = [True] * len(SLOTS)
 
-    def bar(run, state, slot):
+    def bar(run, state, s=None):
         start = run["started_at"].astimezone(BERLIN)
         end = run.get("finished_at") or (now if state == "running" else run["started_at"])
         end = end.astimezone(BERLIN)
         last = 24 * 60 if end.date() > start.date() else minute(end)
-        out = {"day": idx(start.date()), "slot": slot, "state": state,
+        out = {"day": idx(start.date()), "slot": s["slot"] if s else -1, "state": state,
                "s": minute(start), "e": max(last, minute(start)),
                "total": run["total"] or 0, "found": run["found"] or 0, "blocked": run["blocked"] or 0}
+        if s:                                            # the slot as it was that day
+            out.update(at=s["at"].strftime("%H:%M"), kind=s["kind"])
         if run.get("detail"):
             out["detail"] = run["detail"]
         return out
@@ -439,7 +473,7 @@ def record(slots, extra, now, days=RECORD_DAYS):
     for s in sorted(slots, key=lambda s: s["at"], reverse=True):     # newest first, for the streaks
         if not first <= s["at"].date() <= today or s["state"] in ("planned", "running"):
             if s["state"] == "running" and s["run"]:
-                runs.append(bar(s["run"], "running", s["slot"]))
+                runs.append(bar(s["run"], "running", s))
             continue
         st = stats[s["slot"]]
         st["n"] += 1
@@ -452,20 +486,20 @@ def record(slots, extra, now, days=RECORD_DAYS):
             if st["last_ok"] is None:
                 st["last_ok"] = s["at"].date().isoformat()
         if s["run"]:
-            runs.append(bar(s["run"], s["state"], s["slot"]))
+            runs.append(bar(s["run"], s["state"], s))
         else:
-            skipped.append({"day": idx(s["at"].date()), "slot": s["slot"],
-                            "s": s["at"].hour * 60 + s["at"].minute})
+            skipped.append({"day": idx(s["at"].date()), "slot": s["slot"], "kind": s["kind"],
+                            "at": s["at"].strftime("%H:%M"), "s": s["at"].hour * 60 + s["at"].minute})
     for r in extra:
         if first <= r["started_at"].astimezone(BERLIN).date() <= today:
-            runs.append(bar(r, outcome(r, now), -1))
+            runs.append(bar(r, outcome(r, now)))
     runs = sorted((r for r in runs if 0 <= r["day"] < days), key=lambda r: (r["day"], r["s"]))
     per_day = [{"total": 0, "found": 0, "blocked": 0} for _ in range(days)]
     for r in runs:
         for k in per_day[r["day"]]:
             per_day[r["day"]][k] += r[k]
     return {"first": first.isoformat(), "days": days, "slots": stats, "runs": runs,
-            "skipped": skipped, "per_day": per_day, "now": minute(now)}
+            "skipped": skipped, "per_day": per_day, "now": minute(now), "changes": changes(first, today)}
 
 
 # ── the status, in sentences ───────────────────────────────────────────────
@@ -544,7 +578,8 @@ def headline(slots, rec, cov, now):
     if failing:
         streaks = {rec["slots"][i]["streak"] for i in failing}
         label = lambda i: "%s %s" % (SLOTS[i][0], KIND_NAME[SLOTS[i][1]])
-        parts = ["The ", [_join(label(i) for i in failing)],
+        # by its time only: a slot may have changed its pass inside the streak
+        parts = ["The ", ["%s run%s" % (_join(SLOTS[i][0] for i in failing), "" if len(failing) == 1 else "s")],
                  " %s failed %s%d days running." % ("has" if len(failing) == 1 else "have",
                                                     "" if len(streaks) == 1 else "up to ", max(streaks))]
         # a lost day only matters where the plan reads nothing further out

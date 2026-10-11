@@ -31,8 +31,8 @@ Run modes:
   python fetch_flightstatus.py                 # near sweep (catalog x -BACKFILL..+LOOKAHEAD days,
                                                 #   incl. D0; owns discovery/pairing/catalog lifecycle)
   python fetch_flightstatus.py --far           # far pass: catalog x D+FAR_MIN..D+FAR_MAX only,
-                                                #   read-only against the catalog, run once in a quiet
-                                                #   window since nothing here needs same-day freshness
+                                                #   read-only against the catalog, run once a day
+                                                #   (around noon, when the feed is at its most reliable)
   python fetch_flightstatus.py --watch 4.5     # watch pass: re-check flights departing in the next 4.5h
   python fetch_flightstatus.py --pulse         # pulse pass: deep-tier numbers x D+PULSE_OFFSETS only,
                                                 #   ~7x/day, so deep-tier brackets stay under ~3h
@@ -80,14 +80,14 @@ SEED_LOOKBACK_DAYS = int(os.environ.get("FIS_SEED_LOOKBACK_DAYS", "2"))
 # LOOKAHEAD_DAYS=4 the catalog had grown past MAX_LOOKUPS, silently dropping
 # all of D+4 and part of D+3 every run).
 LOOKAHEAD_DAYS = int(os.environ.get("FIS_LOOKAHEAD_DAYS", "2"))
-# Far pass (--far, run once nightly in the quiet window after the red-eye
-# watch): re-checks D+FAR_MIN_DAYS..D+FAR_MAX_DAYS only. No discovery, no
+# Far pass (--far, once a day; at 03:30 until 2026-10-12, since then at 11:20,
+# out of the night hours in which the feed refuses most sessions — see the
+# crontab): re-checks D+FAR_MIN_DAYS..D+FAR_MAX_DAYS only. No discovery, no
 # chaining, no catalog prune — those stay owned by the near sweeps, which run
 # twice daily and keep the catalog current enough for this to just read it.
-# Nothing depends on same-day freshness this far out, so it's free to take
-# hours without risking the next scheduled slot. It also carries the deep tier's
-# PULSE_OFFSETS: it is the only run in the 03:00-05:00 window, so without that
-# the pulse cadence would have a hole there (see PULSE_OFFSETS below).
+# Nothing depends on same-day freshness this far out. It also carries the deep
+# tier's PULSE_OFFSETS and asks them first (nearest dates first), so it stands
+# in for the pulse whose slot it has (see PULSE_OFFSETS below).
 FAR_MIN_DAYS = int(os.environ.get("FIS_FAR_MIN_DAYS", "3"))
 # Broad-tier ceiling. Was 5 until 2026-07-26: a change first seen at D+4 or D+5
 # is the tail that ends up flying 0-5% of the time, so those lookups bought
@@ -1217,8 +1217,8 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
     today = date.today()
     # Target dates are per-tier: the deep and wide tiers get an extra lookahead
     # day on the near sweeps and D+4 on the far pass; the deep tier's far pass
-    # also carries the pulse offsets (nothing else runs between 03:00 and 05:00,
-    # so the pulse cadence would otherwise have a hole).
+    # also carries the pulse offsets (it runs in a pulse's slot, and without
+    # them the pulse cadence would have a hole there).
     deep = deep_numbers(conn)
     wide = {n: t for n, t in wide_numbers(conn).items() if n not in deep}
     if far:

@@ -86,16 +86,19 @@ Three smaller changes close the gaps this opened up:
   (~18:30 on F-2) — the seam that used to leave a D+2/D+3 reassignment stale for
   most of two days. The former keeps D+1 and D+2 on an *identical* sampling
   pattern, so comparing their hazards isn't confounded by the sampling grid.
-- **the far pass carries the deep tier's D+1/D+2** as well. It is the only run
-  between 03:00 and 05:00, so without that the pulse cadence would have a hole
-  there.
+- **the far pass carries the deep tier's D+1/D+2** as well, and asks them first
+  (nearest dates first), so it stands in for a pulse: until 2026-10-11 for the
+  one missing between 03:00 and 05:00, since 2026-10-12 for the midday one
+  (see "The far pass by day" below).
 
 Result for a deep-tier leg — 10 looks/day at D+1/D+2, max gap ~2.8h:
 
 ```
-02:00p → 03:40far → 06:30lite → 09:00p → 11:35p → 14:10p → 16:45p → 19:20full → 22:00p → 00:10p → 02:00p
-   1.7h      2.8h       2.5h      2.6h     2.6h     2.6h      2.6h       2.7h      2.2h      1.8h
+02:00p → 03:30p → 06:30lite → 09:00p → 11:20far → 14:10p → 16:45p → 19:20full → 22:00p → 00:10p → 02:00p
+   1.5h     3.0h       2.5h      2.3h      2.8h      2.6h      2.6h       2.7h      2.2h      1.8h
 ```
+
+(Before 2026-10-12: `… 02:00p → 03:40far → 06:30lite → 09:00p → 11:35p → 14:10p …`.)
 
 Expected yield: ~23 reassignments a day dated to under 3h, against zero dated to
 within 6h before.
@@ -174,6 +177,7 @@ changed four times and staleness statistics are meaningless across the seams:
 | 2026-07-26 | this schedule: tiering + pulses |
 | 2026-09-24 | 22:00 pulse also probes the deep tier at D+5..D+9 |
 | 2026-10-06 | wide tier (787/A350): sweeps +1 day, far D+4 |
+| 2026-10-12 | far pass moved from 03:30 to 11:20; 03:30 is a pulse, the 11:35 pulse is gone (the far pass asks its slices first) |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.
@@ -207,6 +211,48 @@ median moved and whether hour-of-day now clears the null:
 python3 tools/build_leg_outcomes.py --since <deploy-date>
 python3 tools/reassignment_timing.py --since <deploy-date> --type B748 --type A388
 ```
+
+## The far pass by day (2026-10-12)
+
+The collector's log (`/var/log/lhlogging/flightstatus.log`, 20 Sep to 11 Oct)
+shows that a run is decided when it opens its browser session, by how the
+timetable page load is answered:
+
+| page load answered | sessions | lookups that worked | refused |
+|---|---|---|---|
+| 403 — the bot check, which the headed browser passes | 2,203 | 35,259 | 1,827 |
+| 200 — the page without a check | 1,652 | 2 | 2,361 |
+
+So a "blocked" run is neither a rate limit nor an outage: its session was never
+checked, and the retry (wait 45 s, open a fresh session) loads the same page.
+After an unchecked session the next one was checked 13 times out of 13 in July,
+about one time in ten since August.
+
+Unchecked sessions cluster between 02:00 and 06:30 Berlin: over the whole log
+the first session of a run was unchecked in 29% of the runs starting in the
+02:00 hour, 45% in the 03:00 hour, about 25% in the 05:00 and 06:00 hours, and
+2–5% in every other hour. From 8 to 11 October the state held all night, and
+the far pass — then at 03:30, and the only read of D+4 for the 787/A350 —
+failed four nights running.
+
+Lookups refused per Berlin hour, 20 Sep to 11 Oct (days with a fifth or more of
+the hour's lookups refused, of the days with lookups in that hour):
+
+| 00h | 02h | 03h | 04h | 05h | 06h | 07h | 09h | 10h | 11h | 13h | 14h | 15h | 16h | 18h | 19h | 20h | 21h | 22h |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1/21 | 8/22 | 10/22 | 6/19 | 2/15 | 7/20 | 3/15 | 0/22 | 1/22 | 0/22 | 0/22 | 1/22 | 3/22 | 3/21 | 1/22 | 1/21 | 0/12 | 2/21 | 4/21 |
+
+The far pass therefore took the 11:35 pulse's place, and 03:30 got a plain pulse
+in exchange (the far pass asks the deep tier's D+1/D+2 first, so it is that
+pulse with ~245 more lookups behind it). 09:00 is as clean but leaves 90 min to
+the 10:30 watch; the far pass's ~311 lookups take 55–65 min by day. Starting at
+11:20 with the pulses' 10 min of jitter it ends by ~12:35, 25 min before the
+13:00 watch. Lookups per day are unchanged; the deep tier's afternoon bracket
+widens from 2.6h to 2.8h.
+
+Why the page comes without a check at night is not known: served differently
+off-peak (a cache, a reduced mode), or the bot protection treating the address
+differently then.
 
 ## Known gaps
 
