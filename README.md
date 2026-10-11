@@ -104,6 +104,8 @@ lhlogging/
 │   └── requirements.txt
 ├── dashboard/                      # Monitoring UI + fleet-catching pages
 │   ├── app.py                      # Flask app: / (monitor), /book, /schedule, /insights, /fleet
+│   ├── leg_stats.py                # Descriptive statistics over the leg layer (/insights, /airframe)
+│   ├── static/                     # Stylesheets, fonts and the /insights figures (js/insights.js)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── db/
@@ -350,10 +352,29 @@ assignment is to still hold by departure.
   Linked from every tail on `/book`, `/schedule`, `/insights` and `/fleet`.
 - **`/schedule`** — per-airframe upcoming timeline from the latest snapshot of
   each flight, grouped by tail.
-- **`/insights`** — descriptive, backward-looking analytics per aircraft
-  type/family (747-8, A380, 787, A350) from the leg layer (the tail FIS
-  reports as having flown each flight): route frequency, rotation transitions,
-  per-airframe profiles, and reassignment reliability.
+- **`/insights`** — the fleet field guide: one page per family (747-8, A380,
+  787, A350) of the patterns that make a booking better, from the leg layer
+  (the tail FIS reports as having flown each flight) over the same eight weeks
+  the booking model reads. Five figures, each a question with its finding
+  spelled out, a plot and the table behind it:
+  1. *When can I trust a published tail?* — hold rate against hours before
+     departure for all four fleets (95% intervals, the even-share baseline, the
+     leads at which it crosses 50% and 80%), and what an hour of waiting buys.
+  2. *Which flights are the safer bet?* — hold rate per route, outbound against
+     return, against the fleet's rate, at 24/48/72 h.
+  3. *What does a plane do next?* — every hub turnaround as a strand from the
+     arriving flight to the same tail's next departure, on the hub's clock.
+  4. *Who flies where?* — flights per tail and route, tails grouped by cabin
+     and both sides ordered so sub-fleets show as blocks; First / Allegris
+     share per route underneath.
+  5. *Is my tail even flying?* — block hours per tail and day, with every
+     stretch of three days or more without a flight.
+
+  Above them, what changed lately: tails out of the rotation or back in it,
+  new and paused routes, diversions, cancellations. Backward-looking only —
+  the predictions live on `/book`. The arithmetic is `dashboard/leg_stats.py`
+  (`insights()`, unit-tested); the figures are hand-drawn SVG in
+  `dashboard/static/js/insights.js` (no chart library, no third-party request).
 - **`/fleet`** — the aircraft database: one row per airframe, drill into a tail's
   ADS-B flight log and route history.
 

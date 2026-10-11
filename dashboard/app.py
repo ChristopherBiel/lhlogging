@@ -4749,10 +4749,12 @@ def api_book_network():
                     "generated": datetime.now(timezone.utc).isoformat()})
 
 
-# Insights tab → member aircraft types. Family tabs aggregate every variant,
-# incl. the not-yet-delivered ones (same rationale as _SCHEDULE_TYPES): they
-# show up the day the collector first sees one. Single ICAO codes still work.
+# Insights tab -> member aircraft types, in display order. A family aggregates
+# every variant, incl. the not-yet-delivered ones (same rationale as
+# _SCHEDULE_TYPES): they show up the day the collector first sees one.
 _INSIGHT_FAMILIES = {
+    "B748": ("B748",),
+    "A388": ("A388",),
     "B787": ("B788", "B789", "B78X"),
     "A350": ("A359", "A35K"),
 }
@@ -4760,58 +4762,31 @@ _INSIGHT_FAMILIES = {
 
 @app.route("/api/insights")
 def api_insights():
-    """Descriptive fleet analytics for one aircraft type or family (optionally
-    one tail), from the leg layer: the tail FIS reports as having flown each
-    flight, so routes and rotations are flight numbers and IATA pairs rather
-    than ADS-B detections. Route frequency, rotation transitions, per-airframe
-    profiles and schedule reliability. Purely backward-looking; no prediction."""
+    """The fleet field guide for one aircraft family (leg_stats.insights), from
+    the leg layer — the tail FIS reports as having flown each flight: when a
+    published tail can be trusted, which routes hold best, what a tail flies
+    next from the hub, who flies where, the fleet calendar and what changed
+    lately. Backward-looking; the predictions live on /book. `type` is a
+    family or one of its members (the /airframe page links its tail's type)."""
     atype = (request.args.get("type") or "B748").strip().upper()
-    reg = (request.args.get("reg") or "").strip().upper() or None
-    members = list(_INSIGHT_FAMILIES.get(atype, (atype,)))
-    short = _CANON_SHORT.get(atype, atype)
+    family = next((f for f, m in _INSIGHT_FAMILIES.items() if atype == f or atype in m), "B748")
     try:
         conn = _db()
     except Exception as e:
         return jsonify({"error": str(e)}), 503
     try:
-        stats, _hist = _booking_model(conn)
-        if stats is None:
+        _stats, hist = _booking_model(conn)
+        if hist is None:
             return jsonify({"error": "insights need the leg layer (migration 010)"}), 503
+        # twice the calendar: a tail parked since before it still gets its row
         legs = [_leg_from_row(r) for r in _q(
-            conn, _leg_sql(conn) + " WHERE fleet_type = ANY(%s) ORDER BY dep_utc", (members,))]
+            conn, _leg_sql(conn) + " WHERE fleet_type = ANY(%s) AND flight_date >= CURRENT_DATE - %s"
+                                   " ORDER BY dep_utc",
+            (list(_INSIGHT_FAMILIES[family]), 2 * leg_stats.CALENDAR_DAYS))]
     finally:
         conn.close()
-
-    scoped = [l for l in legs if not reg or l["truth_tail"] == reg]
-    done = leg_stats.flown(scoped)
-    # hold rate by lead band (hours), n-weighted over the family's members
-    hold = {}
-    for t in members:
-        for b in booking_model.BANDS_H:
-            held, n = stats.hold.get(("all", t, b), (0, 0))
-            if n:
-                cell = hold.setdefault(b, [0, 0])
-                cell[0] += held
-                cell[1] += n
-    return jsonify({
-        "type": atype, "short": short, "reg": reg, "members": members,
-        "meta": {"flights": len(done), "tails": len({l["truth_tail"] for l in done}),
-                 "first": done[0]["flight_date"].isoformat() if done else None,
-                 "last": done[-1]["flight_date"].isoformat() if done else None},
-        "routes": leg_stats.route_counts(scoped),
-        "airframes": leg_stats.airframe_profiles(scoped),
-        "rotation": leg_stats.rotation(scoped),
-        "reliability": {
-            # the published horizon + a day, so the D+5..D+9 probe (and any
-            # later widening) doesn't inflate the series
-            "reschedulings": leg_stats.reschedulings(legs, (BOOK_HORIZON_DAYS + 1) * 24),
-            "ontime": leg_stats.status_mix(l for l in legs
-                                           if l["flight_date"] >= date.today() - timedelta(days=28)
-                                           and l["flight_date"] <= date.today()),
-            "hold_by_band": {b: {"p": h / n, "n": n} for b, (h, n) in sorted(hold.items())},
-        },
-        "generated": datetime.now(timezone.utc).isoformat(),
-    })
+    return jsonify(leg_stats.insights(legs, hist, _INSIGHT_FAMILIES, family,
+                                      datetime.now(timezone.utc)))
 
 
 _SCHEDULE_HTML = """\
@@ -6090,7 +6065,7 @@ _INSIGHTS_HTML = """\
 <link rel="stylesheet" href="/static/css/fonts.css">
 <link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
 <link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/insights.css">
+<link rel="stylesheet" href="/static/css/insights.css?v={{ v }}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body class="fp" data-fp-intensity="02">
@@ -6100,7 +6075,7 @@ _INSIGHTS_HTML = """\
       <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
       <div>
         <h1>Fleet <span>Insights</span></h1>
-        <div class="fp-label model">INSIGHTS &middot; Fleet Analytics</div>
+        <div class="fp-label model">INSIGHTS &middot; Field Guide</div>
       </div>
     </div>
     <nav class="nav">
@@ -6110,141 +6085,34 @@ _INSIGHTS_HTML = """\
       <a class="nav-link" href="/">&larr; Monitor</a>
     </nav>
   </div>
-    <div class="controls">
-    <div class="fp-seg">
-      <a href="/insights?type=B748" id="seg-B748">747-8</a>
-      <a href="/insights?type=A388" id="seg-A388">A380</a>
-      <a href="/insights?type=B787" id="seg-B787">787</a>
-      <a href="/insights?type=A350" id="seg-A350">A350</a>
-    </div>
-    <input id="tail-in" type="text" placeholder="filter one tail, e.g. D-ABYN">
+  <div class="controls">
+    <div class="fp-seg" id="fleets"></div>
+    <div class="meta" id="meta">Loading&hellip;</div>
   </div>
-  <div class="meta" id="meta">Loading&hellip;</div>
   <div id="body"></div>
 </div>
 <footer>
-  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
+  <a href="/impressum">Impressum</a> <span class="sep">&middot;</span> <a href="/datenschutz">Datenschutz</a>
 </footer>
-<script>
-const $ = id => document.getElementById(id);
-// The tails this visitor planned on /book (browser storage, no accounts).
-function myTargets(){
-  try { const v = JSON.parse(localStorage.getItem('lh.targets') || '[]'); return new Set(Array.isArray(v) ? v : []); }
-  catch(e){ return new Set(); }
-}
-const P = new URLSearchParams(location.search);
-const TYPE = (P.get('type') || 'B748').toUpperCase();
-const REG = (P.get('reg') || '').toUpperCase();
-
-function fmtMin(m){ if(m==null) return '—'; return Math.floor(m/60)+'h'+String(m%60).padStart(2,'0'); }
-function shortDate(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{day:'2-digit',month:'short',timeZone:'UTC'}); }
-function esc(s){ return (s==null?'':String(s)).replace(/"/g,'&quot;'); }
-
-function tailLink(reg){ return '<a class="tail-link" href="/airframe/'+encodeURIComponent(reg)+'">'+reg+'</a>'; }
-function routesTable(routes){
-  if(!routes.length) return '<div class="empty">No routes yet.</div>';
-  let h='<table><tr><th>Route</th><th class="r">Flights</th><th class="r">Median block</th></tr>';
-  routes.slice(0,15).forEach(r=>{ h+='<tr><td>'+r.route+'</td><td class="r">'+r.n+'</td><td class="r">'+fmtMin(r.median_min)+'</td></tr>'; });
-  return h+'</table>';
-}
-function rotationList(rot){
-  if(!rot.length) return '<div class="empty">Not enough sequence data.</div>';
-  let h='<table><tr><th>After</th><th>most often flies</th><th class="r">n</th></tr>';
-  rot.slice(0,14).forEach(r=>{ h+='<tr><td>'+r.from+'</td><td>'+r.to+'</td><td class="r">'+r.n+'</td></tr>'; });
-  return h+'</table>';
-}
-function airframesTable(af){
-  if(!af.length) return '<div class="empty">No airframes.</div>';
-  const mixed = new Set(af.map(a=>a.type)).size > 1;  // family tab with >1 variant
-  let h='<table><tr><th>Tail</th>'+(mixed?'<th>Type</th>':'')+'<th class="r">Legs</th><th class="r">Hours</th><th class="r">Longest gap</th><th class="r">Last seen</th></tr>';
-  af.forEach(a=>{
-    h+='<tr><td class="tail-reg">'+(a.watch?'<span class="star">&#9733;</span>':'')+tailLink(a.reg)+'</td>'
-      +(mixed?'<td>'+(a.type||'')+'</td>':'')
-      +'<td class="r">'+a.legs+'</td><td class="r">'+a.hours+'h</td>'
-      +'<td class="r">'+(a.max_ground_days!=null?a.max_ground_days+'d':'—')+'</td>'
-      +'<td class="r">'+shortDate(a.last)+'</td></tr>';
-  });
-  return h+'</table>';
-}
-function reschedChart(rel){
-  const data = (rel && rel.reschedulings) || [];
-  if(!data.length) return '<div class="empty">No schedule data collected for this type yet.</div>';
-  const max = Math.max(1, ...data.map(d=>d.n));
-  let bars='';
-  data.forEach((d,i)=>{
-    const px = Math.round(d.n/max*148);
-    const isBase = i===0 && d.n===0;
-    const tip = shortDate(d.date)+': '+d.n+' reschedulings'
-      + (isBase ? '  (collection start)' : '');
-    bars += '<div class="rs-col'+(isBase?' rs-base':'')+'" title="'+esc(tip)+'">'
-      + '<div class="rs-n">'+d.n+'</div>'
-      + '<div class="rs-barwrap"><div class="rs-bar" style="height:'+Math.max(2,px)+'px"></div></div>'
-      + '<div class="rs-date">'+shortDate(d.date)+'</div></div>';
-  });
-  return '<div class="rs-chart">'+bars+'</div>'
-    + '<div class="legend"><span><span class="sw" style="background:var(--accent)"></span>reschedulings/day</span></div>';
-}
-function ontimeBar(rel){
-  const ot = (rel && rel.ontime) || [];
-  if(!ot.length) return '';
-  const total = ot.reduce((s,x)=>s+x.n,0) || 1;
-  const col = s => s==='ONTIME'||s==='EARLY'||s==='ARRIVED' ? 'var(--fp-dv-1)' : s==='DELAYED' ? 'var(--fp-dv-3)' : 'var(--fp-dv-6)';
-  let seg='', list=[];
-  ot.forEach(x=>{ seg+='<div class="ot-seg" style="width:'+(x.n/total*100)+'%;background:'+col(x.status)+'" title="'+esc(x.status+': '+x.n)+'"></div>'; list.push(x.status+' '+x.n); });
-  return '<div class="subhead">Status mix, last 4 weeks (latest look per flight)</div><div class="ot-bar">'+seg+'</div><div class="ot-list">'+list.join('  \\u00b7  ')+'</div>';
-}
-function holdTable(rel){
-  const hb = rel && rel.hold_by_band;
-  if(!hb) return '';
-  const bands = Object.keys(hb).map(Number).sort((a,b)=>b-a);
-  if(!bands.length) return '';
-  let h='<div class="subhead" style="margin-top:var(--fp-space-3)">Tail holds by lead (how often the tail published this far out is the one that flies, last 8 weeks)</div>';
-  h+='<table><tr><th>Hours out</th><th class="r">Holds</th><th class="r">n</th></tr>';
-  bands.forEach(b=>{ const c=hb[b]; h+='<tr><td>'+b+'h</td><td class="r">'+Math.round(c.p*100)+'%</td><td class="r">'+c.n+'</td></tr>'; });
-  return h+'</table>';
-}
-
-function module(title, sub, inner){
-  return '<div class="module"><div class="modhead">'+title+(sub?'<span class="sub">'+sub+'</span>':'')+'</div><div class="modbody">'+inner+'</div></div>';
-}
-
-async function init(){
-  $('seg-'+TYPE) && $('seg-'+TYPE).classList.add('active');
-  if(REG) $('tail-in').value = REG;
-  let d;
-  try { d = await (await fetch('/api/insights?type='+encodeURIComponent(TYPE)+(REG?'&reg='+encodeURIComponent(REG):''))).json(); }
-  catch(e){ $('body').innerHTML='<div class="empty">Failed to load.</div>'; $('meta').textContent=''; return; }
-  if(d.error){ $('body').innerHTML='<div class="empty">'+d.error+'</div>'; return; }
-  const MINE = myTargets();   // starred = the visitor's own tails (planned on /book)
-  (d.airframes||[]).forEach(a => { a.watch = MINE.has(a.reg); });
-  const m=d.meta||{};
-  $('meta').innerHTML = '<b>'+(d.type||'')+'</b>'+(REG?' &middot; '+REG:'')+' &middot; <b>'+(m.flights||0)+'</b> flights &middot; <b>'+(m.tails||0)+'</b> tails &middot; '+shortDate(m.first)+' &ndash; '+shortDate(m.last);
-
-  let html = '';
-  html += module('Schedule reliability', 'reschedulings',
-      '<div class="rs-note">Bars = tail changes each day, dated by the look that revealed them (within the published horizon).</div>'
-      + reschedChart(d.reliability)
-      + '<div style="margin-top:var(--fp-space-3)">' + ontimeBar(d.reliability) + holdTable(d.reliability) + '</div>');
-  html += module('Routes &amp; rotation', 'where this '+(REG||d.type)+' flies',
-      '<div class="cols"><div><div class="subhead">Top routes</div>'+routesTable(d.routes)+'</div>'
-      + '<div><div class="subhead">Typical next leg</div>'+rotationList(d.rotation)+'</div></div>');
-  html += module('Per-airframe profiles', 'utilisation &amp; longest time on the ground &middot; click a tail for its profile',
-      airframesTable(d.airframes));
-  $('body').innerHTML = html;
-}
-$('tail-in').addEventListener('keydown', e=>{
-  if(e.key==='Enter'){ const r=e.target.value.trim().toUpperCase();
-    location.href='/insights?type='+encodeURIComponent(TYPE)+(r?'&reg='+encodeURIComponent(r):''); }
-});
-init();
-</script>
+<div class="tip" id="tip" hidden></div>
+<script src="/static/js/insights.js?v={{ v }}"></script>
 </body>
 </html>"""
 
 
 @app.route("/insights")
 def insights():
-    return render_template_string(_INSIGHTS_HTML)
+    # The figures live in static/js/insights.js (too much to keep in a string,
+    # and a real file can be syntax-checked). It and its stylesheet change
+    # together with the /api/insights payload, so their URLs carry the newer
+    # of the two mtimes: a browser never runs last week's script on this
+    # week's data.
+    try:
+        v = int(max(os.path.getmtime(os.path.join(app.static_folder, f))
+                    for f in ("js/insights.js", "css/insights.css")))
+    except OSError:
+        v = 0
+    return render_template_string(_INSIGHTS_HTML, v=v)
 
 
 _AIRFRAME_HTML = """\

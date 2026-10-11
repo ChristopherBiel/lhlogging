@@ -42,47 +42,139 @@ body { background:var(--bg); color:var(--text); font-size:var(--fp-text-sm); lin
   padding:var(--fp-space-1) 0; border-bottom:var(--fp-keyline) solid transparent;
   transition:color .14s, border-color .14s; }
 .nav a:hover, .nav-link:hover { color:var(--fp-sage-deep); border-bottom-color:var(--fp-sage); text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--fp-muted); }
-.controls { display:flex; gap:var(--fp-space-3); align-items:center; flex-wrap:wrap; margin-bottom:var(--fp-space-2); }
+.controls { display:flex; gap:var(--fp-space-2) var(--fp-space-4); align-items:center; flex-wrap:wrap; margin-bottom:var(--fp-space-4); }
 /* segmented control = Faceplate .fp-seg; <a> children just need link resets */
 .fp-seg > a { color:var(--fp-ink); text-decoration:none; }
-.fp-seg > .active { background:var(--fp-ink); color:var(--fp-text-inverse); }
-.controls input { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-2) var(--fp-space-3); font-size:var(--fp-text-sm); font-family:var(--fp-font-sans); color:var(--text-bright); width:190px; text-transform:uppercase; }
-.controls input::placeholder { color:var(--muted); text-transform:none; }
-.controls input:focus { outline:none; border-color:var(--accent); }
-.meta { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); line-height:1.6; }
-.meta b { color:var(--text); font-weight:700; }
-.module { border:var(--fp-keyline) solid var(--fp-ink); background:var(--surface); margin-bottom:var(--fp-space-3); }
-.modhead { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); text-transform:uppercase; letter-spacing:1px; color:var(--text-bright); padding:var(--fp-space-2) var(--fp-space-3); border-bottom:var(--fp-keyline) solid var(--border); background:var(--surface2); }
-.modhead .sub { color:var(--muted); text-transform:none; letter-spacing:0; font-size:var(--fp-text-xxs); margin-left:var(--fp-space-2); }
-.modbody { padding:var(--fp-space-3); }
-.cols { display:grid; grid-template-columns:1fr 1fr; gap:var(--fp-space-4); }
-@media (max-width:760px){ .cols { grid-template-columns:1fr; } }
-table { width:100%; border-collapse:collapse; font-size:var(--fp-text-xs); }
-th { text-align:left; font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:var(--fp-space-1) var(--fp-space-2); border-bottom:var(--fp-keyline) solid var(--border); }
-td { padding:var(--fp-space-1) var(--fp-space-2); border-bottom:var(--fp-hairline) solid var(--surface2); color:var(--text-bright); }
-td.r, th.r { text-align:right; }
-tr:last-child td { border-bottom:none; }
-.tail-reg { font-family:var(--fp-font-mono); font-weight:700; }
-.tail-link { color:var(--fp-ink); text-decoration:none; border-bottom:var(--fp-keyline) solid var(--fp-sage); white-space:nowrap; }
+.fp-seg > a.is-on { background:var(--fp-ink); color:var(--fp-text-inverse); }
+.meta { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--muted); line-height:1.6; }
+.meta b { color:var(--text-bright); font-weight:600; }
+.tail-link { color:var(--fp-ink); text-decoration:none; border-bottom:var(--fp-keyline) solid var(--fp-sage); white-space:nowrap; font-family:var(--fp-font-mono); font-weight:600; }
 .tail-link:hover { color:var(--fp-sage-deep); }
-.star { color:var(--amber); }
-.subhead { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:var(--fp-space-1) 0 var(--fp-space-2); }
-/* reschedulings chart */
-.rs-note { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); margin-bottom:var(--fp-space-3); }
-.rs-chart { display:flex; align-items:flex-end; gap:var(--fp-space-2); padding:var(--fp-space-1) var(--fp-space-1); }
-.rs-col { flex:1; text-align:center; min-width:34px; }
-.rs-n { font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700; color:var(--text-bright); margin-bottom:var(--fp-space-1); }
-.rs-barwrap { height:150px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; }
-.rs-bar { width:62%; max-width:46px; background:var(--fp-dv-1); min-height:2px; }
-.rs-date { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--muted); margin-top:var(--fp-space-2); white-space:nowrap; }
-.rs-base .rs-bar { background:var(--fp-dv-6); }
-.legend { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); margin-top:var(--fp-space-2); display:flex; gap:var(--fp-space-3); flex-wrap:wrap; }
-.legend .sw { display:inline-block; width:10px; height:10px; vertical-align:middle; margin-right:var(--fp-space-1); }
-/* on-time stacked bar */
-.ot-bar { display:flex; height:22px; border:var(--fp-keyline) solid var(--fp-ink); margin:var(--fp-space-1) 0 var(--fp-space-2); }
-.ot-seg { height:100%; }
-.ot-list { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); }
 .empty { color:var(--muted); padding:var(--fp-space-4); text-align:center; font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); }
 footer { text-align:center; padding:var(--fp-space-4) 0 var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
 footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
+footer .sep { margin:0 var(--fp-space-2); }
+
+/* -- What changed lately --------------------------------------------------- */
+.news { display:grid; grid-template-columns:1fr 1fr; gap:var(--fp-space-3) var(--fp-space-5); background:var(--surface);
+  border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-3) var(--fp-space-4); margin-bottom:var(--fp-space-5); }
+@media (max-width:820px){ .news { grid-template-columns:1fr; } }
+.news-h { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:500; letter-spacing:var(--fp-track-label);
+  text-transform:uppercase; color:var(--muted); margin-bottom:var(--fp-space-2); }
+.news-list { list-style:none; display:grid; gap:var(--fp-space-2); }
+.news-list li { display:grid; grid-template-columns:3.6rem 5.4rem 1fr; gap:var(--fp-space-2); align-items:baseline;
+  font-size:var(--fp-text-sm); color:var(--text); line-height:1.45; }
+.news-when { font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--muted); white-space:nowrap; }
+.news-list .fp-chip { justify-self:start; }
+.news-none { font-size:var(--fp-text-sm); color:var(--muted); }
+
+/* -- A figure: question, finding, plot (or its table), note ---------------- */
+.fig { border-top:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-3) 0 var(--fp-space-6); }
+.fig-no { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:500; letter-spacing:var(--fp-track-label);
+  text-transform:uppercase; color:var(--muted); }
+.fig-q { font-family:var(--fp-font-sans); font-size:var(--fp-text-h2); font-weight:800; letter-spacing:var(--fp-track-tight);
+  line-height:var(--fp-leading-tight); color:var(--fp-ink); margin:var(--fp-space-1) 0 var(--fp-space-2); }
+.fig-find { font-size:var(--fp-text-base); line-height:1.55; color:var(--text); max-width:74ch; }
+.fig-find b { color:var(--fp-ink); font-weight:700; }
+.fig-bar { display:flex; flex-wrap:wrap; gap:var(--fp-space-2) var(--fp-space-4); align-items:center; justify-content:space-between;
+  margin:var(--fp-space-4) 0 var(--fp-space-3); }
+.fig-tools { display:flex; flex-wrap:wrap; gap:var(--fp-space-2); margin-left:auto; }
+.legend { display:flex; flex-wrap:wrap; gap:var(--fp-space-1) var(--fp-space-3); align-items:center;
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--text); }
+.legend .key { display:inline-flex; align-items:center; gap:var(--fp-space-1); white-space:nowrap; }
+/* wide matrices scroll inside their figure instead of pushing the page */
+.fig-plot { overflow-x:auto; background:var(--surface); }
+.fig-note { font-size:var(--fp-text-xs); line-height:1.6; color:var(--muted); max-width:96ch; margin-top:var(--fp-space-3); }
+.panels { display:flex; flex-wrap:wrap; gap:var(--fp-space-4); }
+.fig-data { overflow-x:auto; max-height:28rem; overflow-y:auto; border:var(--fp-hairline) solid var(--border); background:var(--surface); }
+.fig-data table { width:100%; border-collapse:collapse; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); }
+.fig-data th { position:sticky; top:0; background:var(--surface2); text-align:left; font-weight:500; font-size:var(--fp-text-xxs);
+  text-transform:uppercase; letter-spacing:.5px; color:var(--text); padding:var(--fp-space-2); white-space:nowrap; }
+.fig-data td { padding:var(--fp-space-1) var(--fp-space-2); border-top:var(--fp-hairline) solid var(--border); color:var(--text-bright); white-space:nowrap; }
+.fig-data .r { text-align:right; }
+
+/* -- Tooltip --------------------------------------------------------------- */
+.tip { position:fixed; z-index:20; pointer-events:none; max-width:22rem; background:var(--surface);
+  border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-2) var(--fp-space-3);
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--text); line-height:1.5; }
+.tip-title { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:700; color:var(--fp-ink); margin-bottom:var(--fp-space-1); }
+.tip-row { display:grid; grid-template-columns:minmax(4.5rem,auto) auto 1fr; gap:var(--fp-space-2); align-items:baseline; }
+.tip-row.on .tip-key { color:var(--fp-sage-deep); font-weight:600; }
+.tip-val { font-size:var(--fp-text-xs); font-weight:600; color:var(--fp-ink); text-align:right; }
+.tip-sub { color:var(--muted); }
+.tip-foot { margin-top:var(--fp-space-1); padding-top:var(--fp-space-1); border-top:var(--fp-hairline) solid var(--border); color:var(--muted); }
+
+/* -- Plots: square frame, mono labels, hairline grid, 2px data strokes ----- */
+.plot { display:block; }
+.plot text { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); fill:var(--text); }
+.plot .t-title { text-transform:uppercase; letter-spacing:.08em; }
+.plot .t-tick { font-variant-numeric:tabular-nums; }
+.plot .t-row { fill:var(--fp-ink); }
+.plot .t-ann { fill:var(--fp-ink); font-weight:500; }
+.plot .t-lab { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:700; fill:var(--fp-ink); }
+.plot .t-lab.ctx { font-weight:600; fill:var(--text); }
+.plot .t-strong { fill:var(--fp-ink); font-weight:600; }
+.plot .t-muted { fill:var(--muted); }
+.plot a:hover .t-link { fill:var(--fp-sage-deep); }
+.plot .frame { fill:none; stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
+.plot .grid { stroke:var(--border); stroke-width:var(--fp-hairline); }
+.plot .tick { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
+.plot .month { stroke:var(--line); stroke-width:var(--fp-hairline); }
+.plot .hit { fill:transparent; }
+.plot .cross { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); pointer-events:none; }
+.plot .mine { fill:var(--fp-sage-xl); }
+/* a dashed line is a reference value, never a grid */
+.plot .ref { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); stroke-dasharray:5 3; }
+.plot .ref-solid { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
+.plot .ann { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); stroke-dasharray:2 2; }
+.plot .ann-dot { fill:var(--fp-ink); }
+
+/* this fleet is sage, the other fleets are context */
+.plot .ser-line { fill:none; stroke-width:var(--fp-keyline); stroke-linejoin:miter; }
+.plot .ser-line.this { stroke:var(--fp-sage); }
+.plot .ser-line.ctx { stroke:var(--muted); stroke-width:var(--fp-hairline); }
+.plot .ser-mark.this { fill:var(--fp-sage); stroke:var(--surface); stroke-width:var(--fp-keyline); paint-order:stroke; }
+.plot .ser-mark.ctx { fill:var(--surface); stroke:var(--muted); stroke-width:1.5px; }
+.plot .band { fill:var(--fp-sage); fill-opacity:.16; }
+.plot .gain { fill:var(--fp-sage); fill-opacity:.28; }
+.plot .gain-top { stroke:var(--fp-sage); stroke-width:var(--fp-keyline); }
+
+/* routes: outbound solid, return open; sage above the fleet, terracotta below */
+.plot .whisker { stroke:var(--muted); stroke-width:var(--fp-hairline); }
+.plot .pair { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
+.plot .dot { fill:var(--fp-ink); stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }
+.plot .dot.hi { fill:var(--fp-sage); stroke:var(--fp-sage); }
+.plot .dot.lo { fill:var(--fp-terra); stroke:var(--fp-terra); }
+.plot .dot.open { fill:var(--surface); }
+
+/* turnarounds */
+.plot .rail { stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }
+.plot .node { fill:var(--fp-ink); }
+.plot .leader { fill:none; stroke:var(--line); stroke-width:var(--fp-hairline); }
+.plot .lk { fill:none; stroke:var(--muted); stroke-opacity:.3; }
+.plot .label-box { fill:var(--surface); }
+.plot .lk.strong { stroke:var(--fp-sage); stroke-opacity:.82; }
+.plot .lk.next { stroke-dasharray:6 4; }
+.plot .lk.hot { stroke:var(--fp-ink); stroke-opacity:1; }
+.plot .lk-hit { fill:none; stroke:transparent; stroke-width:9px; }
+.plot.focus .lk { stroke-opacity:.07; }
+.plot.focus .lk.on { stroke:var(--fp-ink); stroke-opacity:.9; }
+
+/* matrices */
+.plot .cell { fill:var(--fp-sage); }
+.plot .group { fill:var(--surface2); }
+.plot .cell.prod { fill:var(--fp-ink); }
+.plot .cell-hover { fill:none; stroke:var(--fp-ink); stroke-width:var(--fp-hairline); pointer-events:none; }
+.plot .mg { fill:var(--fp-seq-5); }
+.plot .mg.thin { fill:var(--line); }
+.plot .q1 { fill:var(--fp-seq-4); }
+.plot .q2 { fill:var(--fp-seq-5); }
+.plot .q3 { fill:var(--fp-seq-6); }
+.plot .q4 { fill:var(--fp-seq-7); }
+.plot .pending { fill:var(--border); }
+.plot .hatch { stroke:var(--fp-terra); stroke-width:1.5px; }
+.plot .stop { stroke:var(--fp-terra); stroke-width:var(--fp-hairline); }
+.plot .stop-tag { fill:var(--surface); }
+.plot .first { stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }
+/* display:flex above would outrank the hidden attribute */
+.legend[hidden] { display:none; }
