@@ -1,6 +1,10 @@
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 TZ=Europe/Berlin
+# Session diagnostics (fetch_flightstatus.py, "diagnostics"): on through this
+# day, then off by themselves. Two nights and the days between, to see what the
+# page that comes without a bot check is — and what a checked one looks like.
+FIS_DIAG_UNTIL=2026-10-13
 
 # Lufthansa flight-status fetch — 15 slots/day, tiered by fleet type.
 #

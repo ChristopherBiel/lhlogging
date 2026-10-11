@@ -178,6 +178,20 @@ CATALOG_RETIRE_MISSES = int(os.environ.get("FIS_CATALOG_RETIRE_MISSES", "8"))
 # N covers the truth pass (D-1/D-2 settle to ARRIVED) plus a day of slack.
 LEGS_REFRESH_DAYS = int(os.environ.get("FIS_LEGS_REFRESH_DAYS", "3"))
 
+# Session diagnostics: off unless FIS_DIAG_UNTIL names a day (YYYY-MM-DD, the
+# last one still logged; the crontab sets it). While on, every session writes
+# what its opening page load came back with, and its first refused lookup what
+# the refusal said — one JSON file each under FIS_DIAG_DIR, plus a line in the
+# log. Built to tell apart the two ways a session opens (found 2026-10-11): the
+# page load answered 403 = the bot check ran and lookups work; answered 200 =
+# no check, and every lookup is refused. Passive: it listens to what the browser
+# receives anyway and reads cookie names, and sends nothing of its own.
+DIAG_UNTIL = os.environ.get("FIS_DIAG_UNTIL", "").strip()
+DIAG_DIR = os.environ.get("FIS_DIAG_DIR", "/var/log/lhlogging/fis-diag")
+DIAG_BODY_CHARS = 60000   # of a page or a refusal, enough to see what it is
+DIAG_MAX_RESPONSES = 250  # of one page load
+DIAG_MAX_FILES = 4000     # in FIS_DIAG_DIR, whatever the date says (~150 KB each at most)
+
 BASE = "https://www.lufthansa.com"
 PAGE_URL = f"{BASE}/de/en/timetable-and-flight-status"
 USER_AGENT = (
@@ -1091,14 +1105,133 @@ def parse_flight(payload: dict, flight_number: str, target: date, seed_type: str
     return obs
 
 
+# --- diagnostics ------------------------------------------------------------
+# Nothing in here may fail a run or change what the browser sends: every step
+# is wrapped, and a step that cannot be read is left out of the record.
+_diag = {"files": None, "n": 0, "sid": 0, "session": None, "refused": 0}
+
+
+def _brief(e: Exception) -> str:
+    return (str(e).splitlines() or [type(e).__name__])[0][:120]
+
+
+def diag_on() -> bool:
+    try:
+        return bool(DIAG_UNTIL) and date.today() <= date.fromisoformat(DIAG_UNTIL)
+    except ValueError:
+        return False
+
+
+def _diag_url(url: str) -> str:
+    """A URL without its query (which may carry tokens), but with its length."""
+    head, _, query = (url or "").partition("?")
+    return f"{head}?[{len(query)}]" if query else head
+
+
+def _diag_write(kind: str, record: dict) -> str | None:
+    try:
+        os.makedirs(DIAG_DIR, exist_ok=True)
+        if _diag["files"] is None:
+            _diag["files"] = len(os.listdir(DIAG_DIR))
+        if _diag["files"] + _diag["n"] >= DIAG_MAX_FILES:
+            return None
+        _diag["n"] += 1
+        name = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{os.getpid()}-{_diag['n']:03d}-{kind}"
+        with open(os.path.join(DIAG_DIR, name + ".json"), "w") as f:
+            json.dump(record, f, indent=1, ensure_ascii=False, default=str)
+        return name
+    except Exception as e:
+        log(f"diag: could not write the {kind} record ({_brief(e)})")
+        return None
+
+
+def _diag_response(seen: list, r) -> None:
+    """Note one response of the page load. Runs inside the browser's event
+    dispatch, so it reads only what the event already carries."""
+    try:
+        if len(seen) >= DIAG_MAX_RESPONSES:
+            return
+        req = r.request
+        row = {"status": r.status, "method": req.method, "type": req.resource_type,
+               "url": _diag_url(r.url)}
+        if req.resource_type in ("document", "xhr", "fetch"):
+            row["headers"] = dict(r.headers)       # the browser's view: no Set-Cookie in it
+        seen.append(row)
+    except Exception:
+        pass
+
+
+def _diag_cookies(page) -> list:
+    """The session's cookies by name: where they belong and how long the
+    value is, never the value."""
+    return sorted(
+        ({"name": c.get("name"), "domain": c.get("domain"), "path": c.get("path"),
+          "expires": c.get("expires"), "httpOnly": c.get("httpOnly"), "chars": len(c.get("value") or "")}
+         for c in page.context.cookies()),
+        key=lambda c: (c["domain"] or "", c["name"] or ""))
+
+
+def _diag_session(page, resp, seen: list, error: str | None) -> None:
+    """Record how a session opened: the page load's answer, what was loaded
+    with it, what the page is now, and the cookies the session holds."""
+    rec = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "nav_status": resp.status if resp else None, "nav_error": error}
+
+    def step(key, read):
+        try:
+            rec[key] = read()
+        except Exception as e:
+            rec[key + "_error"] = _brief(e)
+
+    if resp is not None:
+        step("nav_url", lambda: _diag_url(resp.url))
+        # the raw headers, with the cookies the answer set reduced to their names
+        step("nav_headers", lambda: [
+            [h["name"], h["value"].split("=", 1)[0] + "=…" if h["name"].lower() == "set-cookie" else h["value"]]
+            for h in resp.headers_array()])
+        step("nav_body", lambda: resp.text()[:DIAG_BODY_CHARS])
+    step("page_url", lambda: _diag_url(page.url))
+    step("page_title", lambda: page.title())
+    step("page_chars", lambda: len(page.content()))
+    step("cookies", lambda: _diag_cookies(page))
+    rec["responses"] = seen[:]
+    name = _diag["session"] = _diag_write("session", rec)
+    docs = [f"{r['status']} {r['url']}" for r in seen if r["type"] == "document"]
+    log(f"session diag: {name}; documents: {' -> '.join(docs) or '?'}; "
+        f"title={(rec.get('page_title') or '')[:60]!r}; page={rec.get('page_chars', '?')} chars; "
+        f"cookies: {','.join(c['name'] or '?' for c in rec.get('cookies', [])) or '-'}")
+
+
+def _diag_refusal(page, flight: str, target: date, res: dict) -> None:
+    """Record what a refused lookup came back with — the first of a session
+    only (the rest of a refused session says the same)."""
+    if _diag["refused"] == _diag["sid"]:
+        return
+    _diag["refused"] = _diag["sid"]
+    rec = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "session": _diag["session"],
+           "flight": flight, "date": target.isoformat(), "status": res.get("status"),
+           "headers": res.get("headers"), "body_chars": len(res.get("body") or ""),
+           "body": (res.get("body") or "")[:DIAG_BODY_CHARS]}
+    try:
+        rec["cookies"] = _diag_cookies(page)
+    except Exception as e:
+        rec["cookies_error"] = _brief(e)
+    name = _diag_write("refusal", rec)
+    title = re.search(r"<title[^>]*>(.*?)</title>", rec["body"], re.S | re.I)
+    log(f"  refusal diag: {name}; {rec['body_chars']} chars; "
+        f"title={(title.group(1).strip() if title else '')[:60]!r}")
+
+
 # --- browser fetch ----------------------------------------------------------
+# `headers` is read by the diagnostics only; the request itself is unchanged.
 _FETCH_JS = """
 async (url) => {
   const r = await fetch(url, { headers: {
     'Accept': 'application/json, text/plain, */*',
     'X-Portal': 'LH', 'X-Portal-Site': 'DE', 'X-Portal-Language': 'en'
   }, credentials: 'include' });
-  return { status: r.status, ct: r.headers.get('content-type') || '', body: await r.text() };
+  return { status: r.status, ct: r.headers.get('content-type') || '',
+           headers: Object.fromEntries(r.headers.entries()), body: await r.text() };
 }
 """
 
@@ -1106,15 +1239,29 @@ async (url) => {
 def seed_session(page) -> None:
     """Load the timetable page to establish the Distil/CF session.
 
-    The page nav itself often returns 403, which is fine — the subsequent
-    same-origin API fetches still clear the bot check from a real headed browser.
+    The page nav answered 403 is the bot check, which a real headed browser
+    passes — the same-origin API fetches then go through. Answered 200, the
+    check did not run and the fetches are refused (see "diagnostics" above).
     """
+    diag, seen, resp, error = diag_on(), [], None, None
+    note = lambda r: _diag_response(seen, r)
+    if diag:
+        _diag["sid"] += 1
+        _diag["session"] = None
+        page.on("response", note)
     try:
         resp = page.goto(PAGE_URL, wait_until="domcontentloaded", timeout=60000)
         log(f"session nav: {resp.status if resp else '?'}")
     except Exception as e:
+        error = str(e)
         log(f"session nav error (continuing): {e}")
     page.wait_for_timeout(4000)
+    if diag:
+        try:
+            page.remove_listener("response", note)       # the page load only, not the lookups after it
+            _diag_session(page, resp, seen, error)
+        except Exception as e:
+            log(f"diag: session record failed ({_brief(e)})")
 
 
 def _open_session(browser):
@@ -1162,6 +1309,11 @@ def fetch_one(sess, flight_number: str, target: date, reset_cb):
                 log(f"  {fn} {target}: 404 — not a FIS flight, recording not-found")
                 return {}
             log(f"  {fn} {target}: HTTP {status} ({ct[:40]}) attempt {attempt}/{MAX_FETCH_RETRIES}")
+            if diag_on():
+                try:
+                    _diag_refusal(sess["page"], fn, target, res)
+                except Exception as e:
+                    log(f"diag: refusal record failed ({_brief(e)})")
         except Exception as e:
             # in-page fetch rejected / evaluate threw (context destroyed, renderer
             # crash, network blip) — recoverable; fall through to the reset+retry

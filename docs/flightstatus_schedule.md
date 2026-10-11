@@ -252,7 +252,10 @@ widens from 2.6h to 2.8h.
 
 Why the page comes without a check at night is not known: served differently
 off-peak (a cache, a reduced mode), or the bot protection treating the address
-differently then.
+differently then. `FIS_DIAG_UNTIL` (crontab; see "diagnostics" in
+`fetch_flightstatus.py`) makes every session write what its page load came back
+with and what its first refusal said to `/var/log/lhlogging/fis-diag/`, to tell
+the two apart.
 
 ## Known gaps
 
