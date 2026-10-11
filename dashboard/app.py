@@ -6065,6 +6065,7 @@ _INSIGHTS_HTML = """\
 <link rel="stylesheet" href="/static/css/fonts.css">
 <link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
 <link rel="stylesheet" href="/faceplate/faceplate.components.css">
+<link rel="stylesheet" href="/static/css/figure.css?v={{ v }}">
 <link rel="stylesheet" href="/static/css/insights.css?v={{ v }}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
@@ -6095,24 +6096,27 @@ _INSIGHTS_HTML = """\
   <a href="/impressum">Impressum</a> <span class="sep">&middot;</span> <a href="/datenschutz">Datenschutz</a>
 </footer>
 <div class="tip" id="tip" hidden></div>
+<script src="/static/js/figure.js?v={{ v }}"></script>
 <script src="/static/js/insights.js?v={{ v }}"></script>
 </body>
 </html>"""
 
 
+def _asset_v(*files):
+    """The newest mtime of a page's scripts and stylesheets, for their URLs.
+    The figures live in static/js (too much to keep in a string, and a real
+    file can be syntax-checked) and change together with the payload they
+    draw, so a browser must never run last week's script on this week's data."""
+    try:
+        return int(max(os.path.getmtime(os.path.join(app.static_folder, f)) for f in files))
+    except OSError:
+        return 0
+
+
 @app.route("/insights")
 def insights():
-    # The figures live in static/js/insights.js (too much to keep in a string,
-    # and a real file can be syntax-checked). It and its stylesheet change
-    # together with the /api/insights payload, so their URLs carry the newer
-    # of the two mtimes: a browser never runs last week's script on this
-    # week's data.
-    try:
-        v = int(max(os.path.getmtime(os.path.join(app.static_folder, f))
-                    for f in ("js/insights.js", "css/insights.css")))
-    except OSError:
-        v = 0
-    return render_template_string(_INSIGHTS_HTML, v=v)
+    return render_template_string(_INSIGHTS_HTML, v=_asset_v(
+        "js/figure.js", "js/insights.js", "css/figure.css", "css/insights.css"))
 
 
 _AIRFRAME_HTML = """\

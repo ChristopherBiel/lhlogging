@@ -1,0 +1,147 @@
+/* What every page with figures shares: the page frame (header, controls,
+   footer), the figure scaffold, the tooltip and the plot vocabulary. */
+:root {
+  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
+  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
+  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
+  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
+}
+/* Scoped reset. A universal `* { margin:0; padding:0 }` reaches into
+   @layer fp.components and silently zeroes .fp-btn / .fp-chip / .fp-seg
+   padding -- unlayered CSS beats layered CSS regardless of specificity, which
+   is how a real project shipped a segmented control reading "anyyesno".
+   See dist/docs/using-faceplate.md#a-note-on-resets
+
+   The exclusion is wrapped in :where() on purpose. Bare
+   :not([class*="fp-"]):not([class*="fp-"] *) carries the specificity of its
+   arguments -- two attribute selectors, (0,2,0) -- which outranks every
+   single-class rule in this file and quietly flattens .container's
+   `margin:0 auto`. :where() is always (0,0,0), so this keeps the reach of the
+   old universal reset and none of its weight. */
+* { box-sizing:border-box; }
+*:where(:not([class*="fp-"]):not([class*="fp-"] *)) { margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-size:var(--fp-text-sm); line-height:1.5; font-family:var(--fp-font-sans); -webkit-font-smoothing:antialiased; }
+.container { width:96vw; max-width:1180px; margin:0 auto; padding:0 var(--fp-space-3) var(--fp-space-6); }
+/* -- Header - structural (intensity 02) ------------------------------------
+   Faceplate unbranded: no band, no monogram plate, no wordmark. Identity is
+   the product glyph plus an ink keyline; colour coverage stays inside 02. */
+.header { display:flex; align-items:center; gap:var(--fp-space-3) var(--fp-space-4); flex-wrap:wrap;
+  padding:0 0 var(--fp-space-3); margin:var(--fp-space-3) 0 var(--fp-space-4);
+  border-bottom:var(--fp-keyline) solid var(--fp-ink); }
+.brand { display:flex; align-items:center; gap:var(--fp-space-3); }
+.brand-mark { width:var(--fp-space-5); height:var(--fp-space-5); flex-shrink:0;
+  display:inline-grid; place-items:center; color:var(--fp-sage); }
+.brand-mark svg { width:100%; height:100%; display:block; }
+.header h1 { font-family:var(--fp-font-sans); font-size:var(--fp-text-h3); font-weight:800;
+  letter-spacing:var(--fp-track-tight); color:var(--fp-ink); text-transform:uppercase;
+  line-height:var(--fp-leading-tight); margin-bottom:0; }
+.header h1 span { color:var(--fp-sage); }
+.model { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label);
+  color:var(--fp-muted); text-transform:uppercase; margin-top:var(--fp-space-1); }
+.nav { display:flex; gap:var(--fp-space-3); flex-wrap:wrap; margin-left:auto; }
+.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:500;
+  letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-body); text-decoration:none;
+  padding:var(--fp-space-1) 0; border-bottom:var(--fp-keyline) solid transparent;
+  transition:color .14s, border-color .14s; }
+.nav a:hover, .nav-link:hover { color:var(--fp-sage-deep); border-bottom-color:var(--fp-sage); text-decoration:none; }
+.controls { display:flex; gap:var(--fp-space-2) var(--fp-space-4); align-items:center; flex-wrap:wrap; margin-bottom:var(--fp-space-4); }
+/* segmented control = Faceplate .fp-seg; <a> children just need link resets */
+.fp-seg > a { color:var(--fp-ink); text-decoration:none; }
+.fp-seg > a.is-on { background:var(--fp-ink); color:var(--fp-text-inverse); }
+.meta { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--muted); line-height:1.6; }
+.meta b { color:var(--text-bright); font-weight:600; }
+.tail-link { color:var(--fp-ink); text-decoration:none; border-bottom:var(--fp-keyline) solid var(--fp-sage); white-space:nowrap; font-family:var(--fp-font-mono); font-weight:600; }
+.tail-link:hover { color:var(--fp-sage-deep); }
+.empty { color:var(--muted); padding:var(--fp-space-4); text-align:center; font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); }
+footer { text-align:center; padding:var(--fp-space-4) 0 var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
+footer .sep { margin:0 var(--fp-space-2); }
+
+/* -- A figure: question, finding, plot (or its table), note ---------------- */
+.fig { border-top:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-3) 0 var(--fp-space-6); }
+.fig-no { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:500; letter-spacing:var(--fp-track-label);
+  text-transform:uppercase; color:var(--muted); }
+.fig-q { font-family:var(--fp-font-sans); font-size:var(--fp-text-h2); font-weight:800; letter-spacing:var(--fp-track-tight);
+  line-height:var(--fp-leading-tight); color:var(--fp-ink); margin:var(--fp-space-1) 0 var(--fp-space-2); }
+.fig-find { font-size:var(--fp-text-base); line-height:1.55; color:var(--text); max-width:74ch; }
+.fig-find b { color:var(--fp-ink); font-weight:700; }
+.fig-bar { display:flex; flex-wrap:wrap; gap:var(--fp-space-2) var(--fp-space-4); align-items:center; justify-content:space-between;
+  margin:var(--fp-space-4) 0 var(--fp-space-3); }
+.fig-tools { display:flex; flex-wrap:wrap; gap:var(--fp-space-2); margin-left:auto; }
+.legend { display:flex; flex-wrap:wrap; gap:var(--fp-space-1) var(--fp-space-3); align-items:center;
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--text); }
+.legend .key { display:inline-flex; align-items:center; gap:var(--fp-space-1); white-space:nowrap; }
+/* wide matrices scroll inside their figure instead of pushing the page */
+.fig-plot { overflow-x:auto; background:var(--surface); }
+.fig-note { font-size:var(--fp-text-xs); line-height:1.6; color:var(--muted); max-width:96ch; margin-top:var(--fp-space-3); }
+.panels { display:flex; flex-wrap:wrap; gap:var(--fp-space-4); }
+.fig-data { overflow-x:auto; max-height:28rem; overflow-y:auto; border:var(--fp-hairline) solid var(--border); background:var(--surface); }
+.fig-data table { width:100%; border-collapse:collapse; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); }
+.fig-data th { position:sticky; top:0; background:var(--surface2); text-align:left; font-weight:500; font-size:var(--fp-text-xxs);
+  text-transform:uppercase; letter-spacing:.5px; color:var(--text); padding:var(--fp-space-2); white-space:nowrap; }
+.fig-data td { padding:var(--fp-space-1) var(--fp-space-2); border-top:var(--fp-hairline) solid var(--border); color:var(--text-bright); white-space:nowrap; }
+.fig-data .r { text-align:right; }
+
+/* a compact figure: the question and the plot; the reading help folds away */
+.fig--compact { padding:var(--fp-space-3) 0 var(--fp-space-4); }
+.fig--compact .fig-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+  gap:var(--fp-space-2) var(--fp-space-4); margin-bottom:var(--fp-space-3); }
+.fig--compact .fig-q { font-size:var(--fp-text-h3); margin:0; }
+.fig-more { margin-top:var(--fp-space-2); }
+.fig-more-sum { display:inline-block; cursor:pointer; list-style:none; font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs);
+  font-weight:500; letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--text);
+  padding:var(--fp-space-1) 0; border-bottom:var(--fp-keyline) solid var(--fp-sage); }
+.fig-more-sum::-webkit-details-marker { display:none; }
+.fig-more-sum::before { content:"+ "; }
+.fig-more[open] > .fig-more-sum::before { content:"− "; }
+.fig-more-sum:hover { color:var(--fp-sage-deep); }
+.fig-more > .fig-find { margin-top:var(--fp-space-3); }
+.fig-more > .legend { margin-top:var(--fp-space-3); }
+.fig-more > .fig-data { margin-top:var(--fp-space-3); }
+
+/* -- Tooltip --------------------------------------------------------------- */
+.tip { position:fixed; z-index:20; pointer-events:none; max-width:22rem; background:var(--surface);
+  border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-2) var(--fp-space-3);
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--text); line-height:1.5; }
+.tip-title { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:700; color:var(--fp-ink); margin-bottom:var(--fp-space-1); }
+.tip-row { display:grid; grid-template-columns:minmax(4.5rem,auto) auto 1fr; gap:var(--fp-space-2); align-items:baseline; }
+.tip-row.on .tip-key { color:var(--fp-sage-deep); font-weight:600; }
+.tip-val { font-size:var(--fp-text-xs); font-weight:600; color:var(--fp-ink); text-align:right; }
+.tip-sub { color:var(--muted); }
+.tip-foot { margin-top:var(--fp-space-1); padding-top:var(--fp-space-1); border-top:var(--fp-hairline) solid var(--border); color:var(--muted); }
+
+/* -- Plots: square frame, mono labels, hairline grid, 2px data strokes ----- */
+.plot { display:block; }
+.plot text { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); fill:var(--text); }
+.plot .t-title { text-transform:uppercase; letter-spacing:.08em; }
+.plot .t-tick { font-variant-numeric:tabular-nums; }
+.plot .t-row { fill:var(--fp-ink); }
+.plot .t-ann { fill:var(--fp-ink); font-weight:500; }
+.plot .t-lab { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:700; fill:var(--fp-ink); }
+.plot .t-lab.ctx { font-weight:600; fill:var(--text); }
+.plot .t-strong { fill:var(--fp-ink); font-weight:600; }
+.plot .t-muted { fill:var(--muted); }
+.plot a:hover .t-link { fill:var(--fp-sage-deep); }
+.plot .frame { fill:none; stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
+.plot .grid { stroke:var(--border); stroke-width:var(--fp-hairline); }
+.plot .tick { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
+.plot .month { stroke:var(--line); stroke-width:var(--fp-hairline); }
+.plot .hit { fill:transparent; }
+.plot .cross { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); pointer-events:none; }
+.plot .mine { fill:var(--fp-sage-xl); }
+/* a dashed line is a reference value, never a grid */
+.plot .ref { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); stroke-dasharray:5 3; }
+.plot .ref-solid { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
+.plot .ann { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); stroke-dasharray:2 2; }
+.plot .ann-dot { fill:var(--fp-ink); }
+.plot .label-box { fill:var(--surface); }
+.plot .cell-hover { fill:none; stroke:var(--fp-ink); stroke-width:var(--fp-hairline); pointer-events:none; }
+/* a sequential ramp in four steps: the two lightest Faceplate steps are under
+   2:1 on white, so the ramp starts at the fourth */
+.plot .q1 { fill:var(--fp-seq-4); }
+.plot .q2 { fill:var(--fp-seq-5); }
+.plot .q3 { fill:var(--fp-seq-6); }
+.plot .q4 { fill:var(--fp-seq-7); }
+.plot .hatch { stroke:var(--fp-terra); stroke-width:1.5px; }
+/* display:flex above would outrank the hidden attribute */
+.legend[hidden] { display:none; }
