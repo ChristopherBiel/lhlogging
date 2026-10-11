@@ -515,6 +515,10 @@ def headline(slots, rec, cov, now):
                 parts.append(" The last complete one started %s ago." % _ago(now - g["started_at"]))
             out.append({"level": "bad", "parts": parts})
 
+    for s in slots:
+        if s["state"] == "running":
+            out[0]["parts"].append(" The %s %s is running." % (s["at"].strftime("%H:%M"), KIND_NAME[s["kind"]]))
+
     # how far ahead each fleet's plan is known
     by_through = defaultdict(list)
     for c in cov:
@@ -595,7 +599,11 @@ def collectors(rows, now):
                       "flight_detector": "%d flights updated" % (r["stored"] or 0),
                       "fleet_discovery": "%d new" % (r["found"] or 0),
                       "fleet_refresh": "%d of %d updated" % (r["found"] or 0, r["total"] or 0)}[key]
-        if r["status"] not in ("ok", "running"):
+        if r["status"] == "running":
+            # the counts are written when a run ends; until then they say nothing
+            result = ("running since %s" % r["started_at"].astimezone(BERLIN).strftime("%H:%M")
+                      if state == "ok" else "never finished")
+        elif r["status"] != "ok":
             result = r["detail"] or r["status"]
         if state == "ok" and age > stale:
             state = "stale"

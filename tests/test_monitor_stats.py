@@ -248,6 +248,19 @@ class Collectors(unittest.TestCase):
         self.assertEqual((got["flight_detector"]["state"], got["flight_detector"]["result"]), ("bad", "boom"))
         self.assertEqual(got["fleet_refresh"]["state"], "bad")               # no run at all
 
+    def test_a_run_in_progress_says_so(self):
+        row = lambda ago: {"run_type": "flightstatus", "status": "running", "started_at": NOW - ago, "finished_at": None,
+                           "total": None, "found": None, "blocked": None, "stored": None, "detail": None}
+        live = ms.collectors([row(timedelta(minutes=10))], NOW)[0]
+        self.assertEqual((live["state"], live["result"]), ("ok", "running since 16:39"))      # not "0 of 0 found"
+        dead = ms.collectors([row(timedelta(hours=9))], NOW)[0]
+        self.assertEqual((dead["state"], dead["result"]), ("bad", "never finished"))
+        sweep = run(0, "16:45", status="running")
+        slots, extra = ms.match(healthy() + [sweep], NOW - timedelta(days=29), NOW + ms.READS_AHEAD, NOW)
+        first = ms.headline(slots, ms.record(slots, extra, NOW), [], NOW)[0]
+        self.assertEqual(first["parts"][-1], " The 16:45 pulse is running.")
+        self.assertIn("Schedule last read ", first["parts"][0])                               # the last finished one
+
 
 class Flown(unittest.TestCase):
     def test_hubs(self):
