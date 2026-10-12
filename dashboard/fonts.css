@@ -1,0 +1,21 @@
+/*! Faceplate fonts — self-hosted @font-face. The .woff2 files ship in ./fonts/ (SIL OFL).
+ *  Link this before faceplate.tokens.css; no request leaves your domain.
+ *  Alternatives: @fontsource-variable/manrope + @fontsource/ibm-plex-mono, or the Google
+ *  Fonts CDN for prototypes (see guidelines/media/web.md#fonts).
+ */
+@font-face{
+  font-family:"Manrope"; font-style:normal; font-weight:400 800; font-display:swap;
+  src:url("./fonts/manrope-variable.woff2") format("woff2-variations");
+}
+@font-face{
+  font-family:"IBM Plex Mono"; font-style:normal; font-weight:400; font-display:swap;
+  src:url("./fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+@font-face{
+  font-family:"IBM Plex Mono"; font-style:normal; font-weight:500; font-display:swap;
+  src:url("./fonts/ibm-plex-mono-500.woff2") format("woff2");
+}
+@font-face{
+  font-family:"IBM Plex Mono"; font-style:normal; font-weight:600; font-display:swap;
+  src:url("./fonts/ibm-plex-mono-600.woff2") format("woff2");
+}

@@ -1,10 +1,10 @@
 # Colour
 
-> Every value below is generated from `tokens/`. If you are reading a hex code here, it is the one the CSS ships.
->
-> **Authority:** `tokens/` is the single source of truth for values. This document holds the reasoning. If they ever disagree, the tokens are right and this page has a bug — the build now refuses a doc that states a value in a table, so it should not be possible.
+White paper and one accent, sage, with terracotta as its warm complement. The palette is closed: the table below is every colour the system has.
 
-## The palette is closed
+## Always
+
+<!-- inject:palette -->
 
 | | Name | Hex | Use |
 |---|---|---|---|
@@ -41,76 +41,125 @@
 | ![](data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='14'><rect width='28' height='14' fill='%2388A56F' stroke='%231C1E21' stroke-width='1'/></svg>) | `div6` | `#88A56F` | Diverging ramp step 6 of 7 (negative to positive) |
 | ![](data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='14'><rect width='28' height='14' fill='%2341562F' stroke='%231C1E21' stroke-width='1'/></svg>) | `div7` | `#41562F` | Diverging ramp step 7 of 7 (negative to positive) |
 
-These are all the colours Faceplate has. Not a starting point, not a suggestion — the complete set. If your project needs a colour that isn't here, see [contributing](./contributing.md#proposing-a-token); do not add one locally.
+<!-- /inject -->
 
-**Why closed:** a colour added inside a project is invisible to the brand sheet, so nothing outside that project knows it exists. It also disappears the next time the package updates, taking whatever depended on it. This has happened: a project needed a fifth chart colour, added `--fp-dv-7` to its copy of the CSS, and four separate reviews called the result compliant — because each one checked the site against the modified file.
+**The palette is closed.** If a project needs a colour that isn't here, see [extending](./extending.md); never add one locally. A colour added inside one project is invisible everywhere else, and it vanishes on the next update along with whatever depended on it.
 
-## What to reach for
+**Sage is the accent** on personal material and on every project. Use it for rules, fills, large headings and UI accents. It's the colour people should remember.
 
-**Sage is the brand accent.** Rules, fills, large headings, UI accents. It is the colour someone should remember.
+**Terracotta is the complement:** the second series in a chart, a warm highlight, and the colour of one kind of content (below). Use it deliberately; two accents competing for attention reads as indecision.
 
-**Terracotta is the complement.** A second series in a chart, a warm highlight, an alternative to sage where sage would repeat. Use it deliberately — two accents competing reads as indecision.
+<a id="kinds"></a>
+### Colour is also a code
 
-**The signature grey** is `#CBCBCB`, which reads as **CB·CB·CB** — the monogram three times. A deliberate hidden mark. It is **structural only**: keylines, dividers, table borders, muted panels, the data-viz neutral slot.
+Every section of a page belongs to one of three kinds, and the kind decides its colour. A reader learns it once and can then tell from across the page what a section holds.
 
-## Contrast rules that are actually enforced
+| Kind | Colour | Its tint | For |
+|---|---|---|---|
+| **The work itself** | sage | sage tint | research, papers, projects, the product: what the page is about. The default. |
+| **Public and dated** | ink | signature grey | news, talks, logs, anything with a date in front |
+| **Made on the side** | terracotta | terracotta tint | side projects, the contact, whatever stands apart from the main work |
 
-Sage on white is about 3.5:1 and terracotta about 3.2:1 — fine for large text, UI elements and fills, **not** for small body text or links. Use the `Deep` variants there; they exist for exactly this.
+- At **01** the kind shows only in the accent strokes of a section's drawings.
+- From **02** its index square takes the tint, from **03** the solid colour.
+- At **04** the section sits on a field of its kind, tinted or solid.
 
-The signature grey is the sharpest trap. Dark ink on `#CBCBCB` is roughly 10:1 and perfectly readable. White on it is about 1.6:1 and unreadable. Never put grey text on white, and never white text on grey.
+Three kinds are the whole code. A fourth would need a fourth colour, and the palette has none to give.
 
-This was a real bug: `.fp-chip--gray` set a background and let its text colour inherit, so a grey chip inside a sage band rendered white on `#CBCBCB` at 1.62:1. The chip now sets ink explicitly, at 10.30:1.
+**The signature grey, `#CBCBCB`, reads as CB·CB·CB**: the monogram three times, a hidden mark. It is **structural only**: keylines, dividers, table borders, the plate, muted panels.
 
-## Data visualisation
+### Roles
+
+Projects use the roles (the `--fp-*` names), never the palette directly. Two neutral roles carry a page:
+
+- `--fp-bg`: the ground. White, at every intensity.
+- `--fp-surface`: a quiet inset on the ground, such as a hover wash or a panel. One step greyer than white.
+
+**Context roles.** From 02 a page has fields, and text has to stay legible on them. Components therefore read a second set of roles, which start at the usual values and which a field re-points for everything inside it: on a solid sage field the ink is white and the accent is white. Use them in your own components wherever something may end up on a field.
+
+<!-- inject:table semantic.ctx -->
 
 | Token | CSS variable | Value | Notes |
 |---|---|---|---|
-| `semantic.dv1` | `--fp-dv-1` | `#5E7A50` |  |
-| `semantic.dv2` | `--fp-dv-2` | `#BB6240` |  |
-| `semantic.dv3` | `--fp-dv-3` | `#D6A23C` |  |
-| `semantic.dv4` | `--fp-dv-4` | `#2C7A78` |  |
-| `semantic.dv5` | `--fp-dv-5` | `#8A6A53` |  |
-| `semantic.dv6` | `--fp-dv-6` | `#9BA0A4` |  |
+| `semantic.ctxBg` | `--fp-ctx-bg` | `#FFFFFF` | The ground a component sits on. A field sets it to its own fill. |
+| `semantic.ctxInk` | `--fp-ctx-ink` | `#1C1E21` | Headings and primary text, on whatever field this is. |
+| `semantic.ctxBody` | `--fp-ctx-body` | `#52585E` | Body text and labels, on whatever field this is. |
+| `semantic.ctxMuted` | `--fp-ctx-muted` | `#8A9097` | Dates, notes and other quiet text, on whatever field this is. |
+| `semantic.ctxRule` | `--fp-ctx-rule` | `#CBCBCB` | Hairlines between entries, on whatever field this is. |
+| `semantic.ctxAccent` | `--fp-ctx-accent` | `#5E7A50` | Underlines and accent strokes. Sage on paper; the inverse colour on a solid field. |
+| `semantic.ctxMark` | `--fp-ctx-mark` | `#1C1E21` | Registration marks and ruler ticks. |
 
-The categorical series *is* the brand palette — `dv-1` and `dv-2` are sage and terracotta, not separate values that happen to match. Use them in order.
+<!-- /inject -->
 
-**Reserve, don't extend.** If a chart needs colours for both categories and status, spend the palette deliberately: one project reserved terracotta for "deviation" and ochre for "swapped", leaving four hues for four categories. That is the right instinct. Running out is a signal to simplify the chart, or to propose a token — not to invent one.
+### Contrast
 
-## Ramps
+- **Sage and terracotta on white** are about 4.8:1 and 4.3:1. That's fine for large text, rules and fills, and too close to the limit for small text or links. Use the `Deep` variants there (about 7.4:1 and 5.8:1).
+- **White on a solid field** is the same pair reversed: about 4.8:1 on sage and 4.3:1 on terracotta. Body text holds on sage. On terracotta keep small text to a line or two; it is a field for a headline, not for reading.
+- **On the tints**, ink is about 12:1 and body text above 5:1, so text may sit directly on them. Muted text does not hold on a tint; a tinted field shows it in the body colour.
+- **Signature grey** is the sharpest trap. Ink on `#CBCBCB` is about 10:1 and readable; white on it is about 1.6:1 and unreadable.
+- **Text on a saturated or dark fill** uses `--fp-text-inverse`.
 
-Sequential, low to high:
+## By intensity
 
-| Token | CSS variable | Value | Notes |
-|---|---|---|---|
-| `semantic.seq1` | `--fp-seq-1` | `#EFF3EA` |  |
-| `semantic.seq2` | `--fp-seq-2` | `#D8E2CC` |  |
-| `semantic.seq3` | `--fp-seq-3` | `#BFD0AC` |  |
-| `semantic.seq4` | `--fp-seq-4` | `#A2BB89` |  |
-| `semantic.seq5` | `--fp-seq-5` | `#82A268` |  |
-| `semantic.seq6` | `--fp-seq-6` | `#5E7A50` |  |
-| `semantic.seq7` | `--fp-seq-7` | `#41562F` |  |
+Each level adds colour to the one below; nothing is taken away.
 
-Diverging, negative to positive:
+| Level | Where the colour is |
+|---|---|
+| **01 Line** | accent underlines, the bar beside a selected entry, the accent part of a drawing, a status dot. Nothing is filled. |
+| **02 Tint** | + the lead sits on the lightest sage; index squares, drawings and a selected entry take a tint |
+| **03 Block** | + the lead field and the index squares turn solid, with reversed text on the lead |
+| **04 Field** | + every section may sit on a field of its [kind](#kinds); the top bar joins the lead's field |
 
-| Token | CSS variable | Value | Notes |
-|---|---|---|---|
-| `semantic.div1` | `--fp-div-1` | `#9E4F33` |  |
-| `semantic.div2` | `--fp-div-2` | `#C9876B` |  |
-| `semantic.div3` | `--fp-div-3` | `#EAD3C5` |  |
-| `semantic.div4` | `--fp-div-4` | `#F1F2EC` |  |
-| `semantic.div5` | `--fp-div-5` | `#C3D2B0` |  |
-| `semantic.div6` | `--fp-div-6` | `#88A56F` |  |
-| `semantic.div7` | `--fp-div-7` | `#41562F` |  |
+The values behind it:
 
-Both are part of the closed set. They lived only in the brand document until v2 — real values with no token home, which meant the "single source of truth" was not actually single.
+<!-- inject:dial colour -->
 
-## Text on colour
+| | 01 Line | 02 Tint | 03 Block | 04 Field | CSS variable |
+|---|---|---|---|---|---|
+| Accent fill | `bg` | `sageTint` | `sage` | `sage` | `--fp-fill` |
+| Text on the accent fill | `ink` | `ink` | `textInverse` | `textInverse` | `--fp-fill-ink` |
+| Wash | `bg` | `sageXl` | `sageTint` | `sageTint` | `--fp-wash` |
+| Lead field | `bg` | `sageXl` | `sage` | `sage` | `--fp-lead-fill` |
+| Lead headings | `ink` | `ink` | `textInverse` | `textInverse` | `--fp-lead-ink` |
+| Lead text | `body` | `body` | `textInverse` | `textInverse` | `--fp-lead-body` |
+| Lead accent | `sage` | `sage` | `textInverse` | `textInverse` | `--fp-lead-accent` |
+| Lede emphasis | `ink` | `sage` | `ink` | `ink` | `--fp-lead-em` |
 
-Use `--fp-text-inverse` for text on any saturated or dark fill. It is white, but naming it matters: without it the system hardcoded `#fff` eight times while telling everyone else never to hardcode a hex.
+<!-- /inject -->
 
-## Don't
+**The lead field** runs from the edge of the label column to the edge of the window. It is the first place colour appears, at 02, and the only solid block at 03.
+
+**Fields at 04.**
+- A section's field is its kind's tint, or its solid colour with reversed text.
+- Neighbours differ. White counts as a field, so a section may also stay on the paper.
+- Solid fields carry little: the lead, a short dated list, the closing contact. Long lists sit on a tint or on white.
+- The fields replace the rules between sections.
+
+## By theme
+
+**Light:** the ground is white. There is no second page treatment; a grey mat with white plates on it was tried and dropped, because at low intensity white reads cleaner.
+
+**Dark:** not defined yet. Sage stays the accent.
+
+## By medium
+
+**Web:** the `--fp-*` roles from `faceplate.tokens.css`.
+
+**LaTeX:** `faceplate.sty` defines every role as an `xcolor` colour: `fpSage`, `fpInk`, `fpDv1` and so on.
+- The dial's colours carry their token names: `fpFill`, `fpWash`, `fpLeadFill` and the rest take the values of the document's intensity.
+- The context roles are `fpCtxInk`, `fpCtxBody` and so on; a class re-points them on a field.
+- `\fpkind{sage}`, `{ink}` or `{terra}` sets a section's [kind](#kinds).
+
+**Print:** no CMYK values are defined yet. Send RGB PDFs and ask for a proof.
+
+**Physical:** one colour, set by the process (silkscreen white or black, bare copper, engraving). Choose the combination closest to ink on white or white on ink.
+
+## Never
 
 - Add a colour, in any project, for any reason
 - Use `#CBCBCB` as text on white, or white text on it
-- Use sage or terracotta for small text — reach for `Deep`
-- Mint greens. Sage is a grey-green; mint is not in this system
+- Use sage or terracotta for small text; reach for `Deep`
+- Use gradients or drop shadows
+- Change the ground. Colour goes on the paper as a field; the paper stays white.
+- Give a section a colour that isn't its kind's
+- Use mint. Sage is a grey-green; mint is not in this system.

@@ -1,0 +1,81 @@
+%% faceplate-plots — pgfplots in Faceplate. A plot is open, not boxed: the
+%% baseline is its only axis line, an ink keyline with ruler ticks hanging
+%% from it; the grid is hairlines across; labels are mono; fills are flat; the
+%% categorical colours come in order, the ramps as colormaps. Loading it makes
+%% every axis a Faceplate axis; matplotlib gets the same from
+%% dist/python/faceplate.py, so a plot looks the same in either.
+%%   \usepackage{faceplate}  \usepackage{faceplate-plots}
+%%   \begin{axis}[faceplate bars] …   bar charts: flat bars standing on the baseline
+%%   \begin{axis}[faceplate map] …    images and maps: no axis, four registration marks
+%% Rules: guidelines/charts.md
+\NeedsTeXFormat{LaTeX2e}[2022/11/01]
+\ProvidesPackage{faceplate-plots}[2026/10/11 Faceplate pgfplots styles]
+\RequirePackage{faceplate}
+\RequirePackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+%% The categorical series is the palette, in order: sage first, always.
+\pgfplotscreateplotcyclelist{faceplate}{
+  {fpDv1, mark=none}, {fpDv2, mark=none}, {fpDv3, mark=none},
+  {fpDv4, mark=none}, {fpDv5, mark=none}, {fpDv6, mark=none}}
+\pgfplotscreateplotcyclelist{faceplate bars}{
+  {fill=fpDv1, draw=none}, {fill=fpDv2, draw=none}, {fill=fpDv3, draw=none},
+  {fill=fpDv4, draw=none}, {fill=fpDv5, draw=none}, {fill=fpDv6, draw=none}}
+
+%% Four registration marks just outside the plot area, where a frame would be.
+\newcommand\fp@plot@marks{%
+  \begin{scope}[fpInk, line width=\fpline, line cap=butt, line join=miter]
+    \draw ([xshift=-\fpspace{2}, yshift=-\fpspace{2}]rel axis cs:0,0) ++(0,\fp@reglen) -- ++(0,-\fp@reglen) -- ++(\fp@reglen,0);
+    \draw ([xshift=\fpspace{2}, yshift=-\fpspace{2}]rel axis cs:1,0) ++(0,\fp@reglen) -- ++(0,-\fp@reglen) -- ++(-\fp@reglen,0);
+    \draw ([xshift=-\fpspace{2}, yshift=\fpspace{2}]rel axis cs:0,1) ++(0,-\fp@reglen) -- ++(0,\fp@reglen) -- ++(\fp@reglen,0);
+    \draw ([xshift=\fpspace{2}, yshift=\fpspace{2}]rel axis cs:1,1) ++(0,-\fp@reglen) -- ++(0,\fp@reglen) -- ++(-\fp@reglen,0);
+  \end{scope}}
+
+\pgfplotsset{
+  faceplate/.style={
+    cycle list name=faceplate,
+    every axis plot/.append style={line width=\fpkeyline},
+    %% open: the baseline in ink, no line up the side
+    axis lines*=left,
+    x axis line style={fpInk, line width=\fpkeyline},
+    y axis line style={draw=none},
+    %% ruler ticks hang from the baseline; the value axis has labels only
+    tick style={fpInk, line width=\fphairline},
+    xtick align=outside, major tick length=\fpspace{1},
+    ytick style={draw=none},
+    ymajorgrids, xmajorgrids=false,
+    major grid style={fpGrey, line width=\fphairline},
+    axis on top=false,
+    every tick label/.append style={font=\ttfamily\fpsize{xxs}, text=fpMuted},
+    %% numbers in the mono face, not the maths font
+    /pgf/number format/assume math mode=true,
+    label style={font=\ttfamily\fpsize{xs}, text=fpInk},
+    title style={font=\ttfamily\fpmedium\fpsize{sm}, text=fpInk, align=left, at={(0,1)}, anchor=south west,
+      yshift=\fpspace{1}, inner xsep=0pt},
+    legend style={draw=none, fill=fpBg, font=\ttfamily\fpsize{xxs}, text=fpBody, inner sep=\fpspace{1}},
+    legend cell align=left,
+    colormap={fpseq}{color=(fpSeq1) color=(fpSeq2) color=(fpSeq3) color=(fpSeq4)
+      color=(fpSeq5) color=(fpSeq6) color=(fpSeq7)},
+    colormap={fpdiv}{color=(fpDiv1) color=(fpDiv2) color=(fpDiv3) color=(fpDiv4)
+      color=(fpDiv5) color=(fpDiv6) color=(fpDiv7)},
+    colormap name=fpseq,
+    %% a colour bar is a strip with labels: no frame, no ticks
+    every colorbar/.append style={axis lines=box, axis line style={draw=none}, tick style={draw=none},
+      ymajorgrids=false, width=\fpspace{2},
+      every tick label/.append style={font=\ttfamily\fpsize{xxs}, text=fpMuted},
+      /pgf/number format/assume math mode=true},
+    colorbar style={at={([xshift=\fpspace{4}]parent axis.north east)}, anchor=north west},
+  },
+  %% ybar brings its own cycle list, so it has to come first
+  faceplate bars/.style={ybar, cycle list name=faceplate bars, bar width=0.7, enlarge x limits=0.08,
+    every axis plot/.append style={line width=0pt}, xtick style={draw=none}},
+  %% an image or a map: nothing but the area, held by four marks
+  faceplate map/.style={axis lines=box, axis line style={draw=none}, tick style={draw=none},
+    ymajorgrids=false, xtick=\empty, ytick=\empty, enlargelimits=false,
+    title style={yshift=\fpspace{2}},
+    after end axis/.code={\fp@plot@marks}},
+  faceplate diverging/.style={colormap name=fpdiv},
+  every axis/.append style={faceplate},
+}
+
+\endinput

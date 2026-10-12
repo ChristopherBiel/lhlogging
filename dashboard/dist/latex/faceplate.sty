@@ -1,0 +1,511 @@
+%% Faceplate v3.0.0 — LaTeX
+%% GENERATED FROM tokens/*.json and build/templates/faceplate.sty — DO NOT EDIT.
+%% Regenerate: npm run build
+%%
+%% Compile with LuaLaTeX (or XeLaTeX) for the brand typefaces. Under pdfLaTeX
+%% the colours, lengths and macros still work and the fonts fall back.
+\NeedsTeXFormat{LaTeX2e}[2022/11/01]
+\ProvidesPackage{faceplate}[v3.0.0 Faceplate design system]
+
+%% ------------------------------------------------------------ switches
+%% Declared once per document, like data-fp-intensity on the web. Intensity is
+%% a real switch here too: it selects the dial's values further down, and the
+%% classes draw from them. Theme is light until dark is defined.
+\def\fpintensity{02}
+\def\fplevel{personal}
+\def\fp@medium{print}
+\newif\iffp@fonts \fp@fontstrue
+\DeclareKeys[faceplate]{
+  intensity.code  = \def\fpintensity{#1},
+  intensity.usage = load,
+  level.code      = \def\fplevel{#1},
+  level.usage     = load,
+  fonts.code      = \csname fp@fonts#1\endcsname,
+  fonts.usage     = load,
+  medium.code     = \def\fp@medium{#1},
+  medium.usage    = load,
+}
+\ProcessKeyOptions[faceplate]
+\edef\fpintensity{0\the\numexpr\fpintensity\relax}
+\ifnum\fpintensity<1 \PackageError{faceplate}{intensity must be 01, 02, 03 or 04}{}\fi
+\ifnum\fpintensity>4 \PackageError{faceplate}{intensity must be 01, 02, 03 or 04}{}\fi
+\@namedef{fp@level@personal}{}\@namedef{fp@level@project}{}\@namedef{fp@level@neutral}{}
+\ifcsname fp@level@\fplevel\endcsname\else
+  \PackageError{faceplate}{level must be personal, project or neutral}{}
+\fi
+\@namedef{fp@medium@print}{}\@namedef{fp@medium@slides}{}
+\ifcsname fp@medium@\fp@medium\endcsname\else
+  \PackageError{faceplate}{medium must be print or slides}{}
+\fi
+
+\RequirePackage{xcolor}
+\RequirePackage{iftex}
+\RequirePackage{tikz}
+\RequirePackage{tcolorbox}
+
+%% -------------------------------------------------------------- colour
+%% Every role, under its token name: fpSage, fpInk, fpDv1… The palette is
+%% closed; never \definecolor a brand colour in a document.
+\definecolor{fpBg}{HTML}{FFFFFF}
+\definecolor{fpSurface}{HTML}{F7F8F8}
+\definecolor{fpBorder}{HTML}{E4E7E9}
+\definecolor{fpMuted}{HTML}{8A9097}
+\definecolor{fpBody}{HTML}{52585E}
+\definecolor{fpInk}{HTML}{1C1E21}
+\definecolor{fpSage}{HTML}{5E7A50}
+\definecolor{fpSageDeep}{HTML}{455C3A}
+\definecolor{fpSageTint}{HTML}{DCE5D2}
+\definecolor{fpSageXl}{HTML}{EFF3EA}
+\definecolor{fpTerra}{HTML}{BB6240}
+\definecolor{fpTerraDeep}{HTML}{9E4F33}
+\definecolor{fpTerraTint}{HTML}{F0D9CC}
+\definecolor{fpGrey}{HTML}{CBCBCB}
+\definecolor{fpTextInverse}{HTML}{FFFFFF}
+\definecolor{fpCtxBg}{HTML}{FFFFFF}
+\definecolor{fpCtxInk}{HTML}{1C1E21}
+\definecolor{fpCtxBody}{HTML}{52585E}
+\definecolor{fpCtxMuted}{HTML}{8A9097}
+\definecolor{fpCtxRule}{HTML}{CBCBCB}
+\definecolor{fpCtxAccent}{HTML}{5E7A50}
+\definecolor{fpCtxMark}{HTML}{1C1E21}
+\definecolor{fpDv1}{HTML}{5E7A50}
+\definecolor{fpDv2}{HTML}{BB6240}
+\definecolor{fpDv3}{HTML}{D6A23C}
+\definecolor{fpDv4}{HTML}{2C7A78}
+\definecolor{fpDv5}{HTML}{8A6A53}
+\definecolor{fpDv6}{HTML}{9BA0A4}
+\definecolor{fpRuleColor}{HTML}{5E7A50}
+\definecolor{fpFocusRingColor}{HTML}{1C1E21}
+\definecolor{fpSeq1}{HTML}{EFF3EA}
+\definecolor{fpSeq2}{HTML}{D8E2CC}
+\definecolor{fpSeq3}{HTML}{BFD0AC}
+\definecolor{fpSeq4}{HTML}{A2BB89}
+\definecolor{fpSeq5}{HTML}{82A268}
+\definecolor{fpSeq6}{HTML}{5E7A50}
+\definecolor{fpSeq7}{HTML}{41562F}
+\definecolor{fpDiv1}{HTML}{9E4F33}
+\definecolor{fpDiv2}{HTML}{C9876B}
+\definecolor{fpDiv3}{HTML}{EAD3C5}
+\definecolor{fpDiv4}{HTML}{F1F2EC}
+\definecolor{fpDiv5}{HTML}{C3D2B0}
+\definecolor{fpDiv6}{HTML}{88A56F}
+\definecolor{fpDiv7}{HTML}{41562F}
+\definecolor{fpLabelColor}{HTML}{8A9097}
+\definecolor{fpKickerColor}{HTML}{455C3A}
+\definecolor{fpPlateBackground}{HTML}{CBCBCB}
+\definecolor{fpPlateColor}{HTML}{1C1E21}
+\definecolor{fpPlateSageBackground}{HTML}{5E7A50}
+\definecolor{fpPlateSageColor}{HTML}{FFFFFF}
+\definecolor{fpButtonBackground}{HTML}{FFFFFF}
+\definecolor{fpButtonBorder}{HTML}{1C1E21}
+\definecolor{fpButtonText}{HTML}{1C1E21}
+\definecolor{fpButtonSolidBackground}{HTML}{5E7A50}
+\definecolor{fpButtonSolidBorder}{HTML}{5E7A50}
+\definecolor{fpButtonSolidText}{HTML}{FFFFFF}
+\definecolor{fpButtonTerraBackground}{HTML}{BB6240}
+\definecolor{fpButtonTerraBorder}{HTML}{BB6240}
+\definecolor{fpButtonTerraText}{HTML}{FFFFFF}
+\definecolor{fpButtonHoverBackground}{HTML}{F7F8F8}
+\definecolor{fpButtonSolidHoverBackground}{HTML}{455C3A}
+\definecolor{fpButtonTerraHoverBackground}{HTML}{9E4F33}
+\definecolor{fpChipBorder}{HTML}{1C1E21}
+\definecolor{fpChipSageBackground}{HTML}{DCE5D2}
+\definecolor{fpChipTerraBackground}{HTML}{F0D9CC}
+\definecolor{fpChipGreyBackground}{HTML}{CBCBCB}
+\definecolor{fpChipText}{HTML}{1C1E21}
+\definecolor{fpCardBackground}{HTML}{FFFFFF}
+\definecolor{fpCardBorder}{HTML}{1C1E21}
+\definecolor{fpPanelBackground}{HTML}{F7F8F8}
+\definecolor{fpPanelBorder}{HTML}{E4E7E9}
+\definecolor{fpSegBorder}{HTML}{1C1E21}
+\definecolor{fpSegDividerColor}{HTML}{1C1E21}
+\definecolor{fpSegSelectedBackground}{HTML}{1C1E21}
+\definecolor{fpSegSelectedText}{HTML}{FFFFFF}
+\definecolor{fpSegItemColor}{HTML}{1C1E21}
+\definecolor{fpSegHoverBackground}{HTML}{EFF3EA}
+\definecolor{fpHrColor}{HTML}{1C1E21}
+\definecolor{fpHrGreyColor}{HTML}{CBCBCB}
+\definecolor{fpLinkColor}{HTML}{455C3A}
+\definecolor{fpLinkUnderlineColor}{HTML}{DCE5D2}
+\definecolor{fpLinkHoverUnderlineColor}{HTML}{5E7A50}
+\definecolor{fpBandBackground}{HTML}{5E7A50}
+\definecolor{fpBandText}{HTML}{FFFFFF}
+\definecolor{fpBandTerraBackground}{HTML}{BB6240}
+\definecolor{fpBandInkBackground}{HTML}{1C1E21}
+\definecolor{fpUtilityBgSageBackground}{HTML}{5E7A50}
+\definecolor{fpUtilityBgSageText}{HTML}{FFFFFF}
+\definecolor{fpUtilityBgGreyBackground}{HTML}{CBCBCB}
+\definecolor{fpUtilityBgGreyText}{HTML}{1C1E21}
+\definecolor{fpUtilityBgSurfaceBackground}{HTML}{F7F8F8}
+
+%% ---------------------------------------------------------------- type
+%% Manrope ships beside this file in fonts/ (SIL OFL); IBM Plex Mono comes
+%% with TeX Live. Manrope has no italic: emphasis is SemiBold, never a slant.
+\iffp@fonts\ifPDFTeX
+  \PackageWarningNoLine{faceplate}{pdfLaTeX cannot load Manrope and IBM Plex Mono.\MessageBreak
+    Compile with LuaLaTeX (or XeLaTeX) for the brand typefaces.\MessageBreak
+    Colours, lengths and macros still work}
+  \fp@fontsfalse
+\fi\fi
+\iffp@fonts
+  \RequirePackage{fontspec}
+  \IfFontExistsTF{Manrope-Regular.ttf}{}{%
+    \PackageError{faceplate}{Manrope not found}{Run `npx faceplate install-latex' once on this machine,\MessageBreak
+      or (Overleaf) upload the fonts/ folder next to your document.}}
+  \defaultfontfeatures[Manrope]{
+    Extension = .ttf, UprightFont = *-Regular, BoldFont = *-Bold,
+    ItalicFont = *-SemiBold, BoldItalicFont = *-Bold,
+    FontFace = {mb}{n}{*-Medium}, FontFace = {sb}{n}{*-SemiBold},
+    FontFace = {eb}{n}{*-ExtraBold}}
+  \defaultfontfeatures[IBMPlexMono]{
+    Extension = .otf, UprightFont = *-Regular, BoldFont = *-SemiBold,
+    ItalicFont = *-Italic, BoldItalicFont = *-SemiBoldItalic,
+    FontFace = {mb}{n}{*-Medium}}
+  \setmainfont{Manrope}
+  \setsansfont{Manrope}
+  \setmonofont{IBMPlexMono}
+  %% labels: Plex Mono Medium, tracked out
+  \newfontfamily\fp@labelfont{IBMPlexMono}[
+    UprightFont = *-Medium, LetterSpace = 12]
+  %% the wordmark and display type: ExtraBold, tracked tight
+  \newfontfamily\fp@wordmarkfont{Manrope}[
+    UprightFont = *-ExtraBold, BoldFont = *-ExtraBold,
+    LetterSpace = -2]
+  %% headings: Bold, tracked in slightly
+  \newfontfamily\fp@headingfont{Manrope}[
+    UprightFont = *-Bold, BoldFont = *-ExtraBold,
+    LetterSpace = -1]
+  %% the display line: Bold or ExtraBold as the dial says, tracked tighter still
+  \newfontfamily\fp@displayfont{Manrope}[
+    UprightFont = *-Bold, BoldFont = *-ExtraBold,
+    LetterSpace = -3]
+\else
+  \def\fp@labelfont{\ttfamily}
+  \def\fp@wordmarkfont{\bfseries}
+  \def\fp@headingfont{\bfseries}
+  \def\fp@displayfont{\bfseries}
+\fi
+%% Public font switches.
+\newcommand\fplabelfont{\fp@labelfont}
+\newcommand\fpwordmarkfont{\fp@wordmarkfont}
+\newcommand\fpheadingfont{\fp@headingfont}
+\newcommand\fpmedium{\fontseries{mb}\selectfont}
+\newcommand\fpsemibold{\fontseries{sb}\selectfont}
+%% The display line's face, at the weight the level gives it. Size: \fpsize{display}.
+\newcommand\fpdisplayfont{\fp@displayfont\ifnum\fp@dial@displayWeight>700 \bfseries\fi}
+
+%% The closed scale on the medium's base (print or slides): the web scale's
+%% ratios, unchanged. \fpsize{base} sets size and leading: xxs xs sm base h3 h2
+%% h1, and xl xxl xxxl for display. Nothing else. Four more names follow the
+%% dial and stand for whichever step the level gives them: display, lede,
+%% title, index.
+%% print: base 9.5pt, body leading 1.35
+\@namedef{fp@size@print@xxs}{\fontsize{5.94pt}{8.02pt}\selectfont}
+\@namedef{fp@size@print@xs}{\fontsize{7.13pt}{9.62pt}\selectfont}
+\@namedef{fp@size@print@sm}{\fontsize{8.31pt}{11.22pt}\selectfont}
+\@namedef{fp@size@print@base}{\fontsize{9.5pt}{12.83pt}\selectfont}
+\@namedef{fp@size@print@h3}{\fontsize{11.88pt}{15.44pt}\selectfont}
+\@namedef{fp@size@print@h2}{\fontsize{14.84pt}{17.81pt}\selectfont}
+\@namedef{fp@size@print@h1}{\fontsize{19pt}{21.85pt}\selectfont}
+\@namedef{fp@size@print@xl}{\fontsize{23.75pt}{27.31pt}\selectfont}
+\@namedef{fp@size@print@xxl}{\fontsize{29.69pt}{34.14pt}\selectfont}
+\@namedef{fp@size@print@xxxl}{\fontsize{38pt}{43.7pt}\selectfont}
+\@namedef{fp@base@print}{9.5pt}
+%% slides: base 11pt, body leading 1.25
+\@namedef{fp@size@slides@xxs}{\fontsize{6.88pt}{8.59pt}\selectfont}
+\@namedef{fp@size@slides@xs}{\fontsize{8.25pt}{10.31pt}\selectfont}
+\@namedef{fp@size@slides@sm}{\fontsize{9.63pt}{12.03pt}\selectfont}
+\@namedef{fp@size@slides@base}{\fontsize{11pt}{13.75pt}\selectfont}
+\@namedef{fp@size@slides@h3}{\fontsize{13.75pt}{17.88pt}\selectfont}
+\@namedef{fp@size@slides@h2}{\fontsize{17.19pt}{20.63pt}\selectfont}
+\@namedef{fp@size@slides@h1}{\fontsize{22pt}{25.3pt}\selectfont}
+\@namedef{fp@size@slides@xl}{\fontsize{27.5pt}{31.62pt}\selectfont}
+\@namedef{fp@size@slides@xxl}{\fontsize{34.38pt}{39.53pt}\selectfont}
+\@namedef{fp@size@slides@xxxl}{\fontsize{44pt}{50.6pt}\selectfont}
+\@namedef{fp@base@slides}{11pt}
+\newcommand\fpsize[1]{%
+  \ifcsname fp@size@\fp@medium @#1\endcsname\csname fp@size@\fp@medium @#1\endcsname\else
+    \PackageError{faceplate}{Unknown size `#1'}{The scale is closed: xxs, xs, sm, base, h3, h2, h1, xl, xxl, xxxl,\MessageBreak
+      and the dial's display, lede, title and index.}\fi}
+
+%% --------------------------------------------------- lines and spacing
+%% Converted at the CSS reference pixel: 1px = 0.75pt.
+\newlength\fpkeyline  \setlength\fpkeyline{1.5pt}
+\newlength\fphairline \setlength\fphairline{0.75pt}
+\@namedef{fp@space@1}{3pt}
+\@namedef{fp@space@2}{6pt}
+\@namedef{fp@space@3}{12pt}
+\@namedef{fp@space@4}{18pt}
+\@namedef{fp@space@5}{24pt}
+\@namedef{fp@space@6}{36pt}
+\@namedef{fp@space@7}{48pt}
+\@namedef{fp@space@8}{72pt}
+\@namedef{fp@space@9}{96pt}
+%% Expands to the bare length and nothing after it, so it can stand inside
+%% \dimexpr, a pgf key or a TikZ coordinate.
+\newcommand\fpspace[1]{\csname fp@space@\ifcsname fp@space@#1\endcsname#1\else unknown\fi\endcsname}
+\@namedef{fp@space@unknown}{0pt\PackageError{faceplate}{Unknown space}{Spacing is a closed scale: 1 to 9.}}
+
+%% ------------------------------------------------------------ the dial
+%% One macro per level; the one the document chose runs here, once. It moves
+%% four things together: colour (fpFill, fpWash, fpLead… and fpLineColor), the
+%% structural line (\fpline), type (the four dial sizes above) and room.
+%% \fpdial{room} reads a value by its token name. Room and the index square
+%% carry their paper values: a sheet holds far less than a window.
+\@namedef{fp@dial@01}{%
+  \def\fp@dial@display{h1}%
+  \def\fp@dial@displayWeight{700}%
+  \def\fp@dial@lede{h3}%
+  \def\fp@dial@title{h3}%
+  \def\fp@dial@indexText{h3}%
+  \def\fp@dial@room{24pt}%
+  \def\fp@dial@leadTop{18pt}%
+  \def\fp@dial@leadBottom{18pt}%
+  \def\fp@dial@row{3pt}%
+  \def\fp@dial@indexSize{24pt}%
+  \def\fp@dial@line{0.75pt}%
+  \colorlet{fpLineColor}{fpGrey}%
+  \colorlet{fpFill}{fpBg}%
+  \colorlet{fpFillInk}{fpInk}%
+  \colorlet{fpWash}{fpBg}%
+  \colorlet{fpLeadFill}{fpBg}%
+  \colorlet{fpLeadInk}{fpInk}%
+  \colorlet{fpLeadBody}{fpBody}%
+  \colorlet{fpLeadAccent}{fpSage}%
+  \colorlet{fpLeadEm}{fpInk}%
+}
+\@namedef{fp@dial@02}{%
+  \def\fp@dial@display{xl}%
+  \def\fp@dial@displayWeight{800}%
+  \def\fp@dial@lede{h2}%
+  \def\fp@dial@title{h2}%
+  \def\fp@dial@indexText{h3}%
+  \def\fp@dial@room{18pt}%
+  \def\fp@dial@leadTop{18pt}%
+  \def\fp@dial@leadBottom{18pt}%
+  \def\fp@dial@row{3pt}%
+  \def\fp@dial@indexSize{24pt}%
+  \def\fp@dial@line{1.5pt}%
+  \colorlet{fpLineColor}{fpInk}%
+  \colorlet{fpFill}{fpSageTint}%
+  \colorlet{fpFillInk}{fpInk}%
+  \colorlet{fpWash}{fpSageXl}%
+  \colorlet{fpLeadFill}{fpSageXl}%
+  \colorlet{fpLeadInk}{fpInk}%
+  \colorlet{fpLeadBody}{fpBody}%
+  \colorlet{fpLeadAccent}{fpSage}%
+  \colorlet{fpLeadEm}{fpSage}%
+}
+\@namedef{fp@dial@03}{%
+  \def\fp@dial@display{xxl}%
+  \def\fp@dial@displayWeight{800}%
+  \def\fp@dial@lede{h2}%
+  \def\fp@dial@title{h2}%
+  \def\fp@dial@indexText{h2}%
+  \def\fp@dial@room{18pt}%
+  \def\fp@dial@leadTop{18pt}%
+  \def\fp@dial@leadBottom{18pt}%
+  \def\fp@dial@row{3pt}%
+  \def\fp@dial@indexSize{30pt}%
+  \def\fp@dial@line{1.5pt}%
+  \colorlet{fpLineColor}{fpInk}%
+  \colorlet{fpFill}{fpSage}%
+  \colorlet{fpFillInk}{fpTextInverse}%
+  \colorlet{fpWash}{fpSageTint}%
+  \colorlet{fpLeadFill}{fpSage}%
+  \colorlet{fpLeadInk}{fpTextInverse}%
+  \colorlet{fpLeadBody}{fpTextInverse}%
+  \colorlet{fpLeadAccent}{fpTextInverse}%
+  \colorlet{fpLeadEm}{fpInk}%
+}
+\@namedef{fp@dial@04}{%
+  \def\fp@dial@display{xxxl}%
+  \def\fp@dial@displayWeight{800}%
+  \def\fp@dial@lede{h2}%
+  \def\fp@dial@title{h2}%
+  \def\fp@dial@indexText{h1}%
+  \def\fp@dial@room{12pt}%
+  \def\fp@dial@leadTop{18pt}%
+  \def\fp@dial@leadBottom{18pt}%
+  \def\fp@dial@row{3pt}%
+  \def\fp@dial@indexSize{36pt}%
+  \def\fp@dial@line{1.5pt}%
+  \colorlet{fpLineColor}{fpInk}%
+  \colorlet{fpFill}{fpSage}%
+  \colorlet{fpFillInk}{fpTextInverse}%
+  \colorlet{fpWash}{fpSageTint}%
+  \colorlet{fpLeadFill}{fpSage}%
+  \colorlet{fpLeadInk}{fpTextInverse}%
+  \colorlet{fpLeadBody}{fpTextInverse}%
+  \colorlet{fpLeadAccent}{fpTextInverse}%
+  \colorlet{fpLeadEm}{fpInk}%
+}
+\csname fp@dial@\fpintensity\endcsname
+\newcommand\fpdial[1]{\csname fp@dial@\ifcsname fp@dial@#1\endcsname#1\else unknown\fi\endcsname}
+\@namedef{fp@dial@unknown}{0pt\PackageError{faceplate}{Unknown dial value}{See tokens/intensity.json for the names.}}
+\newlength\fpline \setlength\fpline{\fp@dial@line}
+\def\fp@dial@alias#1#2{%
+  \expandafter\let\csname fp@size@print@#1\expandafter\endcsname\csname fp@size@print@#2\endcsname
+  \expandafter\let\csname fp@size@slides@#1\expandafter\endcsname\csname fp@size@slides@#2\endcsname}
+\fp@dial@alias{display}{\fp@dial@display}
+\fp@dial@alias{lede}{\fp@dial@lede}
+\fp@dial@alias{title}{\fp@dial@title}
+\fp@dial@alias{index}{\fp@dial@indexText}
+
+%% Colour is also a code: a section belongs to one of three kinds, and its
+%% index square and its accents take that kind's colour. \fpkind{sage} is the
+%% work itself (the default), {ink} what is public and dated, {terra} what is
+%% made on the side. It sets fpKind, fpKindTint, fpKindDeep and the square's
+%% fill, which steps with the dial: paper, then the tint, then the solid colour.
+%% Global, because a section is not a group: it may run across a page break.
+\def\fp@kind@set#1#2#3#4{%
+  \xglobal\colorlet{fpKind}{#1}\xglobal\colorlet{fpKindTint}{#2}\xglobal\colorlet{fpKindDeep}{#3}%
+  \xglobal\colorlet{fpCtxAccent}{#4}%
+  \ifnum\fpintensity<2 \xglobal\colorlet{fpKindFill}{fpBg}%
+  \else\ifnum\fpintensity<3 \xglobal\colorlet{fpKindFill}{#2}%
+  \else\xglobal\colorlet{fpKindFill}{#1}\fi\fi}
+\@namedef{fp@kind@sage}{\fp@kind@set{fpSage}{fpSageTint}{fpSageDeep}{fpSage}}
+\@namedef{fp@kind@ink}{\fp@kind@set{fpInk}{fpGrey}{fpInk}{fpSage}}
+\@namedef{fp@kind@terra}{\fp@kind@set{fpTerra}{fpTerraTint}{fpTerraDeep}{fpTerra}}
+\newcommand\fpkind[1]{%
+  \ifcsname fp@kind@#1\endcsname\csname fp@kind@#1\endcsname\else
+    \PackageError{faceplate}{Unknown kind `#1'}{A section is sage, ink or terra.}\fi}
+\colorlet{fpKindFillInk}{fpFillInk}
+\fpkind{sage}
+
+%% ------------------------------------------------------------- details
+%% Labels are uppercased; colour names inside them must not be. Text macros
+%% start a paragraph first (as \textcolor does), so a colour switch never
+%% becomes the first item of a box and throws off baseline alignment.
+\ExplSyntaxOn
+\tl_put_right:Nn \l_text_case_exclude_arg_tl { \color \textcolor }
+\ExplSyntaxOff
+%% The accent rule under a heading.
+\newcommand\fprule{{\color{fpRuleColor}\rule{36pt}{3pt}}}
+%% A mono label: uppercase, tracked out, quiet. [colour] defaults to the label role.
+\newcommand\fplabel[2][fpLabelColor]{\leavevmode{\fp@labelfont\fpsize{xs}\color{#1}\MakeUppercase{#2}}}
+%% A kicker: a label above a heading. Deep sage, because it is small text.
+\newcommand\fpkicker[1]{\fplabel[fpSageDeep]{#1}}
+%% Mono, untracked and in its own case: dates, figures, addresses.
+\newcommand\fpmono[1]{\leavevmode{\ttfamily #1}}
+%% The wordmark, or display type.
+\newcommand\fpwordmark[1]{\leavevmode{\fp@wordmarkfont\color{fpInk}#1}}
+%% A hairline divider across the line, in the signature grey.
+\newcommand\fphr{\par\noindent{\color{fpGrey}\rule{\linewidth}{\fphairline}}\par}
+
+%% Registration marks: four corners where a frame would be. They take the
+%% level's line weight and the colour of the field they stand on.
+%% \fpreg[<distance outside>]{<content>} puts them around anything.
+\newdimen\fp@dim
+\newbox\fp@box
+\def\fp@reglen{6pt}       % the length of one stroke of a mark
+\def\fp@barwidth{3pt}     % the accent bar: the weight of the accent rule
+\newcommand\fp@marks[4]{% width, height, depth, distance outside — drawn from here, taking no room
+  \begingroup\color{fpCtxMark}%
+  \dimen0=\dimexpr#4\relax \dimen2=\dimexpr#1+\dimen0\relax
+  \dimen4=\dimexpr#2+\dimen0\relax \dimen6=\dimexpr-#3-\dimen0\relax
+  \dimen8=\fp@reglen\relax
+  \rlap{\kern-\dimen0 \rule[\dimen6]{\dimen8}{\fpline}}%
+  \rlap{\kern-\dimen0 \rule[\dimen6]{\fpline}{\dimen8}}%
+  \rlap{\kern\dimexpr\dimen2-\dimen8\relax \rule[\dimen6]{\dimen8}{\fpline}}%
+  \rlap{\kern\dimexpr\dimen2-\fpline\relax \rule[\dimen6]{\fpline}{\dimen8}}%
+  \rlap{\kern-\dimen0 \rule[\dimexpr\dimen4-\fpline\relax]{\dimen8}{\fpline}}%
+  \rlap{\kern-\dimen0 \rule[\dimexpr\dimen4-\dimen8\relax]{\fpline}{\dimen8}}%
+  \rlap{\kern\dimexpr\dimen2-\dimen8\relax \rule[\dimexpr\dimen4-\fpline\relax]{\dimen8}{\fpline}}%
+  \rlap{\kern\dimexpr\dimen2-\fpline\relax \rule[\dimexpr\dimen4-\dimen8\relax]{\fpline}{\dimen8}}%
+  \endgroup}
+\newcommand\fpreg[2][0pt]{\leavevmode\begingroup
+  \setbox\fp@box\hbox{#2}%
+  \fp@marks{\wd\fp@box}{\ht\fp@box}{\dp\fp@box}{#1}\box\fp@box\endgroup}
+
+%% \fpindex{01} — the index square: a section's number on its kind's fill. It
+%% is the first thing to take colour: between four marks at 01, tinted at 02,
+%% solid from 03, and larger with every step from 03.
+\newcommand\fpindex[1]{\leavevmode\begingroup
+  \fp@dim=\fp@dial@indexSize\relax
+  \rlap{\color{fpKindFill}\rule{\fp@dim}{\fp@dim}}%
+  \ifnum\fpintensity<3 \fp@marks{\fp@dim}{\fp@dim}{0pt}{0pt}\fi
+  \hbox to\fp@dim{\hss\vbox to\fp@dim{\vss
+    \hbox{\fp@wordmarkfont\fpsize{index}\color{fpKindFillInk}#1}\vss}\hss}%
+  \endgroup}
+
+%% \fptickrule[<columns>]{<width>}{<gutter>} — the rule that opens a section,
+%% with a ruler tick at the start of every column. The grid shows without
+%% being drawn. It takes the height of the line; the ticks hang below it.
+\newcommand\fptickrule[3][12]{\leavevmode\begingroup
+  \fp@dim=\dimexpr(#2+#3)/#1\relax
+  \setbox\fp@box\hbox to\dimexpr#2\relax{%
+    \rlap{\color{fpLineColor}\rule{\dimexpr#2\relax}{\fpline}}%
+    \count@=\z@
+    \loop\ifnum\count@<#1\relax
+      \rlap{\kern\count@\fp@dim \color{fpCtxMark}\rule[\dimexpr\fpline-6pt\relax]{\fpline}{6pt}}%
+      \advance\count@\@ne
+    \repeat\hss}%
+  \ht\fp@box=\fpline \dp\fp@box=\z@ \box\fp@box\endgroup}
+
+%% Chips: square, keyline border, mono label, tint fill.
+\tcbset{fp@chip/.style={nobeforeafter, tcbox raise base, colframe=fpChipBorder,
+  coltext=fpChipText, boxrule=\fpkeyline, arc=0pt, outer arc=0pt, boxsep=0pt,
+  left=3pt, right=3pt, top=1pt, bottom=1pt,
+  fontupper=\fp@labelfont\fpsize{xxs}}}
+\newtcbox{\fp@chip@sage}{fp@chip, colback=fpChipSageBackground}
+\newtcbox{\fp@chip@terra}{fp@chip, colback=fpChipTerraBackground}
+\newtcbox{\fp@chip@grey}{fp@chip, colback=fpChipGreyBackground}
+\newcommand\fpchipsage[1]{\fp@chip@sage{\MakeUppercase{#1}}}
+\newcommand\fpchipterra[1]{\fp@chip@terra{\MakeUppercase{#1}}}
+\newcommand\fpchipgrey[1]{\fp@chip@grey{\MakeUppercase{#1}}}
+
+%% ------------------------------------------------------------ the mark
+%% Traced at build time from assets/logo/mark.svg: the same simulated curve,
+%% never redrawn. <size> is the edge of the SVG's 64-unit square, so sizes
+%% match the SVG files. The bare mark's box is trimmed to the ink so it
+%% aligns with text; plated variants keep the full square.
+\def\fp@mark@path{(8,52) -- (15.68,52) -- (16.32,51.84) -- (16.96,51.12) -- (17.6,49.92) -- (18.24,48.32) -- (18.88,46.42) -- (19.52,44.29) -- (20.16,42) -- (20.8,39.63) -- (21.44,37.23) -- (22.08,34.85) -- (22.72,32.54) -- (23.36,30.34) -- (24,28.26) -- (24.64,26.35) -- (25.28,24.61) -- (25.92,23.06) -- (26.56,21.69) -- (27.2,20.52) -- (27.84,19.54) -- (28.48,18.74) -- (29.12,18.12) -- (29.76,17.65) -- (30.4,17.34) -- (31.04,17.16) -- (31.68,17.11) -- (32.32,17.16) -- (32.96,17.3) -- (33.6,17.51) -- (34.24,17.79) -- (34.88,18.11) -- (35.52,18.46) -- (36.16,18.84) -- (36.8,19.23) -- (37.44,19.62) -- (38.08,20.01) -- (38.72,20.38) -- (39.36,20.73) -- (40,21.06) -- (40.64,21.37) -- (41.28,21.64) -- (41.92,21.89) -- (42.56,22.1) -- (43.2,22.29) -- (43.84,22.44) -- (44.48,22.56) -- (45.12,22.66) -- (45.76,22.72) -- (46.4,22.77) -- (47.04,22.79) -- (47.68,22.8) -- (48.32,22.78) -- (48.96,22.76) -- (49.6,22.72) -- (50.24,22.67) -- (50.88,22.62) -- (51.52,22.56) -- (52.16,22.5) -- (52.8,22.43) -- (53.44,22.37) -- (54.08,22.31) -- (54.72,22.25) -- (55.36,22.19) -- (56,22.14)}
+\def\fp@mark@set{(8,22) -- (56,22)}
+\def\fp@mark@setw{2}
+\def\fp@mark@dashon{3}\def\fp@mark@dashoff{4}
+\def\fp@mark@curvew{4}
+\def\fp@mark@dot{(56,22.14)}\def\fp@mark@dotr{3.2}
+\def\fp@mark@left{6}\def\fp@mark@right{59.2}
+\def\fp@mark@top{15.11}\def\fp@mark@bottom{54}
+\def\fp@mark@op@bare{0.4}
+\def\fp@mark@op@plate{0.35}
+\def\fp@mark@op@sage{0.5}
+\newcommand\fp@mark@units[1]{%
+  \pgfmathsetlengthmacro\fp@u{(#1)/64}%
+  \pgfmathsetlengthmacro\fp@w@set{\fp@mark@setw*\fp@u}%
+  \pgfmathsetlengthmacro\fp@w@curve{\fp@mark@curvew*\fp@u}%
+  \pgfmathsetlengthmacro\fp@w@on{\fp@mark@dashon*\fp@u}%
+  \pgfmathsetlengthmacro\fp@w@off{\fp@mark@dashoff*\fp@u}%
+  %% baselines as lengths: a coordinate here would be read in TikZ's default 1cm units
+  \pgfmathsetlengthmacro\fp@w@inkbase{-\fp@mark@bottom*\fp@u}%
+  \pgfmathsetlengthmacro\fp@w@platebase{-64*\fp@u}}
+\newcommand\fp@mark@draw[2]{% #1 colour, #2 setpoint opacity
+  \draw[#1, opacity=#2, line width=\fp@w@set, dash pattern=on \fp@w@on off \fp@w@off] \fp@mark@set;
+  \draw[#1, line width=\fp@w@curve] \fp@mark@path;
+  \fill[#1] \fp@mark@dot circle[radius=\fp@mark@dotr];}
+%% \fpmark[<colour>]{<size>} — the bare mark, sage by default.
+\newcommand\fpmark[2][fpSage]{{%
+  \fp@mark@units{#2}%
+  \begin{tikzpicture}[x=\fp@u, y=-\fp@u, line cap=round, line join=round,
+      baseline=\fp@w@inkbase]
+    \fp@mark@draw{#1}{\fp@mark@op@bare}
+    \pgfresetboundingbox
+    \useasboundingbox (\fp@mark@left,\fp@mark@top) rectangle (\fp@mark@right,\fp@mark@bottom);
+  \end{tikzpicture}}}
+%% \fpmarkplate{<size>} — ink on the signature-grey plate.
+\newcommand\fpmarkplate[1]{{%
+  \fp@mark@units{#1}%
+  \begin{tikzpicture}[x=\fp@u, y=-\fp@u, line cap=round, line join=round, baseline=\fp@w@platebase]
+    \fill[fpPlateBackground] (0,0) rectangle (64,64);
+    \fp@mark@draw{fpPlateColor}{\fp@mark@op@plate}
+  \end{tikzpicture}}}
+%% \fpmarkonsage{<size>} — reversed, on a sage square.
+\newcommand\fpmarkonsage[1]{{%
+  \fp@mark@units{#1}%
+  \begin{tikzpicture}[x=\fp@u, y=-\fp@u, line cap=round, line join=round, baseline=\fp@w@platebase]
+    \fill[fpPlateSageBackground] (0,0) rectangle (64,64);
+    \fp@mark@draw{fpPlateSageColor}{\fp@mark@op@sage}
+  \end{tikzpicture}}}
+
+\endinput

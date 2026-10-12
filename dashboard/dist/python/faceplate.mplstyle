@@ -1,0 +1,37 @@
+# Faceplate v3.0.0 — matplotlib style (print sizes).
+# GENERATED FROM tokens/*.json — DO NOT EDIT. Prefer `import faceplate; faceplate.use()`,
+# which also registers the bundled fonts and the colormaps.
+font.family: IBM Plex Mono, DejaVu Sans Mono, monospace
+font.size: 9.5
+text.color: 52585E
+axes.prop_cycle: cycler('color', ['5E7A50', 'BB6240', 'D6A23C', '2C7A78', '8A6A53', '9BA0A4'])
+axes.facecolor: FFFFFF
+axes.edgecolor: 1C1E21
+axes.linewidth: 1.5
+axes.spines.left: False
+axes.spines.right: False
+axes.spines.top: False
+axes.labelcolor: 1C1E21
+axes.labelsize: 7.13
+axes.titlesize: 8.31
+axes.titlelocation: left
+axes.grid: True
+axes.grid.axis: y
+axes.axisbelow: True
+grid.color: CBCBCB
+grid.linewidth: 0.75
+xtick.labelcolor: 8A9097
+ytick.labelcolor: 8A9097
+xtick.labelsize: 5.94
+ytick.labelsize: 5.94
+xtick.direction: out
+xtick.major.size: 3
+xtick.major.width: 0.75
+ytick.major.size: 0
+lines.linewidth: 1.5
+patch.linewidth: 0
+legend.fancybox: False
+legend.edgecolor: none
+legend.framealpha: 1
+legend.fontsize: 5.94
+savefig.bbox: tight

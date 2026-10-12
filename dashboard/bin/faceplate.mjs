@@ -89,12 +89,12 @@ function checkTokens(text, file) {
     if (name.startsWith('--fp-ext-')) {
       report('warn', 'extension', file, lineOf(text, m.index), `${name}`,
         'Declared as a project extension. Extensions are a flare, not a permit — they are expected to become a proposal or be removed.',
-        'docs/contributing.md');
+        'guidelines/extending.md');
       continue;
     }
     report('error', 'unknown-token', file, lineOf(text, m.index), `unknown token ${name}`,
       'Faceplate defines a closed set of tokens. A token invented inside a project is invisible to the brand sheet and disappears on the next update, taking whatever depended on it with it. This is exactly how --fp-dv-7 shipped unnoticed.',
-      'docs/contributing.md#proposing-a-token');
+      'guidelines/extending.md#what-to-do-instead');
   }
 }
 
@@ -114,12 +114,12 @@ function checkHex(text, file) {
     if (insideMix && /^#(FFFFFF|000000)$/.test(hex)) {
       report('warn', 'mix-operator', file, lineOf(text, m.index), `${m[0]} used as a mix operator`,
         'Mixing toward pure white or black is a common shading trick, but it produces colours that are not in the palette. Prefer an existing tint or deep variant.',
-        'docs/colour.md');
+        'guidelines/colour.md');
       continue;
     }
     report('error', 'off-palette', file, lineOf(text, m.index), `off-palette colour ${m[0]}`,
-      'The palette is closed. Every colour Faceplate renders is one of the primitives in docs/colour.md.',
-      'docs/colour.md');
+      'The palette is closed. Every colour Faceplate renders is one of the primitives in guidelines/colour.md.',
+      'guidelines/colour.md');
   }
 }
 
@@ -131,7 +131,7 @@ function checkRadius(text, file, defs) {
     if (/var\(--fp-radius\)/.test(v)) continue;
     report('error', 'rounded-corner', file, lineOf(text, m.index), `border-radius: ${v}`,
       'Hard square edges are the single most recognisable thing about Faceplate. --fp-radius is 0 and there is no rounded variant of anything; a rounded corner reads as a different brand.',
-      'docs/principles.md');
+      'guidelines/lines.md');
   }
 }
 
@@ -144,7 +144,7 @@ function checkFonts(text, file, defs) {
     if (/Manrope|IBM Plex Mono/i.test(v)) continue;
     report('error', 'off-brand-font', file, lineOf(text, m.index), `font-family: ${v}`,
       'Faceplate is Manrope and IBM Plex Mono. Use var(--fp-font-sans) or var(--fp-font-mono) — naming a family directly drifts as soon as the stack changes.',
-      'docs/typography.md');
+      'guidelines/typography.md');
   }
 }
 
@@ -159,7 +159,7 @@ function checkReset(text, file) {
     report('warn', 'universal-reset', file, lineOf(text, m.index),
       `universal selector sets ${zeroed.join(' and ')} to 0`,
       'Faceplate ships inside @layer, and unlayered CSS beats layered CSS regardless of specificity — so this silently zeroes the padding of every .fp-* component. A real project shipped segmented controls reading "anyyesno" this way. Scope the reset, or exclude [class^="fp-"].',
-      'docs/using-faceplate.md#a-note-on-resets');
+      'guidelines/media/web.md#resets');
   }
 }
 
@@ -173,29 +173,52 @@ function checkSpacing(text, file) {
     if (off.length) {
       report('warn', 'off-scale-spacing', file, lineOf(text, m.index), `${off.join(', ')} is not on the spacing scale`,
         'Spacing runs 4 / 8 / 16 / 24 / 32 / 48 / 64. Values off the scale accumulate into layouts that no longer align.',
-        'docs/principles.md#grid-and-spacing');
+        'guidelines/layout.md#spacing');
     }
   }
 }
 
+/* Intensity is a real switch: data-fp-intensity selects a set of values, so it
+   must name a level that exists, and an artifact (a site with all its routes,
+   an app with all its screens) uses one. A page that exists to show the levels
+   side by side marks its root data-fp-specimen and is left alone. */
+const declaredLevels = new Map();   // level -> files, across the whole project
 function checkIntensity(text, file) {
   if (!/data-fp-intensity/.test(text)) return;
-  const declared = [...text.matchAll(/data-fp-intensity\s*=\s*["'](\d{2})["']/g)].map(m => m[1]);
-  const uniq = [...new Set(declared)];
+  if (/data-fp-specimen/.test(text)) return;
+  const all = [...text.matchAll(/data-fp-intensity\s*=\s*["']([^"']*)["']/g)];
+  for (const m of all) {
+    if (/^0[1-4]$/.test(m[1])) continue;
+    report('error', 'intensity-value', file, lineOf(text, m.index), `data-fp-intensity="${m[1]}"`,
+      'The dial has four levels: 01, 02, 03 and 04, written with two digits. Any other value matches none of them, and the page silently renders at 01.',
+      'guidelines/switches.md#intensity');
+  }
+  const uniq = [...new Set(all.map(m => m[1]).filter(v => /^0[1-4]$/.test(v)))];
+  for (const v of uniq) declaredLevels.set(v, [...(declaredLevels.get(v) || []), rel(file)]);
   if (uniq.length > 1) {
     report('warn', 'mixed-intensity', file, lineOf(text, text.indexOf('data-fp-intensity')),
       `this file declares intensity ${uniq.join(' and ')}`,
-      'Never mix levels within one artifact. A page with a 04 hero and 01 content reads as two designs stapled together, not as range. If a section needs more presence, raise the whole surface.',
-      'docs/intensity.md');
+      'One intensity per artifact, set once on the page root. A 04 lead over 01 content reads as two designs stapled together, not as range. If something needs more presence, turn the whole site up.',
+      'guidelines/switches.md#intensity');
   }
   for (const m of text.matchAll(/data-fp-intensity\s*=\s*["'](0[12])["'][^>]*>([\s\S]{0,900})/g)) {
     if (/class\s*=\s*["'][^"']*\bfp-band\b/.test(m[2])) {
       report('warn', 'intensity-mismatch', file, lineOf(text, m.index),
-        `.fp-band inside a surface declared intensity ${m[1]}`,
-        'A full-bleed colour block is a 03+ device. At 01–02 colour coverage should be 2–10%, which a band alone exceeds.',
-        'docs/intensity.md');
+        `.fp-band inside a page declared intensity ${m[1]}`,
+        'A solid block of colour arrives at 03. At 01 colour is a line and a point, and at 02 a tint; a band alone is more than either level carries.',
+        'guidelines/switches.md#intensity');
     }
   }
+}
+/* after every file: the pages of one project should agree */
+function checkOneIntensity() {
+  if (declaredLevels.size < 2) return;
+  const levels = [...declaredLevels.keys()].sort();
+  const minority = levels.slice().sort((a, b) => declaredLevels.get(a).length - declaredLevels.get(b).length)[0];
+  report('warn', 'mixed-intensity', declaredLevels.get(minority)[0], 1,
+    `pages of this project declare intensity ${levels.map(l => `${l} (${declaredLevels.get(l).length})`).join(', ')}`,
+    'One intensity per artifact: a site keeps its level on every route, an app on every screen. Pages at different levels read as different sites. Pick one; a page that only demonstrates the levels can mark its root data-fp-specimen.',
+    'guidelines/switches.md#intensity');
 }
 
 function checkIcon(text, file) {
@@ -205,14 +228,14 @@ function checkIcon(text, file) {
   if (!vb || vb[1].trim() !== '0 0 24 24')
     report('error', 'icon-grid', file, 1, `viewBox is ${vb ? vb[1] : 'missing'}`,
       'Topical motifs share one style: a 24px grid, 2px stroke, round caps. An icon off the grid pulls the family apart.',
-      'docs/iconography.md');
+      'guidelines/icons.md');
   const sw = text.match(/stroke-width\s*=\s*"([^"]+)"/);
   if (sw && sw[1].trim() !== '2')
-    report('error', 'icon-stroke', file, 1, `stroke-width is ${sw[1]}`, 'The family is drawn at 2px.', 'docs/iconography.md');
+    report('error', 'icon-stroke', file, 1, `stroke-width is ${sw[1]}`, 'The family is drawn at 2px.', 'guidelines/icons.md');
   if (/stroke\s*=\s*"#/.test(text))
     report('error', 'icon-color', file, 1, 'icon has a baked-in stroke colour',
       'Icons use currentColor so they inherit the surrounding text colour. A baked-in hex breaks reversed surfaces.',
-      'docs/iconography.md');
+      'guidelines/icons.md');
 }
 
 /* ------------------------------------------------------ vendored copy */
@@ -232,12 +255,56 @@ function checkManifest() {
         bad++;
         report('error', 'modified-vendor', f, 1, `${name} does not match its checksum`,
           'This file is generated and shipped. Editing a vendored copy makes the project agree with itself while diverging from the brand — and every compliance check will then pass, because it is measuring against the modified file. That is precisely how --fp-dv-7 survived four reviews.',
-          'docs/contributing.md');
+          'guidelines/extending.md');
       }
     }
     return { root, bad, missing, checked: true };
   }
   return { checked: false };
+}
+
+/* ---------------------------------------------------- LaTeX install */
+/* Links dist/latex into the user's TEXMF tree, once per machine: the package
+   and classes under tex/latex/, Manrope under fonts/truetype/. Links, not
+   copies, so pulling a new version updates every document. */
+if (cmd === 'install-latex' || cmd === 'uninstall-latex') {
+  const { execSync } = await import('node:child_process');
+  let texmfhome;
+  try { texmfhome = execSync('kpsewhich -var-value TEXMFHOME', { encoding: 'utf8' }).trim(); }
+  catch { console.error('faceplate: kpsewhich not found. Install a TeX distribution (TeX Live, MacTeX) first.'); process.exit(2); }
+  const src = path.resolve(HERE, '../dist/latex');
+  const links = [[src, path.join(texmfhome, 'tex/latex/faceplate')],
+                 [path.join(src, 'fonts'), path.join(texmfhome, 'fonts/truetype/faceplate')]];
+  for (const [from, to] of links) {
+    let st = null; try { st = fs.lstatSync(to); } catch {}
+    if (st && !st.isSymbolicLink()) { console.error(`faceplate: ${to} exists and is not a link — move it away first.`); process.exit(1); }
+    if (st) fs.unlinkSync(to);
+    if (cmd === 'install-latex') {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.symlinkSync(from, to);
+      console.log(`  linked  ${to}\n       -> ${from}`);
+    } else console.log(`  removed ${to}`);
+  }
+  if (cmd === 'install-latex') console.log('\nDone. \\documentclass{fpcv} and \\usepackage{faceplate} now work in any document; compile with LuaLaTeX.');
+  process.exit(0);
+}
+
+/* ---------------------------------------------------- skill install */
+/* Links the Claude Code skill into ~/.claude/skills/faceplate, so any coding
+   session can apply Faceplate. A link, so it follows this copy's version. */
+if (cmd === 'install-skill' || cmd === 'uninstall-skill') {
+  const os = await import('node:os');
+  const src = path.resolve(HERE, '../skills/faceplate');
+  const to = path.join(os.homedir(), '.claude', 'skills', 'faceplate');
+  let st = null; try { st = fs.lstatSync(to); } catch {}
+  if (st && !st.isSymbolicLink()) { console.error(`faceplate: ${to} exists and is not a link — move it away first.`); process.exit(1); }
+  if (st) fs.unlinkSync(to);
+  if (cmd === 'install-skill') {
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.symlinkSync(src, to);
+    console.log(`  linked  ${to}\n       -> ${src}\n\nDone. Claude Code sessions can now use the "faceplate" skill.`);
+  } else console.log(`  removed ${to}`);
+  process.exit(0);
 }
 
 /* -------------------------------------------------------------- run */
@@ -247,8 +314,12 @@ if (cmd !== 'check') {
   npx faceplate check [path]    verify a project stayed inside the system
     --strict                    treat warnings as errors
     --json                      machine-readable output
+  npx faceplate install-latex   link the LaTeX package, classes and fonts into TEXMFHOME
+  npx faceplate uninstall-latex remove those links
+  npx faceplate install-skill   link the Claude Code skill into ~/.claude/skills
+  npx faceplate uninstall-skill remove that link
 
-  Rules and reasoning: docs/`);
+  Rules and reasoning: guidelines/`);
   process.exit(0);
 }
 
@@ -265,6 +336,7 @@ for (const f of files) {
   }
   checkIcon(text, f);
 }
+checkOneIntensity();
 const mf = checkManifest();
 
 /* ------------------------------------------------------------ output */

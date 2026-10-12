@@ -1,4 +1,4 @@
-/*! Faceplate v2.0.0 — design tokens
+/*! Faceplate v3.0.0 — design tokens
  *  GENERATED FROM tokens/*.json — DO NOT EDIT.
  *  Regenerate: npm run build
  */
@@ -21,6 +21,13 @@
     --fp-terra-tint:#F0D9CC;
     --fp-gray:#CBCBCB;
     --fp-text-inverse:#FFFFFF;
+    --fp-ctx-bg:#FFFFFF;
+    --fp-ctx-ink:#1C1E21;
+    --fp-ctx-body:#52585E;
+    --fp-ctx-muted:#8A9097;
+    --fp-ctx-rule:#CBCBCB;
+    --fp-ctx-accent:#5E7A50;
+    --fp-ctx-mark:#1C1E21;
     --fp-dv-1:#5E7A50;
     --fp-dv-2:#BB6240;
     --fp-dv-3:#D6A23C;
@@ -36,9 +43,14 @@
     --fp-text-h3:1.25rem;
     --fp-text-h2:1.5625rem;
     --fp-text-h1:2rem;
+    --fp-text-xl:2.5rem;
+    --fp-text-xxl:3.125rem;
+    --fp-text-xxxl:4rem;
     --fp-leading:1.65;
     --fp-leading-tight:1.15;
+    --fp-leading-snug:1.5;
     --fp-track-tight:-.02em;
+    --fp-track-display:-.03em;
     --fp-track-heading:-.01em;
     --fp-track-label:.12em;
     --fp-radius:0;
@@ -49,6 +61,9 @@
     --fp-focus-ring-color:#1C1E21;
     --fp-focus-ring-offset:2px;
     --fp-disabled-opacity:.45;
+    --fp-ease-response:linear(0, .056, .196, .379, .573, .754, .907, 1.023, 1.103, 1.147, 1.163, 1.156, 1.135, 1.106, 1.075, 1.045, 1.019, .999, .985, .977, .974, .974, .977, .982, .987, .992, .996, 1, 1);
+    --fp-ease-settle:linear(0, .11, .31, .503, .657, .771, .85, .904, .939, .962, .976, .985, .991, .994, .997, .998, 1);
+    --fp-duration:.6s;
     --fp-space-1:.25rem;
     --fp-space-2:.5rem;
     --fp-space-3:1rem;
@@ -56,6 +71,8 @@
     --fp-space-5:2rem;
     --fp-space-6:3rem;
     --fp-space-7:4rem;
+    --fp-space-8:6rem;
+    --fp-space-9:8rem;
     --fp-seq-1:#EFF3EA;
     --fp-seq-2:#D8E2CC;
     --fp-seq-3:#BFD0AC;
@@ -80,7 +97,7 @@
     --fp-heading-h3-letter-spacing:-.01em;
     --fp-label-weight:500;
     --fp-label-color:#8A9097;
-    --fp-kicker-color:#5E7A50;
+    --fp-kicker-color:#455C3A;
     --fp-wordmark-weight:800;
     --fp-wordmark-line-height:1.05;
     --fp-rule-height:4px;
@@ -134,6 +151,19 @@
     --fp-panel-border-width:1px;
     --fp-panel-radius:0;
     --fp-panel-padding:1.5rem;
+    --fp-page-max-width:80rem;
+    --fp-page-margin:4rem;
+    --fp-page-margin-narrow:1.5rem;
+    --fp-page-gutter:1.5rem;
+    --fp-page-measure:64ch;
+    --fp-reg-length:.5rem;
+    --fp-portrait-size:15rem;
+    --fp-portrait-size-narrow:7rem;
+    --fp-slot-ratio:4 / 3;
+    --fp-slot-width-narrow:5.5rem;
+    --fp-figure-stroke:2px;
+    --fp-figure-thin:1px;
+    --fp-figure-dash:3 5;
     --fp-seg-border-width:2px;
     --fp-seg-border:#1C1E21;
     --fp-seg-radius:0;
@@ -166,5 +196,101 @@
     --fp-utility-bg-grey-background:#CBCBCB;
     --fp-utility-bg-grey-text:#1C1E21;
     --fp-utility-bg-surface-background:#F7F8F8;
+  }
+
+  /* The intensity dial. One attribute on the page root moves colour, line
+     weight, type size and room together. Each level is the one below plus
+     something; 01 is the default. */
+  /* 01 Line — hairlines, registration marks and one accent line; colour is a line and a point */
+  :root, [data-fp-intensity="01"] {
+    --fp-display:2rem;
+    --fp-display-weight:700;
+    --fp-lede:1.25rem;
+    --fp-title:1.25rem;
+    --fp-index-text:1.25rem;
+    --fp-room:8rem;
+    --fp-lead-top:4rem;
+    --fp-lead-bottom:6rem;
+    --fp-row:2rem;
+    --fp-index-size:3rem;
+    --fp-line:1px;
+    --fp-line-color:#CBCBCB;
+    --fp-fill:#FFFFFF;
+    --fp-fill-ink:#1C1E21;
+    --fp-wash:#FFFFFF;
+    --fp-lead-fill:#FFFFFF;
+    --fp-lead-ink:#1C1E21;
+    --fp-lead-body:#52585E;
+    --fp-lead-accent:#5E7A50;
+    --fp-lead-em:#1C1E21;
+  }
+  /* 02 Tint — adds ink keylines, a tinted lead field, tinted index squares, type one step larger */
+  [data-fp-intensity="02"] {
+    --fp-display:2.5rem;
+    --fp-display-weight:800;
+    --fp-lede:1.5625rem;
+    --fp-title:1.5625rem;
+    --fp-index-text:1.25rem;
+    --fp-room:6rem;
+    --fp-lead-top:3rem;
+    --fp-lead-bottom:4rem;
+    --fp-row:1.5rem;
+    --fp-index-size:3rem;
+    --fp-line:2px;
+    --fp-line-color:#1C1E21;
+    --fp-fill:#DCE5D2;
+    --fp-fill-ink:#1C1E21;
+    --fp-wash:#EFF3EA;
+    --fp-lead-fill:#EFF3EA;
+    --fp-lead-ink:#1C1E21;
+    --fp-lead-body:#52585E;
+    --fp-lead-accent:#5E7A50;
+    --fp-lead-em:#5E7A50;
+  }
+  /* 03 Block — adds a solid lead field and solid index squares */
+  [data-fp-intensity="03"] {
+    --fp-display:3.125rem;
+    --fp-display-weight:800;
+    --fp-lede:1.5625rem;
+    --fp-title:1.5625rem;
+    --fp-index-text:1.5625rem;
+    --fp-room:4rem;
+    --fp-lead-top:3rem;
+    --fp-lead-bottom:4rem;
+    --fp-row:1.5rem;
+    --fp-index-size:3.5rem;
+    --fp-line:2px;
+    --fp-line-color:#1C1E21;
+    --fp-fill:#5E7A50;
+    --fp-fill-ink:#FFFFFF;
+    --fp-wash:#DCE5D2;
+    --fp-lead-fill:#5E7A50;
+    --fp-lead-ink:#FFFFFF;
+    --fp-lead-body:#FFFFFF;
+    --fp-lead-accent:#FFFFFF;
+    --fp-lead-em:#1C1E21;
+  }
+  /* 04 Field — adds a field for every section */
+  [data-fp-intensity="04"] {
+    --fp-display:4rem;
+    --fp-display-weight:800;
+    --fp-lede:1.5625rem;
+    --fp-title:1.5625rem;
+    --fp-index-text:2rem;
+    --fp-room:3rem;
+    --fp-lead-top:3rem;
+    --fp-lead-bottom:3rem;
+    --fp-row:1.5rem;
+    --fp-index-size:4rem;
+    --fp-line:2px;
+    --fp-line-color:#1C1E21;
+    --fp-fill:#5E7A50;
+    --fp-fill-ink:#FFFFFF;
+    --fp-wash:#DCE5D2;
+    --fp-lead-fill:#5E7A50;
+    --fp-lead-ink:#FFFFFF;
+    --fp-lead-body:#FFFFFF;
+    --fp-lead-accent:#FFFFFF;
+    --fp-lead-em:#1C1E21;
   }
 }

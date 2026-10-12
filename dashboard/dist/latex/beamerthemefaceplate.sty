@@ -1,0 +1,179 @@
+%% beamerthemefaceplate — slides in Faceplate. Personal level, 16:9.
+%% A deck is one artifact at intensity 04. Its title and divider slides are its
+%% fields: solid colour, reversed text. Its body slides are its paper: a solid
+%% index square with the section's number, the title beside it, nothing boxed.
+%%   \documentclass[aspectratio=169]{beamer}  \usetheme{faceplate}
+%%   \titleframe  … frames …  (a divider opens every \section by itself)
+%% \fpkind{ink} or \fpkind{terra} before a \section gives that section the
+%% kind's colour; \fpkind{sage} returns to the work itself.
+%% Rules: guidelines/applications/slides.md · How to use: guidelines/media/latex.md
+\NeedsTeXFormat{LaTeX2e}[2022/11/01]
+\ProvidesPackage{beamerthemefaceplate}[2026/10/11 Faceplate Beamer theme]
+\PassOptionsToPackage{medium=slides, intensity=04, level=personal}{faceplate}
+\RequirePackage{faceplate}
+\tcbuselibrary{skins}
+\usefonttheme{professionalfonts}      % fontspec sets the faces; maths keeps its own
+
+%% ---------------------------------------------------------------- scale
+%% The closed scale on the slide base; the old size names map onto it.
+\renewcommand\normalsize{\fpsize{base}}
+\renewcommand\small{\fpsize{sm}}
+\renewcommand\footnotesize{\fpsize{xs}}
+\renewcommand\scriptsize{\fpsize{xxs}}
+\renewcommand\tiny{\fpsize{xxs}}
+\renewcommand\large{\fpsize{h3}}
+\renewcommand\Large{\fpsize{h2}}
+\renewcommand\LARGE{\fpsize{h1}}
+\renewcommand\huge{\fpsize{h1}}
+\renewcommand\Huge{\fpsize{h1}}
+\normalsize
+
+%% --------------------------------------------------------------- colour
+\setbeamercolor{normal text}{fg=fpBody, bg=fpBg}
+\setbeamercolor{structure}{fg=fpSageDeep}
+\setbeamercolor{alerted text}{fg=fpTerraDeep}
+\setbeamercolor{example text}{fg=fpSageDeep}
+\setbeamercolor{frametitle}{fg=fpInk}
+\setbeamercolor{title}{fg=fpTextInverse}
+\setbeamertemplate{navigation symbols}{}
+%% Content starts under the title, at the same height on every slide.
+\beamer@centeredfalse
+\setbeamersize{text margin left=\fpspace{5}, text margin right=\fpspace{5}}
+
+%% ----------------------------------------------------------------- grid
+%% Twelve columns between the margins, as on a page. The label column (3)
+%% is used on the title slide; a body slide is a narrow sheet, so its label
+%% is a line: square, title, and the section's name pushed to the right.
+\newlength\fpslide@gutter \setlength\fpslide@gutter{\fpspace{3}}
+\newlength\fpslide@label
+\newlength\fpslide@body
+\AtBeginDocument{%
+  \setlength\fpslide@label{\dimexpr(\textwidth-11\fpslide@gutter)/4+2\fpslide@gutter\relax}%
+  \setlength\fpslide@body{\dimexpr\textwidth-\fpslide@label-\fpslide@gutter\relax}}
+%% an index square at a size of its own: {<edge>}{<step of the scale>}{<number>}
+\newcommand\fpslide@index[3]{{\def\fp@dial@indexSize{#1}\fp@dial@alias{index}{#2}\fpindex{#3}}}
+
+%% -------------------------------------------------------------- details
+%% Bullets are squares; numbers are two-digit mono indices.
+\setbeamertemplate{itemize item}{\textcolor{fpSage}{\rule[.16em]{.42em}{.42em}}}
+\setbeamertemplate{itemize subitem}{\textcolor{fpGrey}{\rule[.2em]{.34em}{.34em}}}
+\setbeamertemplate{itemize subsubitem}{\textcolor{fpGrey}{\rule[.25em]{.26em}{.26em}}}
+\setbeamertemplate{enumerate item}{{\fplabelfont\fpsize{xs}\color{fpSageDeep}%
+  \ifnum\insertenumlabel<10 0\fi\insertenumlabel}}
+\setbeamertemplate{enumerate subitem}{{\fplabelfont\fpsize{xs}\color{fpMuted}\insertsubenumlabel}}
+
+%% Blocks are open: a mono label over the text, held by four registration
+%% marks. An alerted block and an example block take the treatment of a
+%% selected entry instead: an accent bar down the left edge, on a wash.
+\tcbset{
+  fp@block/.style={enhanced, nobeforeafter=false, before skip=\fpspace{3}, after skip=\fpspace{3},
+    frame hidden, colback=fpBg, boxrule=0pt, arc=0pt, outer arc=0pt, boxsep=0pt,
+    left=\fpspace{3}, right=\fpspace{3}, top=\fpspace{2}, bottom=\fpspace{2},
+    colbacktitle=fpBg, coltitle=fpInk, fonttitle=\fplabelfont\fpsize{xs},
+    toptitle=\fpspace{2}, bottomtitle=0pt, titlerule=0pt},
+  fp@block@marks/.style={overlay={%
+    \begin{scope}[fpInk, line width=\fpline, line cap=butt, line join=miter]
+      \draw ([yshift=-\fp@reglen]frame.north west) |- ([xshift=\fp@reglen]frame.north west);
+      \draw ([yshift=-\fp@reglen]frame.north east) |- ([xshift=-\fp@reglen]frame.north east);
+      \draw ([yshift=\fp@reglen]frame.south west) |- ([xshift=\fp@reglen]frame.south west);
+      \draw ([yshift=\fp@reglen]frame.south east) |- ([xshift=-\fp@reglen]frame.south east);
+    \end{scope}}},
+  fp@block@bar/.style 2 args={colback=#2, colbacktitle=#2,
+    borderline west={\fp@barwidth}{0pt}{#1}, left=\dimexpr\fpspace{3}+\fp@barwidth\relax},
+}
+\setbeamertemplate{block begin}{\begin{tcolorbox}[fp@block, fp@block@marks, title={\MakeUppercase{\insertblocktitle}}]}
+\setbeamertemplate{block end}{\end{tcolorbox}}
+\setbeamertemplate{block alerted begin}{\begin{tcolorbox}[fp@block, fp@block@bar={fpTerra}{fpTerraTint},
+  coltitle=fpTerraDeep, title={\MakeUppercase{\insertblocktitle}}]}
+\setbeamertemplate{block alerted end}{\end{tcolorbox}}
+\setbeamertemplate{block example begin}{\begin{tcolorbox}[fp@block, fp@block@bar={fpSage}{fpWash},
+  coltitle=fpSageDeep, title={\MakeUppercase{\insertblocktitle}}]}
+\setbeamertemplate{block example end}{\end{tcolorbox}}
+
+%% ----------------------------------------------------- body slides: paper
+%% The label as a line: the section's index square, the title beside it, the
+%% section's name at the right. Labels uppercase Beamer's plain-text copies
+%% (\secname, \beamer@shortauthor, …): the \insert… macros carry hyperlinks
+%% that \MakeUppercase cannot take.
+\newbox\fpslide@box
+\setbeamertemplate{frametitle}{%
+  \vskip\fpspace{4}%
+  \setbox\fpslide@box\hbox{\ifnum\value{section}>0
+    \fplabel[fpBody]{\secname}\fi}%
+  \hbox to\textwidth{%
+    \ifnum\value{section}>0
+      \lower\dimexpr(\fpspace{5}-1.4ex)/2\relax\hbox{\fpslide@index{\fpspace{5}}{h3}{\two@digits{\value{section}}}}%
+      \hskip\fpspace{3}%
+    \fi
+    \vtop{\hsize\dimexpr\textwidth-\wd\fpslide@box-\fpspace{4}\ifnum\value{section}>0 -\fpspace{5}-\fpspace{3}\fi\relax
+      \raggedright\noindent{\fpheadingfont\fpsize{h2}\color{fpInk}\insertframetitle\par}%
+      \ifx\insertframesubtitle\@empty\else
+        \vskip\fpspace{1}\noindent{\fpsize{sm}\color{fpBody}\insertframesubtitle\par}\fi}%
+    \hfill\box\fpslide@box}%
+  \vskip\fpspace{3}}
+
+%% The signature: the mark in the corner, by the page index.
+\setbeamertemplate{footline}{%
+  \hbox to \paperwidth{\hskip\fpspace{5}%
+    \fplabel{\beamer@shortauthor}%
+    \hfill
+    \fplabel[fpBody]{\two@digits{\insertframenumber}\,/\,\two@digits{\inserttotalframenumber}}%
+    \hskip\fpspace{3}\fpmark{1.6em}%
+    \hskip\fpspace{5}}%
+  \vskip\fpspace{3}}
+
+%% ------------------------------------------- title and dividers: fields
+%% Solid colour edge to edge, reversed text, no footline. The title slide is
+%% the deck's lead: a top bar, the rule with its ruler ticks, then the label
+%% column and the body. A divider carries the section's index square and name.
+\newcommand\fpslide@field[2]{{% {<colour>}{<content>}
+  \setbeamercolor{background canvas}{bg=#1}%
+  \begin{frame}[plain,t]\vskip\fpspace{4}%
+    \begin{minipage}[t][\dimexpr\paperheight-\fpspace{4}*2\relax][s]{\textwidth}
+      \raggedright\hyphenpenalty=10000 \parskip\z@ \color{fpTextInverse}%
+      \colorlet{fpCtxMark}{fpTextInverse}\colorlet{fpLineColor}{fpTextInverse}%
+      \colorlet{fpCtxInk}{fpTextInverse}\colorlet{fpCtxBody}{fpTextInverse}#2%
+    \end{minipage}
+  \end{frame}}}
+%% the top bar of a field: the mark, a label where the body starts, a label at the right
+\newcommand\fpslide@topbar[2]{%
+  \noindent\hbox to\textwidth{%
+    \setbox\fpslide@box\hbox{\fpmark[fpTextInverse]{\fpspace{5}}}%
+    \rlap{\lower\dimexpr(\ht\fpslide@box-.7ex)/2\relax\box\fpslide@box}%
+    \hskip\dimexpr\fpslide@label+\fpslide@gutter\relax
+    \fplabel[fpTextInverse]{#1}\hfill\fplabel[fpTextInverse]{#2}}\par}
+
+\setbeamertemplate{title page}{%
+  \fpslide@topbar{\beamer@shortdate}{\beamer@shortinstitute}%
+  \vskip\fpspace{3}\nointerlineskip
+  \noindent\fptickrule{\textwidth}{\fpslide@gutter}\par
+  \vskip\fpspace{5}\nointerlineskip
+  \noindent\hbox to\textwidth{%
+    \hbox to\fpslide@label{%
+      \ifx\inserttitlegraphic\@empty\else
+        %% an institution's logo: on a white plate, held by four marks
+        \vtop{\hsize\fpslide@label\noindent
+          \hskip\fpspace{2}\fpreg[\fpspace{2}]{\colorbox{fpBg}{\inserttitlegraphic}}}\fi\hss}%
+    \hskip\fpslide@gutter
+    \vtop{\hsize\fpslide@body\raggedright
+      \noindent{\fpdisplayfont\fpsize{xl}\inserttitle\par}%
+      \ifx\insertsubtitle\@empty\else\vskip\fpspace{2}\noindent{\fpsemibold\fpsize{h3}\insertsubtitle\par}\fi}}\par
+  \vfill
+  \noindent\hskip\dimexpr\fpslide@label+\fpslide@gutter\relax
+  {\fpheadingfont\fpsize{base}\insertauthor}\par}
+
+%% \titleframe — the title slide.
+\newcommand\titleframe{\fpslide@field{fpSage}{\usebeamertemplate{title page}}}
+
+%% Section dividers: the index square reversed, the name in display type.
+\setbeamertemplate{section page}{%
+  \fpslide@topbar{\beamer@shorttitle}{\two@digits{\insertframenumber}\,/\,\two@digits{\inserttotalframenumber}}%
+  \vfill
+  {\colorlet{fpKindFill}{fpTextInverse}\colorlet{fpKindFillInk}{fpKindDeep}%
+    \noindent\fpindex{\two@digits{\value{section}}}\par}%
+  \vskip\fpspace{3}%
+  \noindent{\fpdisplayfont\fpsize{xl}\secname\par}%
+  \vskip\fpspace{6}}
+\AtBeginSection{\fpslide@field{fpKind}{\usebeamertemplate{section page}}}
+
+\endinput

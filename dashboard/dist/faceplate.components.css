@@ -1,10 +1,10 @@
-/*! Faceplate v2.0.0 — reference components — OPTIONAL
+/*! Faceplate v3.0.0 — reference components — OPTIONAL
  *  GENERATED FROM tokens/*.json — DO NOT EDIT.
  *  Regenerate: npm run build
  */
 /*  These are ONE correct implementation, not the required one. A project is
  *  free to ignore this file entirely and build its own components; the rules
- *  it must follow live in docs/, and 'npx faceplate check' verifies them.
+ *  it must follow live in guidelines/, and 'npx faceplate check' verifies them.
  *  Requires faceplate.tokens.css.
  */
 /* Faceplate — component STRUCTURE for the web.
@@ -16,7 +16,14 @@
  * property.
  *
  * Consuming projects never author this file. They receive the generated CSS.
+ *
+ * The dial: a placeholder that starts with "dial." names a token that steps
+ * with intensity. Two selector shorthands address the levels; the build expands
+ * them. "at" is one level; "from" is that level and every one above it.
  */
+
+/* How far a registration mark's strokes run. Registered, so that it can animate. */
+@property --_fp-reg{ syntax:'<length-percentage>'; inherits:false; initial-value:0px; }
 
 @layer fp.base {
   /* Opt-in: put class `fp` on a wrapper (or <body>) to adopt base type/colours.
@@ -28,21 +35,27 @@
     -webkit-font-smoothing:antialiased;
     text-rendering:optimizeLegibility;
   }
-  .fp :where(p){ color:var(--fp-body); line-height:var(--fp-leading); }
+  .fp :where(p){ color:var(--fp-ctx-body); line-height:var(--fp-leading); }
   .fp :where(a):not([class]){ color:var(--fp-sage-deep); }
 }
 
 @layer fp.components {
   /* --- type --- */
-  /* Display and H1 are one role. .fp-display is kept as a readable alias for
-     the largest heading — it resolves to exactly .fp-h1. */
-  .fp-display,
+  /* The display line: a name, a project name, a page title. One per page. Its
+     size and weight step with intensity; at 01 it is the size of an h1. */
+  .fp-display{ margin:0 0 0 var(--fp-track-display); font-weight:var(--fp-display-weight); font-size:min(var(--fp-display), 13vw); letter-spacing:var(--fp-track-display);
+               line-height:var(--fp-wordmark-line-height); color:var(--fp-ctx-ink); }
+  /* the one line under it; <em> picks out a few words */
+  .fp-lede{ margin:0; font-weight:var(--fp-heading-h3-weight); font-size:var(--fp-lede); letter-spacing:var(--fp-track-heading); line-height:var(--fp-heading-h3-line-height);
+            color:var(--fp-ctx-ink); text-wrap:balance; }
+  .fp-lede em{ font-style:normal; color:var(--fp-lead-em); }
+  .fp-h1, .fp-h2, .fp-h3{ color:var(--fp-ctx-ink); }
   .fp-h1{ font-weight:var(--fp-heading-h1-weight); font-size:var(--fp-text-h1); letter-spacing:var(--fp-track-tight); line-height:var(--fp-heading-h1-line-height); }
   .fp-h2{ font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-h2); letter-spacing:var(--fp-heading-h2-letter-spacing); line-height:var(--fp-heading-h2-line-height); }
   .fp-h3{ font-weight:var(--fp-heading-h3-weight); font-size:var(--fp-text-h3); line-height:var(--fp-heading-h3-line-height); letter-spacing:var(--fp-heading-h3-letter-spacing); }
-  .fp-body{ font-size:var(--fp-text-base); line-height:var(--fp-leading); color:var(--fp-body); }
+  .fp-body{ font-size:var(--fp-text-base); line-height:var(--fp-leading); color:var(--fp-ctx-body); }
   .fp-mono{ font-family:var(--fp-font-mono); }
-  .fp-label{ font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-label-color); }
+  .fp-label{ font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-ctx-muted); }
   .fp-kicker{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-kicker-color); }
   .fp-wordmark{ font-family:var(--fp-font-sans); font-weight:var(--fp-wordmark-weight); letter-spacing:var(--fp-track-tight); line-height:var(--fp-wordmark-line-height); }
 
@@ -136,11 +149,274 @@
     outline:var(--fp-focus-ring-width) solid var(--fp-focus-ring-color);
     outline-offset:var(--fp-focus-ring-offset);
   }
+  /* inside the chassis the ring takes the ink of the field it sits on */
+  .fp-top a:focus-visible, .fp-links a:focus-visible, .fp-acts a:focus-visible, .fp-entry__title a:focus-visible,
+  .fp-cell:focus-visible, .fp-callout:focus-visible, .fp-foot a:focus-visible, .fp-signature:focus-visible{
+    outline:var(--fp-focus-ring-width) solid var(--fp-ctx-ink);
+    outline-offset:var(--fp-focus-ring-offset);
+  }
 
-  /* intensity bands (reversed surfaces for registers 03/04) */
+  /* a solid block, outside the page chassis: reversed text. From 03 only. */
   .fp-band{ background:var(--fp-band-background); color:var(--fp-band-text); }
   .fp-band--terra{ background:var(--fp-band-terra-background); color:var(--fp-band-text); }
   .fp-band--ink{ background:var(--fp-band-ink-background); color:var(--fp-band-text); }
+  .fp-band, .fp-band--terra, .fp-band--ink{ --fp-ctx-ink:var(--fp-text-inverse); --fp-ctx-body:var(--fp-text-inverse); --fp-ctx-muted:var(--fp-text-inverse);
+    --fp-ctx-accent:var(--fp-text-inverse); --fp-ctx-mark:var(--fp-text-inverse); }
+
+  /* ====================================================== THE PAGE CHASSIS
+     One sheet of twelve columns. The first three are the label column: an
+     index, the section title, a note. The other nine are the body. A section
+     is one row of that grid and opens with a rule; nothing is boxed, and four
+     registration marks stand where a frame would.
+
+     The chassis never changes with intensity: same order, same columns, same
+     parts. What the dial moves comes from its tokens (var(--fp-display),
+     var(--fp-room), var(--fp-line) …) and from the :fp-from() rules further down. */
+
+  .fp-page{ overflow-x:clip; }          /* fields run past the sheet, to the edge of the window */
+  .fp-page *, .fp-page *::before, .fp-page *::after{ box-sizing:border-box; }
+  .fp-page__sheet{ max-width:var(--fp-page-max-width); margin-inline:auto; padding-inline:var(--fp-page-margin); }
+
+  .fp-top, .fp-sec, .fp-foot{ position:relative; isolation:isolate; display:grid; grid-template-columns:repeat(12, minmax(0, 1fr)); column-gap:var(--fp-page-gutter); }
+  /* a field behind a whole row: transparent until a level fills it */
+  .fp-top::before, .fp-sec::before, .fp-foot::before{ content:""; position:absolute; z-index:-2; inset:0 -100vmax; background:var(--_band, transparent); }
+
+  /* mono labels inside the chassis share one setting */
+  .fp-top__nav, .fp-top__note, .fp-sec__note, .fp-links, .fp-acts, .fp-entry__venue, .fp-cell__meta, .fp-slot__play, .fp-status, .fp-foot, .fp-signature{
+    font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; line-height:var(--fp-heading-h3-line-height); }
+
+  /* --- registration marks ---
+     Four corners, eight strokes, drawn as backgrounds so they cost no markup.
+     Built into the index square, the portrait, the graphic slot and the cell;
+     .fp-reg puts them on anything else. Inside a link they close into a frame
+     on hover. */
+  .fp-reg, .fp-index, .fp-portrait, .fp-slot, .fp-cell{ position:relative; }
+  .fp-reg::before, .fp-index::before, .fp-portrait::before, .fp-slot::before, .fp-cell::before{
+    content:""; position:absolute; inset:calc(-1 * var(--_reg-out, 0px)); pointer-events:none;
+    --_fp-reg:var(--fp-reg-length); transition:--_fp-reg var(--fp-duration) var(--fp-ease-settle);
+    background:
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) left top / var(--_fp-reg) var(--fp-line) no-repeat,
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) left top / var(--fp-line) var(--_fp-reg) no-repeat,
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) right top / var(--_fp-reg) var(--fp-line) no-repeat,
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) right top / var(--fp-line) var(--_fp-reg) no-repeat,
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) left bottom / var(--_fp-reg) var(--fp-line) no-repeat,
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) left bottom / var(--fp-line) var(--_fp-reg) no-repeat,
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) right bottom / var(--_fp-reg) var(--fp-line) no-repeat,
+      linear-gradient(var(--fp-ctx-mark), var(--fp-ctx-mark)) right bottom / var(--fp-line) var(--_fp-reg) no-repeat; }
+  a:hover > .fp-reg::before, a.fp-reg:hover::before, a:hover > .fp-portrait::before, a.fp-cell:hover::before, .fp-entry:hover .fp-slot::before,
+  a:focus-visible > .fp-reg::before, a.fp-reg:focus-visible::before, a.fp-cell:focus-visible::before, .fp-entry:focus-within .fp-slot::before{ --_fp-reg:100%; }
+
+  /* --- top bar: identity, sections, a stamp --- */
+  .fp-top{ align-items:center; padding-block:var(--fp-space-4); color:var(--fp-ctx-body); }
+  .fp-top__id{ grid-column:1 / span 3; justify-self:start; display:inline-flex; align-items:center; gap:var(--fp-space-2); color:var(--fp-ctx-ink); text-decoration:none; }
+  /* the mark is drawn with its own clear space, so it is set larger and pulled back to the margin */
+  .fp-top__mark{ display:block; width:var(--fp-space-5); height:var(--fp-space-5); margin:calc(-1 * var(--fp-space-1)); color:var(--fp-ctx-accent); }
+  .fp-top__glyph{ display:block; width:var(--fp-space-5); height:var(--fp-space-5); color:var(--fp-ctx-accent); }
+  .fp-top__name{ font-weight:var(--fp-wordmark-weight); font-size:var(--fp-text-h3); letter-spacing:var(--fp-track-tight); line-height:var(--fp-wordmark-line-height); }
+  .fp-top__nav{ grid-column:4 / span 7; display:flex; gap:var(--fp-space-5); white-space:nowrap; }
+  .fp-top__nav a{ color:var(--fp-ctx-body); text-decoration:none; padding-block:var(--fp-space-1); border-bottom:var(--fp-keyline) solid transparent; }
+  .fp-top__nav a:hover, .fp-top__nav a[aria-current]{ color:var(--fp-ctx-ink); border-bottom-color:var(--fp-ctx-accent); }
+  .fp-top__nav i{ font-style:normal; color:var(--fp-ctx-muted); margin-right:.6em; }      /* the section's index */
+  .fp-top__note{ grid-column:11 / -1; text-align:right; color:var(--fp-ctx-muted); }
+
+  /* --- section: a rule with ruler ticks, a label column, a body --- */
+  .fp-sec{ color:var(--fp-ctx-body); border-top:var(--fp-line) solid var(--fp-line-color);
+    --_cat:var(--fp-sage); --_cat-tint:var(--fp-sage-tint); --_cat-deep:var(--fp-sage-deep); }
+  /* twelve ticks, one at the start of every column */
+  .fp-sec::after{ content:""; position:absolute; left:0; right:0; top:0; height:var(--fp-space-2); pointer-events:none;
+    background:linear-gradient(90deg, var(--fp-ctx-mark) 0, var(--fp-ctx-mark) var(--fp-line), transparent 0) 0 0 / calc((100% + var(--fp-page-gutter)) / 12) 100% repeat-x; }
+  .fp-sec__label{ grid-column:1 / span 3; min-width:0; padding-block:var(--fp-space-5) var(--fp-room); }
+  .fp-sec__body{ grid-column:4 / -1; min-width:0; position:relative; padding-block:var(--fp-space-5) var(--fp-room); }
+  .fp-sec:last-child > .fp-sec__label, .fp-sec:last-child > .fp-sec__body{ padding-bottom:var(--fp-space-7); }
+  .fp-sec__title{ margin:var(--fp-space-3) 0 0; font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-title); letter-spacing:var(--fp-track-heading); line-height:var(--fp-heading-h2-line-height); color:var(--fp-ctx-ink); }
+  .fp-sec__title:first-child{ margin-top:0; }
+  .fp-sec__note{ display:block; margin-top:var(--fp-space-2); color:var(--fp-ctx-muted); }
+
+  /* Colour is also a code. A section belongs to one of three kinds, and its index
+     square, its drawings and (at 04) its field take that kind's colour:
+     sage for the work itself (the default), ink for what is public and dated,
+     terracotta for what is made on the side. */
+  .fp-sec--ink{ --_cat:var(--fp-ink); --_cat-tint:var(--fp-gray); --_cat-deep:var(--fp-ink); }
+  .fp-sec--terra{ --_cat:var(--fp-terra); --_cat-tint:var(--fp-terra-tint); --_cat-deep:var(--fp-terra-deep); --fp-ctx-accent:var(--fp-terra); }
+
+  /* the index square: the section's number, on the accent fill */
+  .fp-index{ display:grid; place-items:center; width:var(--fp-index-size); height:var(--fp-index-size); background:var(--fp-fill); color:var(--fp-fill-ink);
+    font-weight:var(--fp-wordmark-weight); font-size:var(--fp-index-text); letter-spacing:var(--fp-track-tight); line-height:1; }
+
+  /* --- the lead: who or what this page is --- */
+  .fp-sec--lead > .fp-sec__label, .fp-sec--lead > .fp-sec__body{ padding-block:var(--fp-lead-top) var(--fp-lead-bottom); }
+  /* its field runs from the edge of the label column to the edge of the window */
+  .fp-sec--lead > .fp-sec__body{ color:var(--fp-lead-body);
+    --fp-ctx-bg:var(--fp-lead-fill); --fp-ctx-ink:var(--fp-lead-ink); --fp-ctx-body:var(--fp-lead-body); --fp-ctx-muted:var(--fp-lead-body); --fp-ctx-accent:var(--fp-lead-accent); }
+  .fp-sec--lead > .fp-sec__body::before{ content:""; position:absolute; z-index:-1; inset:0 -100vmax 0 calc(-1 * var(--fp-page-gutter)); background:var(--fp-lead-fill); }
+  .fp-sec--lead > .fp-sec__body > *{ margin-block:0; }
+  .fp-sec--lead > .fp-sec__body > * + *{ margin-top:var(--fp-space-3); }
+  .fp-sec--lead > .fp-sec__body > .fp-label{ color:var(--fp-ctx-body); }
+  .fp-sec--lead > .fp-sec__body > .fp-body{ margin-top:var(--fp-space-4); max-width:var(--fp-page-measure); }
+  .fp-sec--lead > .fp-sec__body > .fp-links{ margin-top:var(--fp-space-5); }
+  /* a square photo, or a project's drawing, in the label column */
+  .fp-portrait{ margin:0; width:100%; max-width:var(--fp-portrait-size); aspect-ratio:1; --_reg-out:var(--fp-space-2); }
+  .fp-portrait > *{ display:block; width:100%; height:100%; object-fit:cover; }
+
+  /* the ways to reach someone: mono links on an accent keyline, an arrow that answers */
+  .fp-links{ display:flex; flex-wrap:wrap; gap:var(--fp-space-3) var(--fp-space-5); margin:0; padding:0; list-style:none; }
+  .fp-links a{ display:inline-flex; gap:.5em; color:var(--fp-ctx-ink); text-decoration:none; padding-bottom:var(--fp-space-1); border-bottom:var(--fp-keyline) solid var(--fp-ctx-accent); }
+  .fp-arrow{ display:inline-block; transition:transform var(--fp-duration) var(--fp-ease-response); }
+  a:hover > .fp-arrow{ transform:translateX(var(--fp-space-1)); }
+
+  /* --- lists: nine columns inside the body --- */
+  .fp-row, .fp-entry{ display:grid; grid-template-columns:repeat(9, minmax(0, 1fr)); column-gap:var(--fp-page-gutter); }
+  .fp-row + .fp-row, .fp-entry + .fp-entry{ border-top:var(--fp-hairline) solid var(--fp-ctx-rule); }
+  .fp-row:first-child, .fp-entry:first-child{ padding-top:0; }
+
+  /* a dated row: news, talks, anything with a date or a key in front */
+  .fp-row{ align-items:baseline; padding-block:var(--fp-space-3); }
+  .fp-row__key{ grid-column:span 2; font-family:var(--fp-font-mono); font-size:var(--fp-text-sm); color:var(--fp-ctx-muted); white-space:nowrap; }
+  .fp-row__text{ grid-column:3 / -1; margin:0; color:var(--fp-ctx-ink); line-height:var(--fp-leading); }
+  .fp-row__text:has(+ .fp-acts){ grid-column:3 / span 5; }
+  .fp-row__text b{ display:block; font-weight:var(--fp-heading-h3-weight); }
+  .fp-row__text small{ display:block; font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+  .fp-row > .fp-acts{ grid-column:span 2; margin-top:0; justify-content:flex-end; }
+
+  /* an entry: a graphic, a title, who, where, one line of why, links */
+  .fp-entry{ position:relative; isolation:isolate; align-items:start; padding-block:var(--fp-row); }
+  .fp-entry__body{ grid-column:span 7; min-width:0; }
+  .fp-entry__title{ margin:0; font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-h3); line-height:var(--fp-heading-h3-line-height); letter-spacing:var(--fp-track-heading); color:var(--fp-ctx-ink); text-wrap:balance; }
+  .fp-entry__title a{ color:inherit; text-decoration:none; }
+  .fp-entry__by{ margin:var(--fp-space-1) 0 0; font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+  .fp-entry__by b{ font-weight:var(--fp-heading-h2-weight); color:var(--fp-ctx-ink); }       /* your own name */
+  .fp-entry__venue{ margin:var(--fp-space-2) 0 0; color:var(--fp-ctx-body); }
+  .fp-entry__venue b{ font-weight:var(--fp-heading-h3-weight); color:var(--fp-ctx-ink); padding:0 var(--fp-space-1); margin-left:var(--fp-space-1); }   /* an award */
+  .fp-entry__note{ margin:var(--fp-space-2) 0 0; max-width:var(--fp-page-measure); font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+  /* a selected entry: an accent bar and, from 02, a wash */
+  .fp-entry--selected, .fp-entry--selected:first-child{ padding-top:var(--fp-row); --fp-ctx-bg:var(--fp-wash); }
+  .fp-entry--selected::before{ content:""; position:absolute; z-index:-1; inset:0 calc(-1 * var(--fp-space-3)); background:var(--fp-wash); }
+  .fp-entry--selected::after{ content:""; position:absolute; left:calc(-1 * var(--fp-space-3)); top:0; bottom:0; width:var(--fp-rule-height); background:var(--_cat); }
+
+  /* the graphic of an entry: a drawing, a plot, an image or a looping video. Always the same shape. */
+  .fp-slot{ grid-column:span 2; display:grid; place-items:center; margin:0; aspect-ratio:var(--fp-slot-ratio); color:var(--fp-ctx-ink); }
+  .fp-slot > img, .fp-slot > video{ position:absolute; inset:var(--fp-space-2); width:calc(100% - 2 * var(--fp-space-2)); height:calc(100% - 2 * var(--fp-space-2)); object-fit:cover; }
+  .fp-slot__play{ position:absolute; left:var(--fp-space-2); bottom:var(--fp-space-2); padding:0 var(--fp-space-1); font-size:var(--fp-text-xxs); color:var(--fp-ctx-ink); background:var(--fp-ctx-bg); }
+  .fp-slot__play i{ font-style:normal; }
+
+  /* what an entry links to */
+  .fp-acts{ display:flex; flex-wrap:wrap; gap:var(--fp-space-2) var(--fp-space-4); margin:var(--fp-space-3) 0 0; padding:0; list-style:none; }
+  .fp-acts a{ color:var(--fp-ctx-ink); text-decoration:none; border-bottom:var(--fp-hairline) solid var(--fp-ctx-accent); }
+  .fp-acts a:hover{ border-bottom-color:var(--fp-ctx-ink); }
+
+  /* --- cells: open, held by four marks; a drawing beside or above its text --- */
+  .fp-cells{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--fp-page-gutter); }
+  .fp-cells--3{ grid-template-columns:repeat(3, minmax(0, 1fr)); }
+  .fp-cell{ display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 2fr); gap:var(--fp-space-4); align-items:center; padding:var(--fp-space-4) var(--fp-space-3);
+    color:var(--fp-ctx-body); text-decoration:none; --_reg-out:calc(var(--fp-page-gutter) / 2); }
+  .fp-cell--stack{ display:flex; flex-direction:column; align-items:stretch; gap:var(--fp-space-2); }
+  .fp-cell__body{ display:flex; flex-direction:column; align-self:stretch; min-width:0; }
+  .fp-cell__title{ margin:0; font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-h3); line-height:var(--fp-heading-h3-line-height); letter-spacing:var(--fp-track-heading); color:var(--fp-ctx-ink); text-wrap:balance; }
+  .fp-cell__text{ margin:var(--fp-space-2) 0 0; font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+  .fp-cell__meta{ margin-top:auto; padding-top:var(--fp-space-3); color:var(--fp-ctx-body); }
+  /* a figure keeps its own margin; beside text it bleeds into it, so the drawing reads at size */
+  .fp-cell .fp-fig{ color:var(--fp-ctx-ink); width:130%; max-width:none; margin-inline:-15%; transition:transform var(--fp-duration) var(--fp-ease-response); }
+  .fp-cell--stack .fp-fig{ width:64%; margin-inline:-6% 0; }
+  .fp-cell:hover .fp-fig{ transform:translateY(calc(-1 * var(--fp-space-1))); }
+
+  /* --- figures: drawings in the icon style, at figure size ---
+     Classes on the shapes, so they also work inside a <symbol> shown by <use>. */
+  .fp-fig{ display:block; width:100%; height:auto; fill:none; stroke:currentColor; stroke-width:var(--fp-figure-stroke); stroke-linecap:round; stroke-linejoin:round; }
+  .fp-fig-accent{ stroke:var(--fp-ctx-accent); }               /* the one accent part: its stroke … */
+  .fp-fig-fill{ fill:var(--fp-fill); }                            /* … and its fill, which steps with intensity */
+  .fp-fig-ground{ fill:var(--fp-ctx-bg); }                     /* covers what lies behind it */
+  .fp-fig-thin{ stroke-width:var(--fp-figure-thin); }
+  .fp-fig-dash{ stroke-dasharray:var(--fp-figure-dash); }
+  .fp-fig-solid{ fill:currentColor; stroke:none; }
+
+  /* --- closing: one large link, a status line, the footer --- */
+  .fp-callout{ display:inline-block; font-weight:var(--fp-wordmark-weight); font-size:clamp(var(--fp-text-h3), 3.2vw, var(--fp-text-xl)); letter-spacing:var(--fp-track-display);
+    line-height:var(--fp-leading-tight); color:var(--fp-ctx-ink); text-decoration:none; padding-bottom:var(--fp-space-2); border-bottom:var(--fp-rule-height) solid var(--fp-ctx-accent); overflow-wrap:anywhere; }
+  .fp-callout i{ font-style:normal; font-weight:var(--fp-label-weight); color:var(--fp-ctx-muted); }
+  .fp-status{ display:inline-block; color:var(--fp-ctx-body); }
+  .fp-status::before{ content:"●"; margin-right:.6em; color:var(--_led, var(--fp-terra)); }
+  .fp-callout + .fp-status{ display:block; margin-top:var(--fp-space-4); }
+
+  .fp-foot{ border-top:var(--fp-line) solid var(--fp-line-color); padding-block:var(--fp-space-4) var(--fp-space-5); color:var(--fp-ctx-body); align-items:center; }
+  .fp-foot > :first-child{ grid-column:1 / span 3; }
+  .fp-foot__nav{ grid-column:4 / -1; display:flex; flex-wrap:wrap; gap:var(--fp-space-3) var(--fp-space-5); }
+  .fp-foot__nav a{ color:inherit; text-decoration:none; }
+  .fp-foot__nav a:hover{ color:var(--fp-ctx-ink); }
+  .fp-foot__nav span{ color:var(--fp-ctx-muted); }
+
+  /* the signature: mark and name, small, at the edge of something Christopher built */
+  .fp-signature{ display:inline-flex; align-items:center; gap:var(--fp-space-2); color:var(--fp-ctx-body); text-decoration:none; }
+  .fp-signature > img, .fp-signature > svg{ display:block; height:var(--fp-space-4); width:auto; color:var(--fp-ctx-accent); }
+  .fp-signature:hover{ color:var(--fp-ctx-ink); }
+
+  /* ========================================================= WHAT THE DIAL ADDS
+     Sizes, room and line weight already follow the tokens. These rules add the
+     colour that a token cannot say: which fill a kind takes, and the fields. */
+
+  /* 02 Tint: index squares and drawings take their kind's tint … */
+  :is([data-fp-intensity="02"], [data-fp-intensity="03"], [data-fp-intensity="04"]) :is(.fp-sec--ink, .fp-sec--terra){ --fp-fill:var(--_cat-tint); }
+  :is([data-fp-intensity="02"], [data-fp-intensity="03"], [data-fp-intensity="04"]) .fp-entry__venue b{ background:var(--_cat-tint); }
+
+  /* 03 Block: … then its solid colour, and the square no longer needs marks */
+  :is([data-fp-intensity="03"], [data-fp-intensity="04"]) :is(.fp-sec--ink, .fp-sec--terra){ --fp-fill:var(--_cat); }
+  :is([data-fp-intensity="03"], [data-fp-intensity="04"]) .fp-index::before{ display:none; }
+
+  /* 04 Field: every section may sit on a field of its kind. --tint is the quiet
+     tone, --solid reverses the text. Fields replace the rules between sections. */
+  [data-fp-intensity="04"] :is(.fp-sec, .fp-foot){ border-top-color:transparent; }
+  [data-fp-intensity="04"] .fp-sec::after{ display:none; }
+  [data-fp-intensity="04"] .fp-sec--tint{ --_band:var(--_cat-tint); --fp-ctx-bg:var(--_cat-tint); --fp-ctx-muted:var(--fp-body); --fp-ctx-rule:var(--_cat); --fp-wash:var(--fp-bg); }
+  [data-fp-intensity="04"] .fp-sec--tint.fp-sec--ink{ --fp-ctx-body:var(--fp-ink); --fp-ctx-muted:var(--fp-ink); --fp-ctx-rule:var(--fp-muted); --fp-ctx-accent:var(--fp-ink); }
+  [data-fp-intensity="04"] .fp-sec--tint.fp-sec--terra{ --fp-ctx-body:var(--fp-ink); }
+  [data-fp-intensity="04"] .fp-sec--tint .fp-entry__venue b{ background:var(--fp-bg); }
+  [data-fp-intensity="04"] .fp-sec--tint .fp-entry--selected .fp-entry__venue b{ background:var(--_cat-tint); }
+  [data-fp-intensity="04"] .fp-sec--solid{ --_band:var(--_cat); --fp-ctx-bg:var(--_cat); --fp-ctx-ink:var(--fp-text-inverse); --fp-ctx-body:var(--fp-text-inverse); --fp-ctx-muted:var(--fp-text-inverse);
+    --fp-ctx-rule:var(--fp-text-inverse); --fp-ctx-accent:var(--fp-text-inverse); --fp-ctx-mark:var(--fp-text-inverse);
+    --fp-fill:var(--fp-text-inverse); --fp-fill-ink:var(--_cat-deep); --_led:var(--fp-text-inverse); }
+  [data-fp-intensity="04"] .fp-sec--solid.fp-sec--ink{ --fp-ctx-body:var(--fp-gray); --fp-ctx-muted:var(--fp-gray); --fp-ctx-rule:var(--fp-body); }
+  /* the lead and the top bar share one solid field, closed by a rule with its ticks */
+  [data-fp-intensity="04"] :is(.fp-top, .fp-sec--lead){ --_band:var(--fp-lead-fill); --fp-ctx-bg:var(--fp-lead-fill); --fp-ctx-ink:var(--fp-lead-ink); --fp-ctx-body:var(--fp-lead-body); --fp-ctx-muted:var(--fp-lead-body);
+    --fp-ctx-accent:var(--fp-lead-accent); --fp-ctx-mark:var(--fp-lead-ink); }
+  [data-fp-intensity="04"] .fp-sec--lead{ border-top-color:var(--fp-lead-ink); }
+  [data-fp-intensity="04"] .fp-sec--lead::after{ display:block; }
+
+  /* ================================================================== PHONE
+     One column. The label column becomes a line above its body; a graphic keeps
+     a narrow column of its own. */
+  @media (max-width:760px){
+    .fp-page__sheet{ padding-inline:var(--fp-page-margin-narrow); }
+    .fp-page{ --fp-room:var(--fp-space-7); --fp-lead-top:var(--fp-space-5); --fp-lead-bottom:var(--fp-space-6); }
+    :is([data-fp-intensity="02"], [data-fp-intensity="03"], [data-fp-intensity="04"]) .fp-page, .fp-page:is([data-fp-intensity="02"], [data-fp-intensity="03"], [data-fp-intensity="04"]){ --fp-room:var(--fp-space-6); }
+    .fp-sec__label, .fp-sec__body, .fp-top__nav{ grid-column:1 / -1; }
+    .fp-top{ row-gap:var(--fp-space-3); } .fp-top__id{ grid-column:1 / span 6; } .fp-top__note{ grid-column:7 / -1; }
+    .fp-top__nav{ gap:var(--fp-space-4); overflow-x:auto; } .fp-top__nav i{ display:none; }
+    .fp-sec__label{ display:flex; align-items:center; gap:var(--fp-space-3); padding-bottom:0; }
+    .fp-sec__title{ margin-top:0; } .fp-sec__note{ margin:0 0 0 auto; }
+    .fp-sec__body{ padding-top:var(--fp-space-4); }
+    .fp-sec--lead > .fp-sec__label{ padding-bottom:0; }
+    .fp-portrait{ max-width:var(--fp-portrait-size-narrow); }
+    /* the first screen has to hold the links, so on a phone they come before the text */
+    .fp-sec--lead > .fp-sec__body{ display:flex; flex-direction:column; padding-top:var(--fp-space-4); }
+    .fp-sec--lead > .fp-sec__body > .fp-links{ order:1; margin-top:var(--fp-space-4); }
+    .fp-sec--lead > .fp-sec__body > .fp-body{ order:2; margin-top:var(--fp-space-5); }
+    .fp-sec--lead > .fp-sec__body::before{ left:-100vmax; }
+    :is([data-fp-intensity="02"], [data-fp-intensity="03"], [data-fp-intensity="04"]) .fp-sec--lead > .fp-sec__body{ margin-top:var(--fp-space-5); padding-top:var(--fp-space-5); }
+    [data-fp-intensity="04"] .fp-sec--lead > .fp-sec__body{ margin-top:0; padding-top:var(--fp-space-4); }
+    .fp-row, .fp-entry{ grid-template-columns:var(--fp-slot-width-narrow) minmax(0, 1fr); column-gap:var(--fp-space-3); }
+    .fp-row > .fp-row__key, .fp-row > .fp-row__text, .fp-entry > .fp-slot, .fp-entry > .fp-entry__body{ grid-column:auto; }
+    .fp-row > .fp-acts{ grid-column:2; justify-content:flex-start; margin-top:var(--fp-space-2); }
+    .fp-slot > img, .fp-slot > video{ inset:var(--fp-space-1); width:calc(100% - 2 * var(--fp-space-1)); height:calc(100% - 2 * var(--fp-space-1)); }
+    .fp-slot__play{ left:var(--fp-space-1); bottom:var(--fp-space-1); } .fp-slot__play i{ display:none; }
+    .fp-cells, .fp-cells--3{ grid-template-columns:minmax(0, 1fr); }
+    .fp-cell--stack{ display:grid; }
+    .fp-cell .fp-fig, .fp-cell--stack .fp-fig{ width:112%; margin-inline:-6%; }
+    .fp-foot > :first-child, .fp-foot__nav{ grid-column:1 / -1; } .fp-foot__nav{ margin-top:var(--fp-space-3); }
+  }
+
+  /* motion answers the pointer and nothing else; with reduced motion it does not move at all */
+  @media (prefers-reduced-motion:reduce){
+    .fp-reg::before, .fp-index::before, .fp-portrait::before, .fp-slot::before, .fp-cell::before, .fp-arrow, .fp-cell .fp-fig{ transition:none; }
+  }
 }
 
 @layer fp.utilities {
