@@ -104,9 +104,11 @@ lhlogging/
 │   └── requirements.txt
 ├── dashboard/                      # Monitoring UI + fleet-catching pages
 │   ├── app.py                      # Flask app: / (monitor), /book, /schedule, /insights, /fleet
+│   ├── chassis.py, chassis.html    # The page every route is built on (Faceplate's chassis: top bar, lead, sections, footer)
 │   ├── leg_stats.py                # Descriptive statistics over the leg layer (/insights, /airframe)
 │   ├── monitor_stats.py            # The monitor: the collector's plan vs. its runs, hubs, fleet use
-│   ├── static/                     # Stylesheets, fonts and the figures (js/figure.js, home.js, insights.js)
+│   ├── static/                     # One stylesheet and one script per page, the shared ones (app.css, page.js, figure.*, flight.js), the project glyph
+│   ├── dist/, fonts/, fonts.css, bin/  # Faceplate v3.0.0, vendored verbatim (see "Design system")
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── db/
@@ -430,23 +432,68 @@ in a non-large field).
 
 ### Design system
 
-The dashboard is styled with **Faceplate v2.0.0**, applied **unbranded — Layer 1
-only**. This project does not represent the design system's author, so it uses
-the design system and none of the personal layer: no wordmark, no step-response
-mark, no name or tagline, and `--fp-gray` is simply a neutral rather than the
-`CB·CB·CB` monogram. The vendored package still contains those Layer 2 assets;
-`/faceplate/<file>` serves an allowlist of the two stylesheets so they are never
-published from here.
+The dashboard is styled with **Faceplate v3.0.0** at the **project level**:
+LH·Fleet is something its author builds, so it carries its own name and its own
+glyph (an aircraft's tail, `static/icons/lh-fleet.svg`) in the top bar, sage as
+the accent, and Christopher Biel's signature in the footer and nowhere else.
+Intensity is **04 Field** on every route, the theme is light. (Faceplate's card
+for a project app says 02 Tint; 04 is a deliberate trial. The level is one
+attribute in `dashboard/chassis.html`, so going back is one edit.)
+
+Every page is the same **chassis**: a sheet of twelve columns with a top bar,
+the lead (the page's title and how things stand), numbered sections and the
+footer. `dashboard/chassis.html` is that page and `chassis.page()` fills it, so
+the top bar, the footer and the intensity are written once. A section that
+holds a dense plot is *wide*: its body takes all twelve columns and its label
+is a line above it. At 04 every section sits on a field or on the paper, and
+neighbours differ, so each section names its field.
+
+The pages are specs in `app.py` (the lead that stands in the page from the
+start, and which stylesheets and scripts it loads) listed by route in
+`_PAGES`; `static/js/<page>.js` fills the lead and builds the sections. What
+the guidelines leave open was decided for this site and lives in `app.css`:
+
+- **Loading and faults** are a status marker (a mono line with a dot) where the
+  content would stand; **nothing asked yet / nothing found** is a plain sentence.
+- **What a page is steered with** stands in the lead, directly under the
+  display line: a switch (Insights' fleets, Book's modes), toggles (the
+  Schedule's type squares, which are also its legend), fields (Book's search).
+  One place, one height, a white ground and an ink keyline. **Filters** of one
+  section among several stand in that section's label line. No cards for either.
+- **Prose is opt-in.** A lead carries no explanation; what to do stands as one
+  sentence where the result will appear, what the marks mean as a key with the
+  result, and how to read a chart in a fold under it.
+- **A page that is one chart or one table** (Schedule, Fleet DB) gives its
+  section no index and no title, since an index would index nothing and the
+  title would repeat the display line; its filters stand in the lead, and the
+  lead carries no key figures for their own sake.
+- **A page below a top-bar entry** (`/fleet/<icao24>`) marks its parent in the
+  bar and carries the way back in the lead's label column.
+- **A page's main table** runs its full length with a head that sticks to the
+  window; a secondary one scrolls in a region of its own. No boxes.
+- **Dialogs** (the flight dialog, the admin's forms) and the plot tooltip are
+  the only cards.
+- **The Schedule's gantt** is the one thing that leaves the sheet: it runs to
+  the window's margins.
 
 | Path | |
 |---|---|
-| `dashboard/dist/` | the vendored package, verbatim, with `MANIFEST.sha256`. **Never edit** — a modified vendored copy makes the project agree with itself while diverging from the brand |
-| `dashboard/static/css/` | the project's own stylesheets, one per page |
-| `dashboard/static/fonts/` | self-hosted Manrope + IBM Plex Mono (`.woff2`, SIL OFL, licences alongside) |
+| `dashboard/dist/` | the vendored package, verbatim from the tag `v3.0.0`, with `MANIFEST.sha256`. **Never edit** — a modified vendored copy makes the project agree with itself while diverging from the brand |
+| `dashboard/fonts.css`, `dashboard/fonts/` | Faceplate's self-hosted Manrope + IBM Plex Mono (`.woff2`, SIL OFL, licences alongside), vendored from the same tag |
+| `dashboard/bin/faceplate.mjs` | the checker, vendored from the same tag |
+| `dashboard/chassis.html`, `chassis.py` | the page every route is built on |
+| `dashboard/static/css/app.css` | what the project adds on every page: wide sections, state markers, key figures, tables, inputs, the dialog |
+| `dashboard/static/css/`, `static/js/` | one stylesheet and one script per page; `figure.*` for the pages with figures, `page.js` for the chassis helpers, `flight.js` for the flight dialog |
+| `dashboard/static/icons/` | the project glyph, drawn to Faceplate's icon spec |
 
-The stylesheets live in real `.css` files rather than inline in `app.py` because
-`faceplate check` only reads `.css` / `.html` / `.svg` — embedded in Python they
-would be invisible to it and the gate would pass vacuously.
+`/faceplate/<file>` serves only what the pages link (the two stylesheets,
+`fonts.css` and the four font files); the rest of the package — LaTeX, KiCad,
+the logo set — stays in the tree and is not handed out.
+
+The stylesheets and the chassis live in real `.css` / `.html` files rather than
+inline in `app.py` because `faceplate check` only reads `.css` / `.html` /
+`.svg` — embedded in Python they would be invisible to it and the gate would
+pass vacuously.
 
 Fonts are self-hosted rather than loaded from the Google Fonts CDN, which sends
 visitor IPs to Google; a Munich court held in 2022 that this needs consent, and
@@ -454,23 +501,37 @@ this app publishes a German Impressum and Datenschutzerklärung. Same reasoning 
 the map: no third-party request on any page.
 
 Every colour, size, stroke and spacing value resolves to an `--fp-*` token, the
-palette and type scale are treated as closed sets, `border-radius` is `0`
-everywhere, and each page declares one intensity (`data-fp-intensity="02"`,
-Structured — the register for a dense content app).
+palette and type scale are treated as closed sets, and `border-radius` is `0`
+everywhere. Plots are open, not boxed: the baseline is the only axis line, and
+a matrix is held by four registration marks.
 
 ```bash
 cd dashboard && npm run check          # or: node bin/faceplate.mjs check . --strict
+python3 tools/preview_site.py          # every page from this checkout, on the live site's data (read-only)
 ```
+
+`tools/preview_site.py` serves the pages as the dashboard builds them and
+passes their `/api/…` requests on to the live site, so a changed page shows
+with real rows before a push deploys it; `?intensity=02` turns Faceplate's dial
+for review. (`preview_monitor.py` and `preview_insights.py` compute their
+payload locally instead, so they also show a changed query.)
 
 Nothing to install. The upstream repo is private, so the checker itself is
 vendored at `dashboard/bin/faceplate.mjs`; it reads its values from the
 checksummed `dist/tokens.json`, so the brand stays pinned even though the tool
-is a plain copy. Re-pull that script whenever the vendored `dist/` is bumped.
+is a plain copy. To move to another Faceplate release, replace `dist/`, `bin/`,
+`fonts.css` and `fonts/` together, from its tag:
 
-CI runs this on every push and pull request (`.github/workflows/faceplate.yml`).
-It reports unknown tokens, off-palette colour, rounded corners, non-Faceplate
-fonts, off-scale spacing, universal resets that would zero `.fp-*` padding,
-intensity drift, and a vendored copy whose checksums no longer match.
+```bash
+git -C <faceplate checkout> archive vX.Y.Z dist bin/faceplate.mjs fonts fonts.css | tar -x -C dashboard
+```
+
+CI runs the check in strict mode on every push and pull request
+(`.github/workflows/faceplate.yml`). It reports unknown tokens, off-palette
+colour, rounded corners, non-Faceplate fonts, off-scale spacing, universal
+resets that would zero `.fp-*` padding, an intensity that does not exist or
+differs between pages, icons off the spec, and a vendored copy whose checksums
+no longer match.
 
 ---
 

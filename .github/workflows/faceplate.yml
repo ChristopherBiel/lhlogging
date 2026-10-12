@@ -2,18 +2,20 @@ name: Faceplate
 
 # The design rules are only enforceable if something checks them on every push.
 # `faceplate check` reports unknown --fp-* tokens, off-palette hex, non-zero
-# border radius, non-Faceplate fonts, off-scale spacing, universal resets,
-# intensity drift, and a vendored dist/ whose checksums no longer match.
+# border radius, non-Faceplate fonts, off-scale spacing, universal resets, an
+# intensity that does not exist or differs between pages, icons off the spec,
+# and a vendored dist/ whose checksums no longer match.
 #
 # It runs from dashboard/ so it finds dashboard/dist/MANIFEST.sha256, and it
 # only reads .css/.html/.svg -- which is why the stylesheets live in
-# dashboard/static/css/ rather than inline in app.py.
+# dashboard/static/css/ and the page chassis in dashboard/chassis.html rather
+# than inline in app.py.
 #
 # No install step: ChristopherBiel/faceplate is private and the runner has no
 # credentials for it, so the checker itself is vendored at dashboard/bin/. It
 # resolves its values from the checksummed dist/tokens.json, so the brand stays
-# pinned even though the tool is a plain copy. Re-pull bin/faceplate.mjs when
-# bumping the vendored dist.
+# pinned even though the tool is a plain copy. Re-pull bin/faceplate.mjs,
+# fonts.css and fonts/ together with dist/ when moving to another release.
 
 on:
   push:
@@ -30,27 +32,8 @@ jobs:
         with:
           node-version: "20"
 
-      # Fail on every error, and on every warning EXCEPT a declared --fp-ext-*
-      # extension. Plain --strict cannot express that: it turns extensions into
-      # build failures, which defeats the mechanism upstream built them for --
-      # they are meant to make a gap visible, not to block. Dropping --strict
-      # instead would stop enforcing the other warnings (universal resets,
-      # off-scale spacing, intensity drift), which are the ones worth catching.
-      #
-      # Every extension still prints on each run and is expected to become an
-      # upstream proposal or be removed.
+      # Every finding fails the build, warnings included: the project declares
+      # no --fp-ext-* extension any more, so nothing has to be let through.
       - name: faceplate check
         working-directory: dashboard
-        run: |
-          node bin/faceplate.mjs check . --json > report.json || true
-          node -e '
-            const r = require("./report.json");
-            for (const f of r.findings)
-              console.log(`${f.level.padEnd(5)} ${f.rule.padEnd(14)} ${f.file}:${f.line}  ${f.msg}`);
-            const blocking = r.findings.filter(f => f.level === "error" || f.rule !== "extension");
-            if (blocking.length) {
-              console.error(`\n${blocking.length} finding(s) beyond declared extensions`);
-              process.exit(1);
-            }
-            console.log(`\nclean — ${r.findings.length} declared extension warning(s), nothing else`);
-          '
+        run: node bin/faceplate.mjs check . --strict
