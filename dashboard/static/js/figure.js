@@ -1,5 +1,6 @@
-// Figures, as the pages draw them: the SVG helpers, the tooltip and the
-// figure scaffold that /insights and the monitor share (window.Fig).
+// Figures, as the pages draw them: the SVG helpers, the tooltip and the figure
+// scaffold that /insights and the monitor share (window.Fig). Builds on
+// page.js, whose helpers it hands on.
 //
 // No libraries: the pages make no third-party requests, and a hand-drawn SVG
 // can follow Faceplate to the pixel (square marks, mono axis labels, tokens
@@ -8,7 +9,7 @@ window.Fig = (() => {
 'use strict';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const $ = id => document.getElementById(id);
+const {$, el, esc, say, plural, section, state, stats, seg, table} = window.Page;
 
 // The tails this visitor planned on /book (browser storage, no accounts).
 function targets() {
@@ -17,13 +18,7 @@ function targets() {
   return new Set(Array.isArray(v) ? v : []);
 }
 
-// ── DOM and SVG helpers ────────────────────────────────────────────────
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text != null) e.textContent = text;
-  return e;
-}
+// ── SVG helpers ────────────────────────────────────────────────────────
 function svg(tag, attrs, parent) {
   const e = document.createElementNS(SVG_NS, tag);
   for (const k in attrs) if (attrs[k] != null) e.setAttribute(k, attrs[k]);
@@ -47,12 +42,23 @@ const rect = (parent, x, y, w, h, cls) => svg('rect', {x, y, width: Math.max(0, 
 const crisp = v => Math.round(v) + 0.5;                    // a hairline on the pixel grid
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const pct = (p, d = 0) => (p * 100).toFixed(d) + '%';
-const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
 
 function plot(host, W, H, label) {
   return svg('svg', {class: 'plot', width: W, height: H, viewBox: '0 0 ' + W + ' ' + H,
                      role: 'img', 'aria-label': label}, host);
 }
+// A plot is open, not boxed. A matrix has no axis: four registration marks
+// hold it where a frame would stand, a little outside the area so that they
+// never cover a cell.
+function marks(parent, x, y, w, h) {
+  const out = 4, n = 8;
+  const x0 = Math.round(x) - out, y0 = Math.round(y) - out, x1 = Math.round(x + w) + out, y1 = Math.round(y + h) + out;
+  return svg('path', {class: 'reg', d: 'M' + x0 + ' ' + (y0 + n) + 'V' + y0 + 'H' + (x0 + n) +
+    'M' + (x1 - n) + ' ' + y0 + 'H' + x1 + 'V' + (y0 + n) + 'M' + x1 + ' ' + (y1 - n) + 'V' + y1 + 'H' + (x1 - n) +
+    'M' + (x0 + n) + ' ' + y1 + 'H' + x0 + 'V' + (y1 - n)}, parent);
+}
+// A plot with an axis has one axis line, the baseline: an ink keyline.
+const baseline = (parent, x1, x2, y) => line(parent, x1, Math.round(y), x2, Math.round(y), 'base');
 // Markers are angular (Faceplate has no round corner to borrow from).
 function marker(parent, shape, x, y, r, cls) {
   if (shape === 'square') return rect(parent, x - r, y - r, 2 * r, 2 * r, cls);
@@ -86,13 +92,9 @@ const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dayLabel = d => d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()];
 const isoDay = iso => dayLabel(new Date(iso + 'T00:00:00Z'));
 
-// A sentence with some parts set bold: say(p, 'plain ', ['bold'], ' plain').
-function say(node, ...parts) {
-  node.replaceChildren(...parts.map(p => Array.isArray(p) ? el('b', null, p[0]) : document.createTextNode(p)));
-}
-
 // ── tooltip (one for the page; every value is also in the Data view) ───
-const tip = $('tip');
+const tip = document.body.appendChild(el('div', 'tip'));
+tip.hidden = true;
 function showTip(ev, title, rows, foot) {
   tip.replaceChildren();
   if (title) tip.append(el('div', 'tip-title', title));
@@ -116,26 +118,7 @@ function moveTip(ev) {
 }
 const hideTip = () => { tip.hidden = true; };
 
-// ── controls ───────────────────────────────────────────────────────────
-function seg(options, value, onChange, label) {
-  const box = el('div', 'fp-seg');
-  box.setAttribute('role', 'group');
-  if (label) box.setAttribute('aria-label', label);
-  options.forEach(([v, name]) => {
-    const b = el('button', v === value ? 'is-on' : '', name);
-    b.type = 'button';
-    b.setAttribute('aria-pressed', String(v === value));
-    b.addEventListener('click', () => {
-      box.querySelectorAll('button').forEach(o => {
-        o.classList.toggle('is-on', o === b);
-        o.setAttribute('aria-pressed', String(o === b));
-      });
-      onChange(v);
-    });
-    box.append(b);
-  });
-  return box;
-}
+// ── a legend's key ─────────────────────────────────────────────────────
 function key(draw, label) {
   const k = el('span', 'key');
   const s = svg('svg', {width: 26, height: 12, viewBox: '0 0 26 12', 'aria-hidden': 'true', class: 'plot'}, k);
@@ -143,52 +126,31 @@ function key(draw, label) {
   k.append(document.createTextNode(label));
   return k;
 }
-function table(host, head, rows) {
-  const t = el('table');
-  const tr = el('tr');
-  head.forEach(h => tr.append(el('th', typeof h === 'string' ? '' : 'r', typeof h === 'string' ? h : h[0])));
-  t.append(tr);
-  rows.forEach(r => {
-    const row = el('tr');
-    r.forEach((c, i) => {
-      const td = el('td', typeof head[i] === 'string' ? '' : 'r');
-      if (c && c.href) { const a = el('a', 'tail-link', c.text); a.href = c.href; td.append(a); }
-      else td.textContent = c == null ? '—' : c;
-      row.append(td);
-    });
-    t.append(row);
-  });
-  host.append(t);
-}
-
 // ── figure scaffold ────────────────────────────────────────────────────
-// A figure is a question, the finding in a sentence, the plot and its twin
-// table, and a note on how it was measured. A compact one ({compact: true})
-// shows a plain title and the plot and keeps the rest — finding, legend, note
-// and table — folded under the plot until it is asked for.
+// A figure is a wide section of the chassis: its title (a question, on
+// /insights), the finding in a sentence, the legend, the plot and its twin
+// table, and a note on how it was measured; a Plot/Data switch and the
+// figure's own controls stand in the section's note (f.tools). A compact one
+// ({compact: true}) shows the title and the plot and keeps the rest folded
+// under the plot until it is asked for. `note`, `kind` and `field` go to the
+// section.
 const figures = [];
 function figure(key_, question, opt) {
-  const compact = !!(opt && opt.compact);
-  const no = figures.length + 1;
-  const root = el('section', compact ? 'fig fig--compact' : 'fig');
-  root.id = 'fig-' + key_;
-  const f = {root, w: 0, dirty: true, draw: null, table: null,
-             find: el('p', 'fig-find'), legend: el('div', 'legend'), tools: el('div', 'fig-tools'),
-             plot: el('div', 'fig-plot'), data: el('div', 'fig-data'), note: el('p', 'fig-note')};
+  opt = opt || {};
+  const sec = section({id: 'fig-' + key_, title: question, note: opt.note, kind: opt.kind, field: opt.field, wide: true});
+  const f = {root: sec.root, w: 0, dirty: true, draw: null, table: null,
+             find: el('p', 'fig-find'), legend: el('div', 'legend'), tools: sec.note,
+             plot: el('div', 'fig-plot'), data: el('div', 'fig-data table-scroll'), note: el('p', 'fig-note')};
   const fill = () => { f.data.replaceChildren(); f.table(f.data); };
-  const head = el('div', 'fig-head');
-  if (compact) {
-    head.append(el('h2', 'fig-q', question), f.tools);
-    f.more = el('details', 'fig-more');
-    f.more.append(el('summary', 'fig-more-sum', 'How to read this'), f.find, f.legend, f.note, f.data);
+  if (opt.compact) {
+    f.more = el('details', 'fold');
+    f.more.append(el('summary', 'fold__sum', 'How to read this'), f.find, f.legend, f.note, f.data);
     f.more.addEventListener('toggle', () => { if (f.more.open) fill(); });
     // after a control changed what the figure shows: redo the table if it is on view
     f.refresh = () => { if (f.more.open) fill(); };
-    root.append(head, f.plot, f.more);
+    sec.body.append(f.plot, f.more);
   } else {
     f.data.hidden = true;
-    head.append(el('div', 'fig-no', 'Fig. ' + String(no).padStart(2, '0')), el('h2', 'fig-q', question), f.find);
-    const bar = el('div', 'fig-bar');
     f.view = seg([['plot', 'Plot'], ['data', 'Data']], 'plot', v => {
       f.plot.hidden = f.legend.hidden = v !== 'plot';
       f.data.hidden = v !== 'data';
@@ -196,8 +158,7 @@ function figure(key_, question, opt) {
     }, 'Plot or data table');
     f.tools.append(f.view);
     f.refresh = () => { if (!f.data.hidden) fill(); };
-    bar.append(f.legend, f.tools);
-    root.append(head, bar, f.plot, f.data, f.note);
+    sec.body.append(f.find, f.legend, f.plot, f.data, f.note);
   }
   figures.push(f);
   return f;
@@ -225,6 +186,6 @@ function watch(host) {
   addEventListener('scroll', hideTip, {passive: true});
 }
 
-return {$, targets, el, svg, text, line, textW, boxed, rect, crisp, clamp, pct, plural, plot, marker, dodge,
-        MONTHS, DOW, dayLabel, isoDay, say, showTip, moveTip, hideTip, seg, key, table, figure, redraw, watch};
+return {$, targets, el, esc, svg, text, line, textW, boxed, rect, crisp, clamp, pct, plural, plot, marks, baseline, marker, dodge,
+        MONTHS, DOW, dayLabel, isoDay, say, showTip, moveTip, hideTip, seg, key, table, section, state, stats, figure, redraw, watch};
 })();

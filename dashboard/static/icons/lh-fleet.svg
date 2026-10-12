@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Project glyph of LH·Fleet: an aircraft's tail from starboard. The fin is swept and tapered, the tail cone stands
+       behind it, the belly sweeps up, and the open fuselage runs on to the right, into the name.
+       Faceplate icon spec: 24 grid, 2px stroke, round caps and joins, currentColor. -->
+  <path d="M21.5 14.5H17L8 3H5L8.5 14.5L2.5 16.5L14 20.5H21.5"/>
+</svg>

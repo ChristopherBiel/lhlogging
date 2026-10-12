@@ -1,7 +1,8 @@
 // /insights — the fleet field guide.
 //
-// Draws every figure as inline SVG from /api/insights (leg_stats.insights),
-// with the helpers and the figure scaffold of figure.js.
+// Fills the lead and draws every section of the page chassis from
+// /api/insights (leg_stats.insights): what changed lately, then the figures as
+// inline SVG, with the helpers and the figure scaffold of figure.js.
 //
 // Colour does three jobs on this page and nothing else: sage is this fleet's
 // data, grey is context (the other fleets, weak pairings), terracotta is the
@@ -12,8 +13,8 @@
 (() => {
 'use strict';
 
-const {$, targets, el, svg, text, line, textW, boxed, rect, crisp, clamp, pct, plural, plot, marker, dodge,
-       MONTHS, DOW, dayLabel, isoDay, say, showTip, moveTip, hideTip, seg, key, table, figure, redraw, watch} = window.Fig;
+const {$, targets, el, svg, text, line, textW, boxed, rect, crisp, clamp, pct, plural, plot, marks, baseline, marker, dodge,
+       MONTHS, DOW, dayLabel, isoDay, say, showTip, moveTip, hideTip, seg, key, table, section, state, figure, redraw, watch} = window.Fig;
 const FLEETS = [['B748', '747-8'], ['A388', 'A380'], ['B787', '787'], ['A350', 'A350']];
 const NAME = Object.fromEntries(FLEETS);
 const SHAPE = {B748: 'square', A388: 'diamond', B787: 'up', A350: 'down'};
@@ -35,33 +36,32 @@ const routeName = r => [r.a].concat(r.via || [], [r.b]).join('–');
 const CHIP = {grounded: ['No flight', 'terra'], returned: ['Back', 'sage'], new_tail: ['New tail', 'sage'],
               new_route: ['New route', 'sage'], gone_route: ['Paused', 'gray'],
               diverted: ['Diverted', 'terra'], cancelled: ['Cancelled', 'gray']};
+// A dated list is ink in Faceplate's code; each entry is a row with its date in front.
 function news(D) {
   const E = D.events;
-  const box = el('section', 'news');
-  const column = (title, items, empty) => {
-    const col = el('div', 'news-col');
-    col.append(el('h2', 'news-h', title));
-    if (!items.length) { col.append(el('p', 'news-none', empty)); return col; }
-    const ul = el('ul', 'news-list');
+  const sec = section({id: 'news', title: 'Lately', note: 'Last ' + E.days + ' days', kind: 'ink', field: 'tint'});
+  const group = (title, items, empty) => {
+    const box = el('div', 'news-group');
+    box.append(el('p', 'fp-label', title));
+    if (!items.length) { box.append(el('p', 'empty', empty)); return box; }
     items.forEach(e => {
-      const li = el('li');
-      const chip = CHIP[e.kind] || [e.kind, 'gray'];
-      const what = el('span', 'news-what');
+      const row = el('div', 'fp-row'), chip = CHIP[e.kind] || [e.kind, 'gray'];
+      const what = el('p', 'fp-row__text');
+      what.append(el('span', 'fp-chip fp-chip--' + chip[1], chip[0]), ' ');
       if (e.reg) {
         const a = el('a', 'tail-link', (MINE.has(e.reg) ? '★ ' : '') + e.reg);
         a.href = tailHref(e.reg);
-        what.append(a, document.createTextNode(' ' + e.text));
-      } else what.textContent = e.text;
-      li.append(el('span', 'news-when', isoDay(e.date)), el('span', 'fp-chip fp-chip--' + chip[1], chip[0]), what);
-      ul.append(li);
+        what.append(a, ' ' + e.text);
+      } else what.append(e.text);
+      row.append(el('time', 'fp-row__key', isoDay(e.date)), what);
+      box.append(row);
     });
-    col.append(ul);
-    return col;
+    return box;
   };
-  box.append(
-    column('Not flying now', E.now, 'Every ' + NAME[D.family] + ' has flown in the last three days.'),
-    column('Last ' + E.days + ' days', E.recent, 'Nothing out of the ordinary.'));
-  return box;
+  sec.body.append(
+    group('Not flying now', E.now, 'Every ' + NAME[D.family] + ' has flown in the last three days.'),
+    group('Last ' + E.days + ' days', E.recent, 'Nothing out of the ordinary.'));
+  return sec.root;
 }
 
 // ── Fig. 1 — when can I trust a published tail? ────────────────────────
@@ -203,8 +203,8 @@ function trust(D) {
       const close = marks.length > 1 && Math.abs(X(marks[0][1]) - X(marks[1][1])) < 118;
       boxed(root, x + 6, yB - 6 - (close && i === 0 ? 15 : 0), pct(p) + ' inside ' + Math.round(t) + ' h', 't-ann');
     });
-    rect(root, crisp(x0), crisp(yT), x1 - x0, H1, 'frame');
-    rect(root, crisp(x0), crisp(y2T), x1 - x0, H2, 'frame');
+    baseline(root, x0, x1, yB);
+    baseline(root, x0, x1, y2B);
 
     // hover: the crosshair finds the lead time, the tooltip reads every fleet
     const cross = line(root, 0, yT, 0, y2B, 'cross');
@@ -244,7 +244,7 @@ function trust(D) {
 
 // ── Fig. 2 — which flights are the safer bet? ──────────────────────────
 function routesFig(D) {
-  const f = figure('routes', 'Which flights are the safer bet?');
+  const f = figure('routes', 'Which flights are the safer bet?', {field: 'tint'});
   const R = D.routes, name = NAME[D.family], MIN = 15;
   let lead = String(R.leads.includes(48) ? 48 : R.leads[0]);
   const rowsAt = L => R.routes.map(r => ({r, o: r.out[L], b: r.back[L]}))
@@ -346,7 +346,7 @@ function routesFig(D) {
       hit.addEventListener('pointerdown', show);
       hit.addEventListener('pointerleave', hideTip);
     });
-    rect(root, crisp(x0), crisp(yT), x1 - x0, yB - yT, 'frame');
+    baseline(root, x0, x1, yB);
   };
 
   f.table = host => {
@@ -518,7 +518,7 @@ function turnsFig(D) {
 
 // ── Fig. 4 — who flies where? ──────────────────────────────────────────
 function spreadFig(D) {
-  const f = figure('spread', 'Who flies where?');
+  const f = figure('spread', 'Who flies where?', {field: 'tint'});
   const S = D.spread, name = NAME[D.family];
   const cellN = new Map(S.cells.map(c => [c[0] + ',' + c[1], c[2]]));
   const maxN = Math.max(1, ...S.cells.map(c => c[2]));
@@ -621,7 +621,7 @@ function spreadFig(D) {
       if (!narrow) rect(g, x1 + 14, row.y + 3, row.t.routes / S.routes.length * (rightM - 30), ch - 6, 'mg');
     });
     hubsSeen.slice(1).forEach(hub => { const x = crisp(X(S.routes.findIndex(r => r.a === hub))); line(g, x, top, x, yB, 'tick'); });
-    rect(root, crisp(x0), crisp(top), mw, yB - top, 'frame');
+    marks(root, x0, top, mw, yB - top);
     if (!narrow) {
       const RX = n => x1 + 14 + n / S.routes.length * (rightM - 30);
       text(g, x1 + 14, top - 19, 'routes flown', 't-title');
@@ -799,7 +799,7 @@ function calendarFig(D) {
       }
       if (!narrow && t.per_day) rect(g, RX(0), y + 3, RX(t.per_day) - RX(0), ch - 4, 'mg');
     });
-    rect(root, crisp(x0), crisp(top), mw, N * pitch, 'frame');
+    marks(root, x0, top, mw, N * pitch);
 
     const mark = rect(root, 0, 0, dw, pitch, 'cell-hover');
     mark.style.display = 'none';
@@ -836,14 +836,17 @@ function calendarFig(D) {
 }
 
 // ── page ───────────────────────────────────────────────────────────────
+// The lead is in the page from the start; its line and the fleet switch are
+// filled here, and the sections follow it into <main>.
+const num = n => Number(n).toLocaleString('en-GB');
 async function init() {
+  const main = document.querySelector('main'), lede = $('lede');
   const asked = (QUERY.get('type') || 'B748').toUpperCase();
   let D;
   try {
     D = await (await fetch('/api/insights?type=' + encodeURIComponent(asked))).json();
   } catch (e) {
-    $('meta').textContent = '';
-    $('body').replaceChildren(el('p', 'empty', 'Failed to load.'));
+    lede.replaceChildren(state('bad', 'The insights could not be loaded'));
     return;
   }
   FLEETS.forEach(([id, label]) => {
@@ -852,15 +855,14 @@ async function init() {
     if (D.family === id) a.setAttribute('aria-current', 'page');
     $('fleets').append(a);
   });
-  if (D.error) { $('meta').textContent = ''; $('body').replaceChildren(el('p', 'empty', D.error)); return; }
+  if (D.error) { lede.replaceChildren(state('bad', D.error)); return; }
   const m = D.meta;
-  say($('meta'), [NAME[D.family]], ' · ', [String(m.flights)], ' flights by ', [String(m.tails)], ' tails · ' +
-      isoDay(m.from) + ' – ' + isoDay(m.to) + ' · from Lufthansa flight status');
-  const body = $('body');
-  body.replaceChildren(news(D));
-  [trust, routesFig, turnsFig, spreadFig, calendarFig].forEach(make => body.append(make(D).root));
+  say(lede, 'The ', [NAME[D.family]], ' over ' + m.weeks + ' weeks: ', [num(m.flights) + ' flights'], ' by ', [m.tails + ' tails'], '.');
+  $('stamp').textContent = isoDay(m.from) + ' – ' + isoDay(m.to);
+  main.append(news(D));
+  [trust, routesFig, turnsFig, spreadFig, calendarFig].forEach(make => main.append(make(D).root));
   redraw();
-  watch(body);
+  watch(main);
 }
 init();
 })();

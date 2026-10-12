@@ -19,6 +19,7 @@ import psycopg.rows
 from dotenv import load_dotenv
 
 import booking_model
+import chassis
 import fleet_sim
 import leg_stats
 import monitor_stats
@@ -28,7 +29,6 @@ from flask import (
     abort,
     jsonify,
     redirect,
-    render_template_string,
     request,
     send_from_directory,
 )
@@ -62,42 +62,31 @@ def _q1(conn, sql, params=None):
 
 
 # ── Faceplate design system ──────────────────────────────────────────
-# Vendored verbatim at dashboard/dist/ (github:ChristopherBiel/faceplate#v2.0.0)
-# together with its MANIFEST.sha256, so `npx faceplate check` can prove the copy
-# has not drifted. Never edit anything under dist/ -- a modified vendored copy
-# makes the project agree with itself while diverging from the brand.
-# Applied UNBRANDED (Layer 1 only): design system, no personal layer.
-_FACEPLATE_DIR = Path(__file__).resolve().parent / "dist"
-
-# Only the stylesheets are served. The vendored package also carries Layer 2 --
-# the step-response mark, the wordmark lockup, the monogram plate, the favicon --
-# and this project does not represent its author, so those must not be published
-# from here. The tree keeps them (MANIFEST covers every shipped file); the route
-# does not hand them out.
-_FACEPLATE_PUBLIC = frozenset({"faceplate.tokens.css", "faceplate.components.css"})
-
-
+# Vendored verbatim under dashboard/ from github:ChristopherBiel/faceplate at
+# the tag v3.0.0: dist/ with its MANIFEST.sha256 (so `faceplate check` can prove
+# the copy has not drifted), fonts.css with fonts/, and the checker in bin/.
+# Never edit any of it -- a modified vendored copy makes the project agree with
+# itself while diverging from the brand.
+#
+# Applied at the project level: LH·Fleet's own name and glyph lead every page,
+# sage is the accent, and Christopher's signature stands in the footer. The
+# pages share one chassis (chassis.py), which declares the site's one intensity.
+#
+# Only what the pages link is served: the two stylesheets and the web fonts
+# (chassis.ASSETS). The package also carries LaTeX, KiCad and the logo set; the
+# tree keeps them (MANIFEST covers every shipped file), the route does not hand
+# them out.
 @app.route("/faceplate/<path:filename>")
 def faceplate_asset(filename):
-    if filename not in _FACEPLATE_PUBLIC:
+    f = chassis.asset(filename)
+    if f is None:
         abort(404)
-    return send_from_directory(_FACEPLATE_DIR, filename, max_age=86400)
+    return send_from_directory(f.parent, f.name, max_age=86400)
 
 
 @app.route("/favicon.svg")
 def favicon_svg():
     return send_from_directory(app.static_folder, "favicon.svg", max_age=86400)
-
-
-def _asset_v(*files):
-    """The newest mtime of a page's scripts and stylesheets, for their URLs.
-    The figures live in static/js (too much to keep in a string, and a real
-    file can be syntax-checked) and change together with the payload they
-    draw, so a browser must never run last week's script on this week's data."""
-    try:
-        return int(max(os.path.getmtime(os.path.join(app.static_folder, f)) for f in files))
-    except OSError:
-        return 0
 
 
 # ── Monitor (the start page) ────────────────────────────────────────
@@ -152,150 +141,106 @@ def api_monitor():
     return jsonify(out), (503 if len(out.get("errors", {})) == len(_MON_PARTS) else 200)
 
 
-_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LH Fleet Monitor</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/figure.css?v={{ v }}">
-<link rel="stylesheet" href="/static/css/home.css?v={{ v }}">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1>LH&middot;Fleet <span>Monitor</span></h1>
-        <div class="fp-label model">FLT-MON &middot; How the site runs</div>
+# The page on the chassis: the lead stands in the markup, static/js/home.js
+# fills it and appends the sections. A literal, like every page spec, so that
+# the preview tools can read it without importing Flask (see _PAGES).
+_HOME = {
+    "title": "LH Fleet Monitor",
+    "current": "/",
+    "styles": ("figure.css", "home.css"),
+    "scripts": ("page.js", "figure.js", "home.js"),
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label">
+        <p class="fp-label">FLT-MON &middot; How the site runs</p>
+        <div id="state"></div>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display">Monitor</h1>
+        <div id="status"><p class="fp-status state state--wait">Loading</p></div>
       </div>
-    </div>
-    <nav class="nav">
-      <a class="nav-link" href="/schedule">Schedule</a>
-      <a class="nav-link" href="/book">Book</a>
-      <a class="nav-link" href="/insights">Insights</a>
-      <a class="nav-link" href="/fleet">Fleet DB</a>
-    </nav>
-  </div>
-  <div id="body"><p class="empty">Loading&hellip;</p></div>
-</div>
-<footer>
-  <a href="/impressum">Impressum</a> <span class="sep">&middot;</span> <a href="/datenschutz">Datenschutz</a>
-</footer>
-<div class="tip" id="tip" hidden></div>
-<script src="/static/js/figure.js?v={{ v }}"></script>
-<script src="/static/js/home.js?v={{ v }}"></script>
-</body>
-</html>"""
-
-
-@app.route("/")
-def index():
-    return render_template_string(_HTML, v=_asset_v(
-        "js/figure.js", "js/home.js", "css/figure.css", "css/home.css"))
+    </section>""",
+}
 
 
 # ── Legal Pages ─────────────────────────────────────────────────────
+# Statutory text, in German: one numbered section per heading. In Faceplate's
+# colour code these pages are terracotta, what stands apart from the main work;
+# every other section names a field, so that neighbours differ.
 
-_LEGAL_CSS = """
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/legal.css">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-"""
+_IMPRESSUM = {
+    "title": "Impressum | LH Fleet",
+    "current": None,
+    "lang": "de",
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label"><p class="fp-label">Legal</p></div></div>
+      <div class="fp-sec__body"><h1 class="fp-display">Impressum</h1></div>
+    </section>
+    <section class="fp-sec fp-sec--terra">
+      <header class="fp-sec__label"><span class="fp-index">01</span><h2 class="fp-sec__title">Angaben gem&auml;&szlig; &sect; 5 TMG</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Christopher Biel<br>Leopoldstr. 48<br>80802 M&uuml;nchen</p></div></div>
+    </section>
+    <section class="fp-sec fp-sec--terra fp-sec--tint">
+      <header class="fp-sec__label"><span class="fp-index">02</span><h2 class="fp-sec__title">Kontakt</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>E-Mail: info@biels.net</p></div></div>
+    </section>""",
+}
 
-_IMPRESSUM_HTML = (
-    '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">'
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-    "<title>Impressum</title>"
-    + _LEGAL_CSS
-    + """</head><body class="fp" data-fp-intensity="02"><div class="container">
-<div class="header">
-  <div class="brand">
-    <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-    <div>
-      <h1>LH&middot;Fleet <span>Monitor</span></h1>
-      <div class="fp-label model">LEGAL &middot; Impressum</div>
-    </div>
-  </div>
-  <nav class="nav"><a class="nav-link" href="/">&larr; Back</a></nav>
-</div>
-<h1>Impressum</h1>
-<h2>Angaben gem&auml;&szlig; &sect; 5 TMG</h2>
-<p>Christopher Biel<br>Leopoldstr. 48<br>80802 M&uuml;nchen</p>
-<h2>Kontakt</h2>
-<p>E-Mail: info@biels.net</p>
-</div></body></html>"""
-)
-
-_DATENSCHUTZ_HTML = (
-    '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">'
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-    "<title>Datenschutzerkl&auml;rung</title>"
-    + _LEGAL_CSS
-    + """</head><body class="fp" data-fp-intensity="02"><div class="container">
-<div class="header">
-  <div class="brand">
-    <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-    <div>
-      <h1>LH&middot;Fleet <span>Monitor</span></h1>
-      <div class="fp-label model">LEGAL &middot; Datenschutz</div>
-    </div>
-  </div>
-  <nav class="nav"><a class="nav-link" href="/">&larr; Back</a></nav>
-</div>
-<h1>Datenschutzerkl&auml;rung</h1>
-<h2>1. Verantwortlicher</h2>
-<p>Christopher Biel, Leopoldstr. 48, 80802 M&uuml;nchen</p>
-<h2>2. Erhebung und Verarbeitung personenbezogener Daten</h2>
-<p>Diese Website erhebt, speichert und verarbeitet keine personenbezogenen Daten
+_DATENSCHUTZ = {
+    "title": "Datenschutzerkl\u00e4rung | LH Fleet",
+    "current": None,
+    "lang": "de",
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label"><p class="fp-label">Legal</p></div></div>
+      <div class="fp-sec__body"><h1 class="fp-display">Datenschutz&shy;erkl&auml;rung</h1></div>
+    </section>
+    <section class="fp-sec fp-sec--terra">
+      <header class="fp-sec__label"><span class="fp-index">01</span><h2 class="fp-sec__title">Verantwortlicher</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Christopher Biel, Leopoldstr. 48, 80802 M&uuml;nchen</p></div></div>
+    </section>
+    <section class="fp-sec fp-sec--terra fp-sec--tint">
+      <header class="fp-sec__label"><span class="fp-index">02</span><h2 class="fp-sec__title">Erhebung und Verarbeitung personenbezogener Daten</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Diese Website erhebt, speichert und verarbeitet keine personenbezogenen Daten
 ihrer Besucher. Es werden keine Cookies gesetzt, keine Analyse- oder Tracking-Tools
 eingesetzt und keine Daten an Dritte weitergegeben &ndash; mit Ausnahme des in
-Abschnitt 5 beschriebenen, nur auf Ihren Klick geladenen Flugzeugfotos.</p>
-<h2>3. Server-Logfiles</h2>
-<p>Beim Zugriff auf diese Website werden m&ouml;glicherweise durch den
+Abschnitt 5 beschriebenen, nur auf Ihren Klick geladenen Flugzeugfotos.</p></div></div>
+    </section>
+    <section class="fp-sec fp-sec--terra">
+      <header class="fp-sec__label"><span class="fp-index">03</span><h2 class="fp-sec__title">Server-Logfiles</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Beim Zugriff auf diese Website werden m&ouml;glicherweise durch den
 Hosting-Provider technische Daten (z.&nbsp;B. IP-Adresse, Zeitpunkt des Zugriffs)
 in Server-Logfiles gespeichert. Diese Daten werden nicht mit anderen Datenquellen
-zusammengef&uuml;hrt und nach kurzer Zeit gel&ouml;scht.</p>
-<h2>4. Lokaler Speicher im Browser</h2>
-<p>Einstellungen, die Sie selbst vornehmen &ndash; etwa die Flugzeuge, f&uuml;r die
+zusammengef&uuml;hrt und nach kurzer Zeit gel&ouml;scht.</p></div></div>
+    </section>
+    <section class="fp-sec fp-sec--terra fp-sec--tint">
+      <header class="fp-sec__label"><span class="fp-index">04</span><h2 class="fp-sec__title">Lokaler Speicher im Browser</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Einstellungen, die Sie selbst vornehmen &ndash; etwa die Flugzeuge, f&uuml;r die
 Sie auf &bdquo;Catch a Tail&ldquo; eine Buchung planen, oder ausgeblendete Flugzeugtypen
 im Flugplan &ndash; werden ausschlie&szlig;lich im lokalen Speicher (localStorage) Ihres
 Browsers abgelegt, damit sie beim n&auml;chsten Besuch wieder da sind. Sie werden
 nicht an diesen Server oder Dritte &uuml;bertragen und lassen sich jederzeit &uuml;ber
-die Browsereinstellungen l&ouml;schen.</p>
-<h2>5. Flugzeugfotos von planespotters.net</h2>
-<p>Auf den Flugzeugseiten (/airframe) kann ein Foto des Flugzeugs von
+die Browsereinstellungen l&ouml;schen.</p></div></div>
+    </section>
+    <section class="fp-sec fp-sec--terra">
+      <header class="fp-sec__label"><span class="fp-index">05</span><h2 class="fp-sec__title">Flugzeugfotos von planespotters.net</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Auf den Flugzeugseiten (/airframe) kann ein Foto des Flugzeugs von
 planespotters.net angezeigt werden. Es wird erst geladen, wenn Sie auf
 &bdquo;Show photo&ldquo; klicken. Erst dann ruft Ihr Browser das Bild direkt bei
 planespotters.net ab und &uuml;bermittelt dabei technisch bedingt Ihre IP-Adresse an
 deren Betreiber. Ohne diesen Klick findet keine Verbindung zu planespotters.net statt.
 F&uuml;r die dortige Verarbeitung gilt die Datenschutzerkl&auml;rung von
-planespotters.net.</p>
-<h2>6. Ihre Rechte</h2>
-<p>Sie haben das Recht auf Auskunft, Berichtigung, L&ouml;schung und
+planespotters.net.</p></div></div>
+    </section>
+    <section class="fp-sec fp-sec--terra fp-sec--tint">
+      <header class="fp-sec__label"><span class="fp-index">06</span><h2 class="fp-sec__title">Ihre Rechte</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Sie haben das Recht auf Auskunft, Berichtigung, L&ouml;schung und
 Einschr&auml;nkung der Verarbeitung Ihrer personenbezogenen Daten gem&auml;&szlig;
 der DSGVO. Da wir keine personenbezogenen Daten erheben, fallen in der Regel keine
-solchen Daten an.</p>
-</div></body></html>"""
-)
-
-
-@app.route("/impressum")
-def impressum():
-    return _IMPRESSUM_HTML
-
-
-@app.route("/datenschutz")
-def datenschutz():
-    return _DATENSCHUTZ_HTML
+solchen Daten an.</p></div></div>
+    </section>""",
+}
 
 
 # ── Legacy analysis pages → /insights (predictive model retired) ────
@@ -494,429 +439,78 @@ def api_fleet_detail(icao24):
     return jsonify({"info": info, "flights": flights, "routes": routes, "daily": daily})
 
 
-_FLEET_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LH Fleet Database</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/fleet.css">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1>LH Fleet <span>Database</span></h1>
-        <div class="fp-label model">FLEET DB &middot; Aircraft Registry</div>
+_FLEET = {
+    "title": "Fleet DB | LH Fleet",
+    "current": "/fleet",
+    "styles": ("fleet.css",),
+    "scripts": ("page.js", "fleet.js"),
+    # One table is the page, so its section carries no index and no title, and
+    # its filters stand in the lead.
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label">
+        <p class="fp-label">Fleet DB &middot; Aircraft registry</p>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display">Fleet DB</h1>
+        <div id="state"><p class="fp-status state state--wait">Loading</p></div>
+        <div class="filters" id="filters" hidden>
+          <input class="input" type="search" id="search" placeholder="Search the fleet" aria-label="Search by registration, ICAO24, type or model">
+          <select class="input" id="type-filter" aria-label="Type"><option value="">All types</option></select>
+          <div class="fp-seg" id="status-filter" role="group" aria-label="Status">
+            <button type="button" class="is-on" aria-pressed="true" data-status="all">All</button>
+            <button type="button" aria-pressed="false" data-status="active">Active</button>
+            <button type="button" aria-pressed="false" data-status="retired">Retired</button>
+            <button type="button" aria-pressed="false" data-status="tracking">Tracking</button>
+          </div>
+          <div class="fp-seg"><button type="button" id="review-filter" aria-pressed="false">Needs review</button></div>
+          <span id="count"></span>
+        </div>
       </div>
-    </div>
-    <nav class="nav">
-      <a class="nav-link" href="/">&larr; Monitor</a>
-      <a class="nav-link" href="/insights">Insights</a>
-    </nav>
-  </div>
-  
-  <div class="error-banner" id="error-banner"></div>
-  <div class="loading" id="loading">Loading fleet data&hellip;</div>
-
-  <div id="content" style="display:none">
-    <div class="toolbar">
-      <input type="text" id="search" placeholder="Search registration, ICAO24, type, model...">
-      <select id="type-filter"><option value="">All types</option></select>
-      <div class="fp-seg">
-        <button class="toggle-btn active" data-status="all">All</button>
-        <button class="toggle-btn" data-status="active">Active</button>
-        <button class="toggle-btn" data-status="retired">Retired</button>
-        <button class="toggle-btn" data-status="tracking">Tracking</button>
-      </div>
-      <span class="review-toggle" id="review-filter" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Needs Review</span>
-      <div class="count" id="count"></div>
-    </div>
-
-    <table class="fleet-table">
-      <thead>
-        <tr id="table-head">
-          <th data-key="registration">Reg <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="icao24">ICAO24 <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="aircraft_type">Type <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="aircraft_subtype">Model <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="is_active">Status <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="total_flights" class="num">Flights <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="flights_7d" class="num">7d <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="last_flight">Last Flight <span class="sort-arrow">&#9650;</span></th>
-          <th data-key="first_seen">First Seen <span class="sort-arrow">&#9650;</span></th>
-        </tr>
-      </thead>
-      <tbody id="table-body"></tbody>
-    </table>
-  </div>
-
-</div>
-
-<script>
-const $ = id => document.getElementById(id);
-
-let allAircraft = [];
-let sortKey = 'registration';
-let sortAsc = true;
-let statusFilter = 'all';
-
-async function init() {
-  let data;
-  try {
-    const r = await fetch('/api/fleet');
-    data = await r.json();
-  } catch(e) {
-    $('error-banner').style.display = 'block';
-    $('error-banner').textContent = 'Connection error: ' + e;
-    $('loading').style.display = 'none';
-    return;
-  }
-  if (data.error) {
-    $('error-banner').style.display = 'block';
-    $('error-banner').textContent = data.error;
-    $('loading').style.display = 'none';
-    return;
-  }
-  $('loading').style.display = 'none';
-  $('content').style.display = 'block';
-
-  allAircraft = data.aircraft;
-
-  // Populate type filter
-  const sel = $('type-filter');
-  data.types.forEach(t => {
-    const o = document.createElement('option');
-    o.value = t; o.textContent = t;
-    sel.appendChild(o);
-  });
-
-  render();
-}
-
-function getFiltered() {
-  const q = $('search').value.toLowerCase().trim();
-  const typeVal = $('type-filter').value;
-  const reviewOnly = $('review-filter').classList.contains('on');
-  return allAircraft.filter(a => {
-    if (reviewOnly && !a.needs_review) return false;
-    if (statusFilter === 'active' && !a.is_active) return false;
-    if (statusFilter === 'retired' && a.is_active) return false;
-    if (statusFilter === 'tracking' && !a.currently_tracking) return false;
-    if (typeVal && a.aircraft_type !== typeVal) return false;
-    if (q) {
-      const hay = (a.registration + ' ' + a.icao24 + ' ' + a.aircraft_type + ' ' + a.aircraft_subtype).toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    return true;
-  });
-}
-
-function getSorted(list) {
-  return [...list].sort((a, b) => {
-    let va = a[sortKey], vb = b[sortKey];
-    if (va == null) va = '';
-    if (vb == null) vb = '';
-    if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
-    if (typeof va === 'number') return sortAsc ? va - vb : vb - va;
-    va = String(va); vb = String(vb);
-    return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-  });
-}
-
-function render() {
-  const filtered = getFiltered();
-  const sorted = getSorted(filtered);
-
-  $('count').textContent = filtered.length + ' / ' + allAircraft.length + ' aircraft';
-
-  // Update sort indicators
-  document.querySelectorAll('#table-head th').forEach(th => {
-    th.classList.toggle('sorted', th.dataset.key === sortKey);
-    const arrow = th.querySelector('.sort-arrow');
-    if (th.dataset.key === sortKey) {
-      arrow.innerHTML = sortAsc ? '&#9650;' : '&#9660;';
-    } else {
-      arrow.innerHTML = '&#9650;';
-    }
-  });
-
-  const tbody = $('table-body');
-  tbody.innerHTML = sorted.map(a => {
-    const statusBadge = a.is_active
-      ? '<span class="fp-chip badge-active">active</span>'
-      : '<span class="fp-chip badge-retired">retired</span>';
-    const trackingBadge = a.currently_tracking ? ' <span class="fp-chip badge-tracking">tracking</span>' : '';
-    const reviewBadge = a.needs_review ? ' <span class="fp-chip badge-review">review</span>' : '';
-    const rowClass = a.needs_review ? ' class="review-row"' : '';
-    return '<tr' + rowClass + ' onclick="location.href=\\'/fleet/' + a.icao24 + '\\'">' +
-      '<td class="reg">' + esc(a.registration) + '</td>' +
-      '<td class="hex">' + esc(a.icao24) + '</td>' +
-      '<td class="type">' + esc(a.aircraft_type || '\\u2014') + '</td>' +
-      '<td>' + esc(a.aircraft_subtype || '\\u2014') + '</td>' +
-      '<td>' + statusBadge + trackingBadge + reviewBadge + '</td>' +
-      '<td class="num">' + a.total_flights + '</td>' +
-      '<td class="num">' + a.flights_7d + '</td>' +
-      '<td>' + (a.last_flight || '\\u2014') + '</td>' +
-      '<td>' + (a.first_seen || '\\u2014') + '</td>' +
-    '</tr>';
-  }).join('');
-}
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// Sort on header click
-document.querySelectorAll('#table-head th').forEach(th => {
-  th.addEventListener('click', () => {
-    const key = th.dataset.key;
-    if (sortKey === key) { sortAsc = !sortAsc; }
-    else { sortKey = key; sortAsc = true; }
-    render();
-  });
-});
-
-// Search
-$('search').addEventListener('input', render);
-
-// Type filter
-$('type-filter').addEventListener('change', render);
-
-// Needs review filter
-(function(){ const el=$('review-filter');
-  const t=()=>{ const on=el.classList.toggle('on'); el.setAttribute('aria-checked', on?'true':'false'); render(); };
-  el.addEventListener('click', t);
-  el.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); t(); } });
-})();
-
-// Status toggle
-document.querySelectorAll('.toggle-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    statusFilter = btn.dataset.status;
-    render();
-  });
-});
-
-init();
-</script>
-<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
-  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 var(--fp-space-2)">&middot;</span>
-  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
-</footer>
-</body>
-</html>
-"""
-
-
-_FLEET_DETAIL_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Aircraft Detail</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/fleet-detail.css">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1 id="page-title">Aircraft <span>Detail</span></h1>
-        <div class="fp-label model">AIRCRAFT &middot; Tail Detail</div>
-      </div>
-    </div>
-    <nav class="nav">
-      <a class="nav-link" href="/fleet">&larr; Fleet DB</a>
-      <a class="nav-link" href="/">Monitor</a>
-    </nav>
-  </div>
-  
-  <div class="error-banner" id="error-banner"></div>
-  <div class="loading" id="loading">Loading aircraft data&hellip;</div>
-
-  <div id="content" style="display:none">
-    <!-- Info card -->
-    <div class="card" id="info-card"></div>
-
-    <!-- Stats -->
-    <div class="metrics" id="stats"></div>
-
-    <!-- Activity + Routes -->
-    <div class="two-col">
-      <div class="card">
-        <div class="card-title">Activity (last 30 days)</div>
-        <div class="chart-bars" id="activity-chart"></div>
-        <div class="chart-labels" id="activity-labels"></div>
-      </div>
-      <div class="card">
-        <div class="card-title">Top Routes</div>
-        <div id="routes"></div>
-      </div>
-    </div>
-
-    <!-- Flight history -->
-    <div class="card" style="margin-top:var(--fp-space-3)">
-      <div class="card-title">Recent Flights (last 100)</div>
-      <div style="overflow-x:auto">
-        <table class="flight-table">
+    </section>
+    <section class="fp-sec sec--wide" id="aircraft" aria-label="Aircraft" hidden>
+      <div class="fp-sec__body">
+        <table class="table table--page fleet">
           <thead>
-            <tr>
-              <th>Date</th><th>Callsign</th><th>From</th><th>To</th>
-              <th>Departure</th><th>Arrival</th><th>Duration</th>
+            <tr id="table-head">
+              <th data-key="registration">Reg <i>&#9650;</i></th>
+              <th data-key="icao24">ICAO24 <i>&#9650;</i></th>
+              <th data-key="aircraft_type">Type <i>&#9650;</i></th>
+              <th data-key="aircraft_subtype">Model <i>&#9650;</i></th>
+              <th data-key="is_active">Status <i>&#9650;</i></th>
+              <th data-key="total_flights" class="num">Flights <i>&#9650;</i></th>
+              <th data-key="flights_7d" class="num">7 d <i>&#9650;</i></th>
+              <th data-key="last_flight">Last flight <i>&#9650;</i></th>
+              <th data-key="first_seen">First seen <i>&#9650;</i></th>
             </tr>
           </thead>
-          <tbody id="flight-body"></tbody>
+          <tbody id="table-body"></tbody>
         </table>
+        <p class="empty" id="none" hidden>No aircraft match these filters.</p>
       </div>
-    </div>
-  </div>
-
-</div>
-
-<script>
-const $ = id => document.getElementById(id);
-const icao24 = location.pathname.split('/').pop();
-
-async function init() {
-  let data;
-  try {
-    const r = await fetch('/api/fleet/' + icao24);
-    data = await r.json();
-  } catch(e) {
-    $('error-banner').style.display = 'block';
-    $('error-banner').textContent = 'Connection error: ' + e;
-    $('loading').style.display = 'none';
-    return;
-  }
-  if (data.error) {
-    $('error-banner').style.display = 'block';
-    $('error-banner').textContent = data.error;
-    $('loading').style.display = 'none';
-    return;
-  }
-  $('loading').style.display = 'none';
-  $('content').style.display = 'block';
-
-  const info = data.info;
-  document.title = info.registration + ' - LH Fleet';
-  $('page-title').innerHTML = '<span>' + esc(info.registration) + '</span> ' + esc(info.aircraft_subtype || info.aircraft_type || '');
-
-  const statusBadge = info.is_active
-    ? '<span class="fp-chip badge-active">active</span>'
-    : '<span class="fp-chip badge-retired">retired</span>';
-
-  $('info-card').innerHTML = '<div class="info-grid">' +
-    item('Registration', info.registration) +
-    item('ICAO24', '<span style="font-family:var(--fp-font-mono)">' + info.icao24 + '</span>') +
-    item('Type', info.aircraft_type || '\\u2014') +
-    item('Model', info.aircraft_subtype || '\\u2014') +
-    item('Profile', '<a href="/airframe/' + encodeURIComponent(info.registration) + '">airframe &amp; cabin &rarr;</a>') +
-    item('Status', statusBadge) +
-    item('Airline', info.airline_iata || '\\u2014') +
-    item('First Seen', info.first_seen || '\\u2014') +
-    item('Last Seen', info.last_seen || '\\u2014') +
-  '</div>';
-
-  $('stats').innerHTML =
-    '<div class="metric"><div class="label">Total Flights</div><div class="value">' + (info.total_flights || 0) + '</div></div>' +
-    '<div class="metric"><div class="label">Last 30 Days</div><div class="value">' + (info.flights_30d || 0) + '</div></div>' +
-    '<div class="metric"><div class="label">Last 7 Days</div><div class="value">' + (info.flights_7d || 0) + '</div></div>';
-
-  // Activity chart
-  const daily = data.daily || [];
-  if (daily.length) {
-    const maxD = Math.max(...daily.map(d => d.count), 1);
-    $('activity-chart').innerHTML = daily.map(d =>
-      '<div class="chart-bar" style="height:' + Math.max(2, d.count / maxD * 56) + 'px" title="' + d.date + ': ' + d.count + '"></div>'
-    ).join('');
-    $('activity-labels').innerHTML = '<span>' + daily[0].date.slice(5) + '</span><span>' + daily[daily.length-1].date.slice(5) + '</span>';
-  }
-
-  // Routes
-  const routes = data.routes || [];
-  if (routes.length) {
-    const maxR = routes[0].count;
-    $('routes').innerHTML = routes.slice(0, 12).map(r => {
-      const parts = r.route.split('-');
-      const label = parts[0] + '\\u2192' + parts[1];
-      return '<div class="route-bar-row">' +
-        '<div class="route-label">' + label + '</div>' +
-        '<div class="route-track"><div class="route-fill" style="width:' + (r.count/maxR*100) + '%"></div></div>' +
-        '<div class="route-count">' + r.count + '</div></div>';
-    }).join('');
-  } else {
-    $('routes').innerHTML = '<div style="color:var(--muted)">No routes recorded</div>';
-  }
-
-  // Flights table
-  const flights = data.flights || [];
-  $('flight-body').innerHTML = flights.map(f => {
-    const dur = f.duration ? Math.floor(f.duration/60) + 'h ' + (f.duration%60) + 'm' : '\\u2014';
-    const dep = f.first_seen ? f.first_seen.slice(11,16) : '';
-    const arr = f.last_seen ? f.last_seen.slice(11,16) : '';
-    return '<tr>' +
-      '<td>' + (f.date || '\\u2014') + '</td>' +
-      '<td class="cs">' + (f.callsign || '\\u2014') + '</td>' +
-      '<td>' + (f.dep || '\\u2014') + '</td>' +
-      '<td>' + (f.arr || '\\u2014') + '</td>' +
-      '<td>' + dep + '</td>' +
-      '<td>' + arr + '</td>' +
-      '<td>' + dur + '</td>' +
-    '</tr>';
-  }).join('') || '<tr><td colspan="7" style="color:var(--muted);text-align:center">No flights recorded</td></tr>';
+    </section>""",
 }
 
-function item(label, value) {
-  return '<div class="info-item"><div class="label">' + label + '</div><div class="value small">' + value + '</div></div>';
+_FLEET_DETAIL = {
+    "title": "Aircraft | LH Fleet",
+    "current": "/fleet",
+    "styles": ("fleet-detail.css",),
+    "scripts": ("page.js", "fleet-detail.js"),
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label">
+        <a class="lead-back" href="/fleet">&larr; Fleet DB</a>
+        <p class="fp-label">Aircraft</p>
+        <div id="state"></div>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display" id="reg">&nbsp;</h1>
+        <p class="fp-lede" id="lede"></p>
+        <div id="figures"><p class="fp-status state state--wait">Loading</p></div>
+        <ul class="fp-links" id="links"></ul>
+      </div>
+    </section>""",
 }
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-init();
-</script>
-<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
-  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 var(--fp-space-2)">&middot;</span>
-  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
-</footer>
-</body>
-</html>
-"""
-
-
-@app.route("/fleet")
-def fleet():
-    return render_template_string(_FLEET_HTML)
-
-
-@app.route("/fleet/<icao24>")
-def fleet_detail(icao24):
-    return render_template_string(_FLEET_DETAIL_HTML)
 
 
 # ── Admin Interface ────────────────────────────────────────────────
@@ -1422,434 +1016,125 @@ if ADMIN_PATH_PREFIX:
 
     # ── Admin HTML ────────────────────────────────────────────────
 
-    _ADMIN_HTML = (
-        """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LH Admin</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/admin.css">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1><span>LH</span> Admin</h1>
-        <div class="fp-label model">ADMIN &middot; Fleet Editor</div>
+    # The admin on the chassis. Not in _PAGES: it exists only under its secret
+    # path, which the page hands to static/js/admin.js.
+    _ADMIN = {
+        "title": "LH Admin",
+        "current": None,
+        "styles": ("admin.css",),
+        "scripts": ("admin.js",),
+        "main": """\
+    <section class="fp-sec fp-sec--lead" id="admin" data-prefix="{{prefix}}">
+      <div class="fp-sec__label"><div class="lead-label">
+        <p class="fp-label">Admin &middot; Fleet editor</p>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display">Admin</h1>
+        <div class="filters"><div class="fp-seg" id="tabs" role="group" aria-label="What to edit">
+          <button type="button" class="is-on" aria-pressed="true" data-tab="aircraft" onclick="switchTab('aircraft')">Aircraft</button>
+          <button type="button" aria-pressed="false" data-tab="flights" onclick="switchTab('flights')">Flights</button>
+        </div></div>
+        <p class="fp-body">The registry and the flight log, edited by hand: click a cell to correct it in place.</p>
+      </div>
+    </section>
+    <section class="fp-sec sec--wide" id="tab-aircraft">
+      <header class="fp-sec__label">
+        <h2 class="fp-sec__title">Aircraft</h2>
+        <div class="fp-sec__note filters">
+          <input class="input" id="ac-search" type="search" placeholder="ICAO24, registration, subtype" aria-label="Search aircraft" oninput="debounce(loadAircraft,300)()">
+          <select class="input" id="ac-type" aria-label="Type" onchange="loadAircraft()"><option value="">All types</option></select>
+          <select class="input" id="ac-status" aria-label="Status" onchange="loadAircraft()">
+            <option value="">All status</option>
+            <option value="active">Active</option>
+            <option value="retired">Retired</option>
+          </select>
+          <span class="review-toggle" id="ac-review" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Needs review</span>
+          <button class="fp-btn fp-btn--solid" type="button" onclick="showAddAircraft()">+ Aircraft</button>
+        </div>
+      </header>
+      <div class="fp-sec__body">
+        <table class="table table--page admin">
+          <thead><tr>
+            <th>ICAO24</th><th>Reg</th><th>Type</th><th>Subtype</th><th>Airline</th>
+            <th>Status</th><th>Review</th><th>Actions</th>
+          </tr></thead>
+          <tbody id="ac-body"></tbody>
+        </table>
+        <div class="count" id="ac-count"></div>
+      </div>
+    </section>
+    <section class="fp-sec fp-sec--ink sec--wide" id="tab-flights" hidden>
+      <header class="fp-sec__label">
+        <h2 class="fp-sec__title">Flights</h2>
+        <div class="fp-sec__note filters">
+          <input class="input" id="fl-icao24" type="search" placeholder="ICAO24" aria-label="ICAO24" oninput="debounce(loadFlights,300)()">
+          <input class="input" id="fl-callsign" type="search" placeholder="Callsign" aria-label="Callsign" oninput="debounce(loadFlights,300)()">
+          <input class="input" id="fl-dep" type="search" placeholder="Dep" aria-label="Departure airport" oninput="debounce(loadFlights,300)()">
+          <input class="input" id="fl-arr" type="search" placeholder="Arr" aria-label="Arrival airport" oninput="debounce(loadFlights,300)()">
+          <input class="input" id="fl-from" type="date" aria-label="From date" onchange="loadFlights()">
+          <input class="input" id="fl-to" type="date" aria-label="To date" onchange="loadFlights()">
+          <span class="review-toggle" id="fl-review" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Review</span>
+          <button class="fp-btn fp-btn--solid" type="button" onclick="showAddFlight()">+ Flight</button>
+        </div>
+      </header>
+      <div class="fp-sec__body">
+        <table class="table table--page admin">
+          <thead><tr>
+            <th>Date</th><th>ICAO24</th><th>Reg</th><th>Callsign</th>
+            <th>Dep</th><th>Arr</th><th>Dep time</th><th>Arr time</th>
+            <th>Dur</th><th>Review</th><th>Actions</th>
+          </tr></thead>
+          <tbody id="fl-body"></tbody>
+        </table>
+        <div class="pagination" id="fl-pagination"></div>
+      </div>
+    </section>
+    <div class="dialog-bg" id="modal-ac">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="modal-ac-title">
+        <h2 class="dialog__title" id="modal-ac-title">Add aircraft</h2>
+        <label for="m-ac-icao24">ICAO24 (hex)</label>
+        <input class="input" id="m-ac-icao24" maxlength="6" placeholder="3c6752">
+        <label for="m-ac-reg">Registration</label>
+        <input class="input" id="m-ac-reg" maxlength="10" placeholder="D-AIXX">
+        <label for="m-ac-type">Type (ICAO code)</label>
+        <input class="input" id="m-ac-type" maxlength="10" placeholder="A359">
+        <label for="m-ac-subtype">Subtype</label>
+        <input class="input" id="m-ac-subtype" maxlength="50" placeholder="Airbus A350-941">
+        <label for="m-ac-airline">Airline IATA</label>
+        <input class="input" id="m-ac-airline" maxlength="3" placeholder="LH" value="LH">
+        <div class="dialog-actions">
+          <button class="fp-btn" type="button" onclick="closeModal('modal-ac')">Cancel</button>
+          <button class="fp-btn fp-btn--solid" type="button" id="modal-ac-save" onclick="saveAircraft()">Add</button>
+        </div>
       </div>
     </div>
-    <nav class="nav">
-      <a class="nav-link" href="/">&larr; Dashboard</a>
-    </nav>
-  </div>
-  
-  <div class="tabs">
-    <div class="tab active" onclick="switchTab('aircraft')">Aircraft</div>
-    <div class="tab" onclick="switchTab('flights')">Flights</div>
-  </div>
-
-  <!-- ── Aircraft Tab ── -->
-  <div id="tab-aircraft" class="tab-content active">
-    <div class="controls">
-      <input id="ac-search" type="text" placeholder="Search icao24 / reg / subtype..." style="width:220px" oninput="debounce(loadAircraft,300)()">
-      <select id="ac-type" onchange="loadAircraft()"><option value="">All types</option></select>
-      <select id="ac-status" onchange="loadAircraft()">
-        <option value="">All status</option>
-        <option value="active">Active</option>
-        <option value="retired">Retired</option>
-      </select>
-      <span class="review-toggle" id="ac-review" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Needs review</span>
-      <div style="flex:1"></div>
-      <button class="fp-btn fp-btn--solid" onclick="showAddAircraft()">+ Aircraft</button>
+    <div class="dialog-bg" id="modal-fl">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="modal-fl-title">
+        <h2 class="dialog__title" id="modal-fl-title">Add flight</h2>
+        <label for="m-fl-icao24">ICAO24</label>
+        <input class="input" id="m-fl-icao24" maxlength="6" placeholder="3c6752">
+        <label for="m-fl-callsign">Callsign</label>
+        <input class="input" id="m-fl-callsign" maxlength="10" placeholder="DLH400">
+        <label for="m-fl-dep">Departure airport (ICAO)</label>
+        <input class="input" id="m-fl-dep" maxlength="4" placeholder="EDDF">
+        <label for="m-fl-arr">Arrival airport (ICAO)</label>
+        <input class="input" id="m-fl-arr" maxlength="4" placeholder="KJFK">
+        <label for="m-fl-first">First seen (UTC)</label>
+        <input class="input" id="m-fl-first" type="datetime-local">
+        <label for="m-fl-last">Last seen (UTC)</label>
+        <input class="input" id="m-fl-last" type="datetime-local">
+        <div class="dialog-actions">
+          <button class="fp-btn" type="button" onclick="closeModal('modal-fl')">Cancel</button>
+          <button class="fp-btn fp-btn--solid" type="button" onclick="saveFlight()">Add</button>
+        </div>
+      </div>
     </div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr>
-          <th>ICAO24</th><th>Reg</th><th>Type</th><th>Subtype</th><th>Airline</th>
-          <th>Status</th><th>Review</th><th>Actions</th>
-        </tr></thead>
-        <tbody id="ac-body"></tbody>
-      </table>
-    </div>
-    <div id="ac-count" style="margin-top:var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)"></div>
-  </div>
-
-  <!-- ── Flights Tab ── -->
-  <div id="tab-flights" class="tab-content">
-    <div class="controls">
-      <input id="fl-icao24" type="text" placeholder="ICAO24" style="width:90px" oninput="debounce(loadFlights,300)()">
-      <input id="fl-callsign" type="text" placeholder="Callsign" style="width:100px" oninput="debounce(loadFlights,300)()">
-      <input id="fl-dep" type="text" placeholder="Dep" style="width:70px" oninput="debounce(loadFlights,300)()">
-      <input id="fl-arr" type="text" placeholder="Arr" style="width:70px" oninput="debounce(loadFlights,300)()">
-      <input id="fl-from" type="date" onchange="loadFlights()" style="width:130px">
-      <input id="fl-to" type="date" onchange="loadFlights()" style="width:130px">
-      <span class="review-toggle" id="fl-review" role="checkbox" aria-checked="false" tabindex="0"><span class="box"></span>Review</span>
-      <div style="flex:1"></div>
-      <button class="fp-btn fp-btn--solid" onclick="showAddFlight()">+ Flight</button>
-    </div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr>
-          <th>Date</th><th>ICAO24</th><th>Reg</th><th>Callsign</th>
-          <th>Dep</th><th>Arr</th><th>Dep Time</th><th>Arr Time</th>
-          <th>Dur</th><th>Review</th><th>Actions</th>
-        </tr></thead>
-        <tbody id="fl-body"></tbody>
-      </table>
-    </div>
-    <div class="pagination" id="fl-pagination"></div>
-  </div>
-</div>
-
-<!-- Add Aircraft Modal -->
-<div class="modal-bg" id="modal-ac">
-  <div class="modal">
-    <h3 id="modal-ac-title">Add Aircraft</h3>
-    <label>ICAO24 (hex)</label>
-    <input id="m-ac-icao24" maxlength="6" placeholder="3c6752">
-    <label>Registration</label>
-    <input id="m-ac-reg" maxlength="10" placeholder="D-AIXX">
-    <label>Type (ICAO code)</label>
-    <input id="m-ac-type" maxlength="10" placeholder="A359">
-    <label>Subtype</label>
-    <input id="m-ac-subtype" maxlength="50" placeholder="Airbus A350-941">
-    <label>Airline IATA</label>
-    <input id="m-ac-airline" maxlength="3" placeholder="LH" value="LH">
-    <div class="modal-actions">
-      <button class="fp-btn" onclick="closeModal('modal-ac')">Cancel</button>
-      <button class="fp-btn fp-btn--solid" id="modal-ac-save" onclick="saveAircraft()">Add</button>
-    </div>
-  </div>
-</div>
-
-<!-- Add Flight Modal -->
-<div class="modal-bg" id="modal-fl">
-  <div class="modal">
-    <h3>Add Flight</h3>
-    <label>ICAO24</label>
-    <input id="m-fl-icao24" maxlength="6" placeholder="3c6752">
-    <label>Callsign</label>
-    <input id="m-fl-callsign" maxlength="10" placeholder="DLH400">
-    <label>Departure Airport (ICAO)</label>
-    <input id="m-fl-dep" maxlength="4" placeholder="EDDF">
-    <label>Arrival Airport (ICAO)</label>
-    <input id="m-fl-arr" maxlength="4" placeholder="KJFK">
-    <label>First Seen (UTC)</label>
-    <input id="m-fl-first" type="datetime-local">
-    <label>Last Seen (UTC)</label>
-    <input id="m-fl-last" type="datetime-local">
-    <div class="modal-actions">
-      <button class="fp-btn" onclick="closeModal('modal-fl')">Cancel</button>
-      <button class="fp-btn fp-btn--solid" onclick="saveFlight()">Add</button>
-    </div>
-  </div>
-</div>
-
-<div id="toast" class="toast" style="opacity:0"></div>
-
-<script>
-const PFX = '""" + ADMIN_PATH_PREFIX + """';
-const API = '/' + PFX + '/api';
-let flPage = 1;
-
-function $(id) { return document.getElementById(id); }
-
-function switchTab(tab) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  document.querySelector('.tab[onclick*="' + tab + '"]').classList.add('active');
-  $('tab-' + tab).classList.add('active');
-  if (tab === 'flights') loadFlights();
-}
-
-function toast(msg, ok) {
-  const t = $('toast');
-  t.textContent = msg;
-  t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
-  t.style.opacity = '1';
-  setTimeout(() => t.style.opacity = '0', 2500);
-}
-
-function debounce(fn, ms) {
-  let t;
-  return function() { clearTimeout(t); t = setTimeout(fn, ms); };
-}
-
-async function api(path, opts) {
-  const r = await fetch(API + path, opts);
-  const d = await r.json();
-  if (!r.ok) { toast(d.error || 'Error', false); return null; }
-  return d;
-}
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
-}
-
-// ── Aircraft ─────────────────────────────────────────────────
-
-async function loadAircraft() {
-  const p = new URLSearchParams();
-  const s = $('ac-search').value.trim();
-  if (s) p.set('search', s);
-  const t = $('ac-type').value;
-  if (t) p.set('type', t);
-  const st = $('ac-status').value;
-  if (st) p.set('status', st);
-  if ($('ac-review').classList.contains('on')) p.set('needs_review', 'true');
-
-  const d = await api('/aircraft?' + p);
-  if (!d) return;
-
-  // Populate type filter (only once)
-  const sel = $('ac-type');
-  if (sel.options.length <= 1) {
-    const types = [...new Set(d.aircraft.map(a => a.aircraft_type).filter(Boolean))].sort();
-    types.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; sel.appendChild(o); });
-  }
-
-  $('ac-count').textContent = d.aircraft.length + ' aircraft';
-  $('ac-body').innerHTML = d.aircraft.map(a => {
-    const cls = a.needs_review ? ' class="review"' : '';
-    const statusBadge = a.is_active
-      ? '<span class="fp-chip badge-active">Active</span>'
-      : '<span class="fp-chip badge-retired">Retired</span>';
-    const reviewBadge = a.needs_review
-      ? '<span class="fp-chip badge-review">Review</span>' : '';
-    return '<tr' + cls + '>' +
-      '<td>' + esc(a.icao24) + '</td>' +
-      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="registration" onblur="inlineEditAc(this)">' + esc(a.registration) + '</span></td>' +
-      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="aircraft_type" onblur="inlineEditAc(this)">' + esc(a.aircraft_type) + '</span></td>' +
-      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="aircraft_subtype" onblur="inlineEditAc(this)">' + esc(a.aircraft_subtype) + '</span></td>' +
-      '<td><span class="editable" contenteditable data-icao="' + esc(a.icao24) + '" data-field="airline_iata" onblur="inlineEditAc(this)">' + esc(a.airline_iata) + '</span></td>' +
-      '<td>' + statusBadge + '</td>' +
-      '<td>' + reviewBadge + '</td>' +
-      '<td class="actions">' +
-        (a.is_active
-          ? '<button class="fp-btn btn-sm" onclick="retireAc(\\'' + esc(a.icao24) + '\\')">Retire</button>'
-          : '<button class="fp-btn fp-btn--solid btn-sm" onclick="reactivateAc(\\'' + esc(a.icao24) + '\\')">Reactivate</button>') +
-        '<button class="fp-btn fp-btn--terra btn-sm" onclick="deleteAc(\\'' + esc(a.icao24) + '\\')">Del</button>' +
-        (a.needs_review
-          ? '<button class="fp-btn btn-sm" onclick="clearReviewAc(\\'' + esc(a.icao24) + '\\')">OK</button>'
-          : '') +
-      '</td></tr>';
-  }).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--muted)">No aircraft found</td></tr>';
-}
-
-async function inlineEditAc(el) {
-  const icao = el.dataset.icao;
-  const field = el.dataset.field;
-  const val = el.textContent.trim();
-  const d = await api('/aircraft/' + icao, {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({[field]: val})
-  });
-  if (d) toast('Updated ' + icao, true);
-}
-
-async function retireAc(icao) {
-  if (!confirm('Retire ' + icao + '?')) return;
-  const d = await api('/aircraft/' + icao + '/retire', { method: 'POST' });
-  if (d) { toast('Retired ' + icao, true); loadAircraft(); }
-}
-
-async function reactivateAc(icao) {
-  const d = await api('/aircraft/' + icao + '/reactivate', { method: 'POST' });
-  if (d) { toast('Reactivated ' + icao, true); loadAircraft(); }
-}
-
-async function deleteAc(icao) {
-  if (!confirm('Delete ' + icao + '? This cannot be undone.')) return;
-  const d = await api('/aircraft/' + icao, { method: 'DELETE' });
-  if (d) { toast('Deleted ' + icao, true); loadAircraft(); }
-}
-
-async function clearReviewAc(icao) {
-  const d = await api('/aircraft/' + icao, {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({needs_review: false})
-  });
-  if (d) { toast('Cleared review for ' + icao, true); loadAircraft(); }
-}
-
-function showAddAircraft() {
-  $('m-ac-icao24').value = '';
-  $('m-ac-reg').value = '';
-  $('m-ac-type').value = '';
-  $('m-ac-subtype').value = '';
-  $('m-ac-airline').value = 'LH';
-  $('modal-ac').classList.add('show');
-}
-
-async function saveAircraft() {
-  const body = {
-    icao24: $('m-ac-icao24').value,
-    registration: $('m-ac-reg').value,
-    aircraft_type: $('m-ac-type').value,
-    aircraft_subtype: $('m-ac-subtype').value,
-    airline_iata: $('m-ac-airline').value
-  };
-  const d = await api('/aircraft', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  });
-  if (d) { toast('Added aircraft', true); closeModal('modal-ac'); loadAircraft(); }
-}
-
-// ── Flights ──────────────────────────────────────────────────
-
-async function loadFlights() {
-  const p = new URLSearchParams();
-  const v = (id) => $(id).value.trim();
-  if (v('fl-icao24')) p.set('icao24', v('fl-icao24'));
-  if (v('fl-callsign')) p.set('callsign', v('fl-callsign'));
-  if (v('fl-dep')) p.set('dep', v('fl-dep'));
-  if (v('fl-arr')) p.set('arr', v('fl-arr'));
-  if (v('fl-from')) p.set('date_from', v('fl-from'));
-  if (v('fl-to')) p.set('date_to', v('fl-to'));
-  if ($('fl-review').classList.contains('on')) p.set('needs_review', 'true');
-  p.set('page', flPage);
-
-  const d = await api('/flights?' + p);
-  if (!d) return;
-
-  $('fl-body').innerHTML = d.flights.map(f => {
-    const cls = f.needs_review ? ' class="review"' : '';
-    const dur = f.duration_minutes != null ? Math.floor(f.duration_minutes/60) + 'h ' + (f.duration_minutes%60) + 'm' : '\\u2014';
-    const depTime = f.first_seen ? f.first_seen.slice(11,16) : '';
-    const arrTime = f.last_seen ? f.last_seen.slice(11,16) : '';
-    const reviewBadge = f.needs_review ? '<span class="fp-chip badge-review">Review</span>' : '';
-    return '<tr' + cls + '>' +
-      '<td>' + esc(f.flight_date) + '</td>' +
-      '<td>' + esc(f.icao24) + '</td>' +
-      '<td>' + esc(f.registration || '') + '</td>' +
-      '<td><span class="editable" contenteditable data-id="' + f.id + '" data-field="callsign" onblur="inlineEditFl(this)">' + esc(f.callsign) + '</span></td>' +
-      '<td><span class="editable" contenteditable data-id="' + f.id + '" data-field="departure_airport_icao" onblur="inlineEditFl(this)">' + esc(f.departure_airport_icao) + '</span></td>' +
-      '<td><span class="editable" contenteditable data-id="' + f.id + '" data-field="arrival_airport_icao" onblur="inlineEditFl(this)">' + esc(f.arrival_airport_icao) + '</span></td>' +
-      '<td>' + depTime + '</td>' +
-      '<td>' + arrTime + '</td>' +
-      '<td>' + dur + '</td>' +
-      '<td>' + reviewBadge + '</td>' +
-      '<td class="actions">' +
-        (f.needs_review ? '<button class="fp-btn btn-sm" onclick="clearReviewFl(' + f.id + ')">OK</button>' : '') +
-        '<button class="fp-btn fp-btn--terra btn-sm" onclick="deleteFl(' + f.id + ')">Del</button>' +
-      '</td></tr>';
-  }).join('') || '<tr><td colspan="11" style="text-align:center;color:var(--muted)">No flights found</td></tr>';
-
-  // Pagination
-  const pg = $('fl-pagination');
-  if (d.pages > 1) {
-    let html = '<button class="fp-btn btn-sm" onclick="flGo(' + (d.page-1) + ')" ' + (d.page<=1?'disabled':'') + '>&laquo;</button>';
-    html += '<span>Page ' + d.page + ' / ' + d.pages + ' (' + d.total + ' flights)</span>';
-    html += '<button class="fp-btn btn-sm" onclick="flGo(' + (d.page+1) + ')" ' + (d.page>=d.pages?'disabled':'') + '>&raquo;</button>';
-    pg.innerHTML = html;
-  } else {
-    pg.innerHTML = d.total ? '<span>' + d.total + ' flights</span>' : '';
-  }
-}
-
-function flGo(p) { flPage = Math.max(1, p); loadFlights(); }
-
-async function inlineEditFl(el) {
-  const id = el.dataset.id;
-  const field = el.dataset.field;
-  const val = el.textContent.trim();
-  const d = await api('/flights/' + id, {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({[field]: val || null})
-  });
-  if (d) toast('Updated flight #' + id, true);
-}
-
-async function clearReviewFl(id) {
-  const d = await api('/flights/' + id, {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({needs_review: false})
-  });
-  if (d) { toast('Cleared review', true); loadFlights(); }
-}
-
-async function deleteFl(id) {
-  if (!confirm('Delete flight #' + id + '?')) return;
-  const d = await api('/flights/' + id, { method: 'DELETE' });
-  if (d) { toast('Deleted', true); loadFlights(); }
-}
-
-function showAddFlight() {
-  $('m-fl-icao24').value = '';
-  $('m-fl-callsign').value = '';
-  $('m-fl-dep').value = '';
-  $('m-fl-arr').value = '';
-  $('m-fl-first').value = '';
-  $('m-fl-last').value = '';
-  $('modal-fl').classList.add('show');
-}
-
-async function saveFlight() {
-  const first = $('m-fl-first').value;
-  const last = $('m-fl-last').value;
-  const body = {
-    icao24: $('m-fl-icao24').value,
-    callsign: $('m-fl-callsign').value,
-    departure_airport_icao: $('m-fl-dep').value,
-    arrival_airport_icao: $('m-fl-arr').value,
-    first_seen: first ? first + ':00Z' : '',
-    last_seen: last ? last + ':00Z' : ''
-  };
-  const d = await api('/flights', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  });
-  if (d) { toast('Added flight', true); closeModal('modal-fl'); loadFlights(); }
-}
-
-function closeModal(id) { $(id).classList.remove('show'); }
-
-// Close modals on backdrop click
-document.querySelectorAll('.modal-bg').forEach(bg => {
-  bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('show'); });
-});
-
-// wire the square "review" toggles (replace the old native-checkbox onchange)
-function wireReview(id, cb){
-  const el = $(id); if(!el) return;
-  const t = ()=>{ const on=el.classList.toggle('on'); el.setAttribute('aria-checked', on?'true':'false'); cb(); };
-  el.addEventListener('click', t);
-  el.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); t(); } });
-}
-wireReview('ac-review', loadAircraft);
-wireReview('fl-review', loadFlights);
-
-// Init
-loadAircraft();
-</script>
-<footer style="text-align:center;padding:var(--fp-space-4) 0 var(--fp-space-2);font-size:var(--fp-text-xs);color:var(--muted)">
-  <a href="/impressum" style="color:var(--muted);text-decoration:none">Impressum</a>
-  <span style="margin:0 var(--fp-space-2)">&middot;</span>
-  <a href="/datenschutz" style="color:var(--muted);text-decoration:none">Datenschutz</a>
-</footer>
-</body>
-</html>"""
-    )
+    <p id="toast" class="toast" style="opacity:0"></p>""".replace("{{prefix}}", ADMIN_PATH_PREFIX),
+    }
 
     @app.route(f"{_pfx}/")
     def admin_page():
-        return render_template_string(_ADMIN_HTML)
+        return chassis.page(**_ADMIN)
 
 
 # ── Upcoming schedule (Lufthansa FIS observations) ─────────────────
@@ -3156,11 +2441,6 @@ def api_airframe_photo(reg):
     return jsonify(out)
 
 
-@app.route("/airframe/<reg>")
-def airframe_page(reg):
-    return render_template_string(_AIRFRAME_HTML)
-
-
 # Airport pickers on /book suggest from this: every dep/arr airport seen in
 # recent FIS payloads, with the city name FIS itself publishes (ICN → "Seoul").
 # Derived at read time from raw, so the list tracks the collected network
@@ -4348,1501 +3628,211 @@ def api_insights():
                                       datetime.now(timezone.utc)))
 
 
-_SCHEDULE_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Upcoming Schedule | LH Fleet</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/schedule.css">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1>Upcoming <span>Schedule</span></h1>
-        <div class="fp-label model">SCHED &middot; Airframe Rotation</div>
+_SCHEDULE = {
+    "title": "Schedule | LH Fleet",
+    "current": "/schedule",
+    "styles": ("schedule.css",),
+    "scripts": ("page.js", "flight.js", "schedule.js"),
+    # One chart is the page, so its section carries no index and no title, and
+    # its filters stand in the lead; the type squares are legend and control.
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label">
+        <p class="fp-label">SCHED &middot; Airframe rotation</p>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display">Schedule</h1>
+        <div id="state"><p class="fp-status state state--wait">Loading</p></div>
+        <div class="filters" id="filters" hidden>
+          <input class="input" id="filter" type="search" placeholder="Tail, airport or flight, e.g. HND" aria-label="Filter by tail, airport or flight">
+          <div class="tchks" role="group" aria-label="Types shown">
+            <span id="typechk"></span>
+            <span class="tchk off" id="allegchk" role="checkbox" aria-checked="false" tabindex="0" title="Show only airframes with the Allegris cabin"><span class="abadge">A</span>Allegris only</span>
+          </div>
+        </div>
       </div>
-    </div>
-    <nav class="nav">
-      <a class="nav-link" href="/book">Book</a>
-      <a class="nav-link" href="/insights">Insights</a>
-      <a class="nav-link" href="/fleet">Fleet DB</a>
-      <a class="nav-link" href="/">&larr; Monitor</a>
-    </nav>
-  </div>
-    <div class="meta" id="meta">Loading planned airframe rotations…</div>
-  <div class="controls">
-    <input id="filter" type="text" placeholder="Filter: tail, airport or flight (e.g. HND, D-ABYN, 716)">
-  </div>
-  <div class="legend legend--filter">
-    <div class="legrp"><span class="leglbl">Filter</span><div class="items">
-      <span id="typechk" style="display:contents"></span>
-      <span class="tchk" id="allegchk" role="checkbox" aria-checked="false" tabindex="0" title="Show only airframes with the Allegris cabin"><span class="abadge">A</span>Allegris only</span>
-    </div></div>
-  </div>
-  <div class="gantt"><div class="gantt-inner" id="gantt"><div class="empty">Loading…</div></div></div>
-  <div class="legend legend--key">
-    <div class="legrp"><span class="leglbl">Bars</span><div class="items">
-      <span><span class="sw" style="background:var(--accent)"></span>flew as planned</span>
-      <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--accent) 0 4px,var(--fp-surface) 4px 7px)"></span>unplanned</span>
-      <span><span class="sw" style="background:var(--fp-bg);border:var(--fp-keyline) solid var(--accent)"></span>planned (future)</span>
-      <span><span class="sw" style="background:var(--fp-bg);border:var(--fp-hairline) dashed var(--line)"></span>planned slot</span>
-    </div></div>
-    <div class="legrp"><span class="leglbl">Marks</span><div class="items">
-      <span><span class="sw" style="background:linear-gradient(90deg,var(--fp-bg) 0 58%,var(--fp-dv-6) 58% 100%);border:var(--fp-keyline) solid var(--accent)"></span>swap</span>
-      <span><span class="star" style="color:var(--fp-ink)">&#9733;</span>your tails</span>
-    </div></div>
-  </div>
-  <div class="meta" style="margin-top:var(--fp-space-2)">Times in Frankfurt local; bar length = real flight duration. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. Your tails (the ones you planned on <a href="/book">Catch a Tail</a>, remembered in this browser) are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out &amp; back legs across the time it&rsquo;s <b>parked away from base</b>. Click a leg for details; click a tail to open it in the Fleet&nbsp;DB.</div>
-</div>
-<div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
-<footer>
-  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
-</footer>
-<script>
-const $ = id => document.getElementById(id);
-// The tails this visitor planned on /book (browser storage, no accounts).
-function myTargets(){
-  try { const v = JSON.parse(localStorage.getItem('lh.targets') || '[]'); return new Set(Array.isArray(v) ? v : []); }
-  catch(e){ return new Set(); }
-}
-function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
-  return d.toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
-// hue per family (variants share it; the badge text names the exact variant)
-const TFAM={'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'};
-function tcls(t){ return TFAM[t] || 'tother'; }
-const TYPE_ORDER=['748','388','788','789','78X','359','35K'];   // fixed checkbox/legend order
-const HIDE_KEY='sched.hiddenTypes';
-const ALLEG_KEY='sched.allegrisOnly';
-const HUBS=['FRA','MUC'];                       // German bases these widebodies rotate from
-function legDisplay(dep,arr){                   // destination-led label: arrow + the non-hub endpoint
-  const dh=HUBS.includes(dep), ah=HUBS.includes(arr);
-  if(dh&&!ah) return {arrow:'\\u2192', stn:arr};
-  if(!dh&&ah) return {arrow:'\\u2190', stn:dep};
-  return {arrow:'\\u2192', stn:arr||dep||'?'};
-}
-const legByKey={};                              // num|fdate -> leg, so the modal can show the actual track
-
-async function init(){
-  let d;
-  try { d = await (await fetch('/api/schedule')).json(); }
-  catch(e){ $('gantt').innerHTML='<div class="empty">Failed to load schedule.</div>'; return; }
-  if(d.error){ $('gantt').innerHTML='<div class="empty">'+d.error+'</div>'; return; }
-  if(!d.airframes || !d.airframes.length){ $('gantt').innerHTML='<div class="empty">No upcoming schedule data yet — the nightly collector has not populated future flights.</div>'; $('meta').textContent=''; return; }
-  // starred + pinned = the visitor's own tails (planned on /book, kept in this browser)
-  const MINE = myTargets(), TORD = {'748':0,'388':1,'788':2,'789':3,'78X':4,'359':5,'35K':6};
-  d.airframes.forEach(a => { a.watch = MINE.has(a.reg); });
-  d.airframes.sort((x,y) => (y.watch - x.watch) || ((x.type in TORD ? TORD[x.type] : 9) - (y.type in TORD ? TORD[y.type] : 9)) || x.reg.localeCompare(y.reg));
-
-  const t0=new Date(d.window.start).getTime(), t1=new Date(d.window.end).getTime();
-  const range=t1-t0, dayMs=86400000;
-  const frac = ms => (ms - t0)/range;                        // 0..1 across the time area
-  const oLeft = f => 'calc(122px + (100% - 122px) * '+f+')'; // overlay coord (rows incl. label)
-  const dayName = ms => new Date(ms).toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'});
-
-  // midnight ticks (fake-UTC midnights are epoch multiples of a day)
-  const ticks=[]; for(let m=Math.ceil(t0/dayMs)*dayMs; m<t1; m+=dayMs) ticks.push(m);
-
-  // axis: day labels at the left edge + each midnight. Drop the partial first-day
-  // label when the first midnight is so close to the left edge that the two would
-  // overlap (e.g. when "now-24h" lands late in the day) — that day is still named by
-  // the midnight tick just to its right.
-  let html='<div class="gantt-axis-row"><div class="gantt-label"></div><div class="gantt-axis">';
-  const firstTickPct = ticks.length ? frac(ticks[0])*100 : 100;
-  if(firstTickPct >= 8)
-    html+='<span class="gantt-day" style="left:0;border-left:none">'+dayName(t0)+'</span>';
-  ticks.forEach(m=>{ html+='<span class="gantt-day" style="left:'+(frac(m)*100)+'%">'+dayName(m)+'</span>'; });
-  html+='</div></div>';
-
-  // one overlay across all rows: midnight gridlines + the single now line
-  let overlay='<div class="gantt-grid">';
-  ticks.forEach(m=>{ overlay+='<div class="grid-line" style="left:'+oLeft(frac(m))+'"></div>'; });
-  if(d.now!=null){ const nf=frac(new Date(d.now).getTime());
-    if(nf>=0&&nf<=1) overlay+='<div class="now-line" style="left:'+oLeft(nf)+'"></div>'; }
-  overlay+='</div>';
-  html+='<div class="gantt-rows">'+overlay;
-
-  d.airframes.forEach(a=>{
-    const tc=tcls(a.type);
-    const lblInner=(a.watch?'<span class="star">\\u2605</span>':'')+a.reg+'<span class="tbadge '+tc+'">'+a.type+'</span>'
-      +(a.allegris?'<span class="abadge" title="Allegris cabin">A</span>':'');
-    html+='<div class="gantt-row'+(a.watch?' watch':'')+'" data-reg="'+a.reg+'" data-type="'+a.type+'" data-allegris="'+(a.allegris?'1':'0')+'" data-dests="'+a.legs.map(l=>l.dep+' '+l.arr).join(' ')+'" data-fls="'+a.legs.map(l=>l.fl).join(' ')+'">';
-    html+='<a class="gantt-label" href="/airframe/'+encodeURIComponent(a.reg)+'" title="'+a.reg
-      +(a.cabin?' \u00b7 '+a.cabin:'')+' \u2014 open airframe profile">'+lblInner+'</a>';
-    html+='<div class="gantt-track">';
-
-    // rotation ties ("stays"): consecutive legs where the tail sits at an outstation (out & back)
-    a.legs.forEach((l,i)=>{
-      const n=a.legs[i+1]; if(!n) return;
-      if(l.arr && n.dep && l.arr===n.dep && !HUBS.includes(l.arr)){
-        const ge=new Date(l.end).getTime(), gs=new Date(n.start).getTime();
-        let gl=Math.max(0,Math.min(100,(ge-t0)/range*100)), gr=Math.max(0,Math.min(100,(gs-t0)/range*100));
-        if(gr-gl>0.3){
-          const hrs=Math.max(0,Math.round((gs-ge)/3600000));
-          const tip=a.reg+' parked at '+l.arr+'\\nturnaround '+hrs+'h'
-            +'\\n'+(l.fl||'?')+' \\u2192 '+(n.fl||'?')
-            +'\\non ground '+fmt(l.end)+' \\u2192 '+fmt(n.start);
-          html+='<div class="tie '+tc+'" style="left:'+gl+'%;width:'+(gr-gl)+'%" title="'+tip.replace(/"/g,'&quot;')+'">'
-            +(hrs>=10?'<span class="tielab">@'+l.arr+' '+hrs+'H</span>':'')+'</div>';   // short stays: line only, label in tooltip
-        }
-      }
-    });
-
-    a.legs.forEach(l=>{
-      const s=new Date(l.start).getTime(), e=new Date(l.end).getTime();
-      // clip to the visible window: keep the true end position, cut the start at the edge
-      const left=Math.max(0,(s-t0)/range*100), right=Math.min(100,(e-t0)/range*100);
-      const width=Math.max(0.5,right-left);
-      const dur=l.dur?(Math.floor(l.dur/60)+'h'+String(l.dur%60).padStart(2,'0')):'';
-      const st=l.status||'planned';
-      // hue = aircraft type; status = a presentation class (cap / texture / tint), never a text-colour swap
-      const stCls = st==='tracked'?'st-tracked' : st==='missing'?'st-missing'
-        : st==='deviation'?'st-ghost' : st==='extra'?'st-extra' : 'st-planned';
-      const dsp=legDisplay(l.dep,l.arr), flnum=(l.fl||'').replace('LH','');
-      let title;
-      if(st==='extra'){
-        title=(l.fl||'actual')+'  '+l.dep+' \\u2192 '+l.arr+'\\n\\u2713 recorded (ADS-B) \\u00b7 no matching plan'
-          +'\\n'+fmt(l.start)+' \\u2192 '+fmt(l.end);
-      } else {
-        title=l.fl+'  '+l.dep+' \\u2192 '+l.arr+(l.nseg>1?'  (leg '+l.seg+' of '+l.route.join('\\u2013')+')':'')
-          +'\\nDep '+fmt(l.dep_t)+' ('+l.dep+')'+(l.arr_t?'\\nArr '+fmt(l.arr_t)+' ('+l.arr+')':'')
-          +(dur?'\\nFlight '+dur:'')+'  \\u00b7  '+a.type
-          +(l.prev?'\\nprev: '+l.prev:'')+(l.lead!=null?'\\nlead: +'+l.lead+'d':'')+(l.swap?'  \\u00b7  \\u26a0 reassigned':'');
-        if(st==='deviation' && l.act){
-          title+='\\n\\u26a0 planned slot \\u2014 tail actually flew '+l.act.dep+'\\u2192'+l.act.arr;
-        } else if(st==='tracked' && l.act){
-          const dm=l.act.delta, ds=(dm>0?'+':'')+dm+'m';
-          title+='\\n\\u2713 tracked: '+l.act.dep+'\\u2192'+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')+'  ['+ds+' vs plan]';
-        } else if(st==='missing'){ title+='\\n\\u2014 no ADS-B track found yet'; }
-      }
-      if(l.num && l.fdate) legByKey[l.num+'|'+l.fdate+'|'+(l.seg||1)]=l;   // remember for the enriched modal
-      // unplanned "extra" legs have no flight number → carry the actual track on data-* for openActual()
-      const actAttrs = st==='extra'
-        ? ' data-cs="'+(l.fl||'')+'" data-dep="'+l.dep+'" data-arr="'+l.arr+'" data-start="'+l.start+'" data-end="'+l.end+'"'
-        : '';
-      html+='<div class="gantt-flight '+tc+' '+stCls+(l.swap?' is-swap':'')+' clk" style="left:'+left+'%;width:'+width+'%"'
-        +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+(l.fl||'')+'" data-num="'+(l.num||'')+'" data-fdate="'+(l.fdate||'')+'" data-seg="'+(l.seg||1)+'"'+actAttrs
-        +' title="'+title.replace(/"/g,'&quot;')+'">'
-        +(l.swap?'<span class="swapchip">SWAP</span>':'')
-        +'<span class="lbl">'+dsp.arrow+' '+dsp.stn+(flnum?'<span class="fl">'+flnum+'</span>':'')+'</span></div>';
-      // deviation: also draw the ACTUAL route the tail really flew (clickable → actual detail)
-      if(st==='deviation' && l.act){
-        const as=new Date(l.act.start).getTime(), ae=new Date(l.act.end).getTime();
-        const al=Math.max(0,(as-t0)/range*100), ar=Math.min(100,(ae-t0)/range*100);
-        const aw=Math.max(0.5,ar-al), ad=legDisplay(l.act.dep,l.act.arr);
-        const at=a.reg+' actually flew\\n'+l.act.dep+' \\u2192 '+l.act.arr+(l.act.cs?' ('+l.act.cs+')':'')
-          +'\\n'+fmt(l.act.start)+' \\u2192 '+fmt(l.act.end)+'\\n(planned '+l.fl+' '+l.dep+'\\u2192'+l.arr+')';
-        html+='<div class="gantt-flight '+tc+' st-actual clk" style="left:'+al+'%;width:'+aw+'%"'
-          +' data-cs="'+(l.act.cs||'')+'" data-dep="'+l.act.dep+'" data-arr="'+l.act.arr+'" data-start="'+l.act.start+'" data-end="'+l.act.end+'"'
-          +' data-planfl="'+(l.fl||'')+'" data-plandep="'+l.dep+'" data-planarr="'+l.arr+'"'
-          +' title="'+at.replace(/"/g,'&quot;')+'">'
-          +'<span class="lbl">'+ad.arrow+' '+ad.stn+'</span></div>';
-      }
-    });
-    html+='</div></div>';
-  });
-  html+='</div>';
-  $('gantt').innerHTML=html;
-  const sw=d.swaps?(' \\u00b7 '+d.swaps+' reassignment'+(d.swaps>1?'s':'')):'';
-  $('meta').textContent=d.airframes.length+' airframes \\u00b7 last 24h + plan \\u00b7 updated '
-    +new Date(d.generated).toLocaleString('en-GB',{timeZone:'UTC',hour12:false})+' UTC'+sw;
-
-  // type checkboxes — the type legend and the visibility control in one.
-  // Hiding a type hides its rows EXCEPT watched (starred) tails; persisted.
-  const present=[...new Set(d.airframes.map(a=>a.type))];
-  const types=TYPE_ORDER.filter(t=>present.includes(t))
-    .concat(present.filter(t=>!TYPE_ORDER.includes(t)).sort());
-  let hidden;
-  try { hidden=new Set(JSON.parse(localStorage.getItem(HIDE_KEY)||'[]')); } catch(e){ hidden=new Set(); }
-  $('typechk').innerHTML=types.map(t=>
-    '<span class="tchk'+(hidden.has(t)?' off':'')+'" data-t="'+t+'" role="checkbox" aria-checked="'+(hidden.has(t)?'false':'true')+'" tabindex="0" title="Show/hide '+t+' rows (watched tails stay visible)">'
-    +'<span class="sw '+tcls(t)+'"></span>'+t+'</span>').join('');
-  // "Allegris only" is strict on purpose (no watched-tail exemption): it's an
-  // explicit cabin lens, not a row-decluttering toggle like the type boxes.
-  let allegOnly=false;
-  try { allegOnly = localStorage.getItem(ALLEG_KEY)==='1'; } catch(e){}
-  $('allegchk').classList.toggle('off', !allegOnly);
-  $('allegchk').setAttribute('aria-checked', allegOnly?'true':'false');
-  const applyTypes=()=>{
-    document.querySelectorAll('.gantt-row[data-type]').forEach(r=>{
-      const typeHide = hidden.has(r.dataset.type) && !r.classList.contains('watch');
-      r.classList.toggle('typehide', typeHide || (allegOnly && r.dataset.allegris!=='1'));
-    });
-  };
-  const toggleType=el=>{
-    const t=el.dataset.t; if(!t) return;
-    if(hidden.has(t)) hidden.delete(t); else hidden.add(t);
-    const off=hidden.has(t);
-    el.classList.toggle('off', off);
-    el.setAttribute('aria-checked', off?'false':'true');
-    try { localStorage.setItem(HIDE_KEY, JSON.stringify([...hidden])); } catch(err){}
-    applyTypes();
-  };
-  $('typechk').addEventListener('click', e=>{ const el=e.target.closest('.tchk'); if(el) toggleType(el); });
-  $('typechk').addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ const el=e.target.closest('.tchk'); if(el){ e.preventDefault(); toggleType(el); } } });
-  const toggleAlleg=()=>{
-    allegOnly=!allegOnly;
-    $('allegchk').classList.toggle('off', !allegOnly);
-    $('allegchk').setAttribute('aria-checked', allegOnly?'true':'false');
-    try { localStorage.setItem(ALLEG_KEY, allegOnly?'1':'0'); } catch(err){}
-    applyTypes();
-  };
-  $('allegchk').addEventListener('click', toggleAlleg);
-  $('allegchk').addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleAlleg(); } });
-  applyTypes();
-}
-
-$('filter').addEventListener('input', e=>{
-  const q=e.target.value.trim().toUpperCase();
-  document.querySelectorAll('.gantt-row').forEach(row=>{
-    if(!q){ row.classList.remove('dim'); row.querySelectorAll('.gantt-flight').forEach(f=>f.classList.remove('dim')); return; }
-    const regMatch=(row.dataset.reg||'').toUpperCase().includes(q);
-    let any=regMatch;
-    row.querySelectorAll('.gantt-flight').forEach(f=>{
-      const hit=regMatch || (f.dataset.dest||'').toUpperCase().includes(q) || (f.dataset.fl||'').toUpperCase().includes(q);
-      f.classList.toggle('dim', !hit); if(hit) any=true;
-    });
-    row.classList.toggle('dim', !any);
-  });
-});
-
-/* ── Flight detail modal ──────────────────────────────── */
-function row(k,v){ return '<span class="k">'+k+'</span><span class="v">'+v+'</span>'; }
-function confChip(hold, reg){
-  if(!hold) return '';
-  const p=Math.round(hold.p*100);
-  const cls=p>=85?'cg':(p>=60?'ca':'cr');
-  const label=p>=85?'likely to hold':(p>=60?'could still change':'often changes');
-  const basis=hold.basis==='route'?'this route':(hold.basis==='type'?'this aircraft type':'all tracked flights');
-  return '<div class="conf-chip '+cls+'"><span class="cp">'+p+'%</span><span class="ct">'
-    +'chance it stays <b>'+(reg||'this tail')+'</b> &middot; '+label
-    +'<br><span class="cn">'+hold.lead+'d before departure &middot; based on '+basis+' (n='+hold.n+')</span>'
-    +'</span></div>';
-}
-function fmtD(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'}); }
-function isoDur(s){ if(!s) return ''; const m=s.match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/); if(!m) return ''; return (m[1]?m[1]+'h':'')+(m[2]?String(m[2]).padStart(2,'0')+'m':''); }
-function closeFl(){ $('fl-modal').classList.remove('show'); }
-function openFlight(num,fdate,seg){
-  const leg=legByKey[num+'|'+fdate+'|'+(seg||1)]||null;   // already-loaded leg carries the ADS-B actual
-  const b=$('fl-modal-body'); b.innerHTML='<div class="empty">Loading\\u2026</div>'; $('fl-modal').classList.add('show');
-  fetch('/api/schedule/flight/LH/'+num+'/'+fdate).then(r=>r.json()).then(d=>renderFlight(d,leg))
-    .catch(()=>{ b.innerHTML='<button class="close" onclick="closeFl()">\\u00d7</button><div class="empty">Failed to load.</div>'; });
-}
-function actualBlock(leg){   // plan-vs-actual section for a leg whose departure is in the past
-  if(!leg || !['tracked','deviation','missing'].includes(leg.status)) return '';
-  let h='<div class="hist-title">Actual track (ADS-B)</div>';
-  if(leg.act){
-    const dm=leg.act.delta, ds=(dm>0?'+':'')+dm+'m', dev=leg.status==='deviation';
-    h+='<div class="det-grid">';
-    h+=row('Flew', leg.act.dep+' \\u2192 '+leg.act.arr+(leg.act.cs?'  \\u00b7  '+leg.act.cs:''));
-    h+=row('Off / On', fmt(leg.act.start)+' \\u2192 '+fmt(leg.act.end));
-    h+=row('vs plan', ds+(dev?'  \\u00b7  \\u26a0 deviation from '+leg.dep+'\\u2192'+leg.arr:'  \\u00b7  on planned route'));
-    h+='</div>';
-  } else { h+='<div class="sub">\\u2014 no ADS-B track found yet for this leg.</div>'; }
-  return h;
-}
-function openActual(ds){   // detail for a recorded (ADS-B) leg with no FIS plan
-  const b=$('fl-modal-body'); $('fl-modal').classList.add('show');
-  let h='<button class="close" onclick="closeFl()">\\u00d7</button>';
-  h+='<h3>'+(ds.cs||'Recorded flight')+(ds.dep?'  \\u00b7  '+ds.dep+'\\u2192'+ds.arr:'')+'</h3>';
-  h+='<div class="sub">'+(ds.planfl?'Deviation \\u2014 the tail flew this instead of its plan':'Unplanned \\u2014 recorded ADS-B track, no matching plan')+'</div>';
-  h+='<div class="det-grid">';
-  if(ds.cs) h+=row('Callsign', ds.cs);
-  h+=row('Route', (ds.dep||'?')+' \\u2192 '+(ds.arr||'?'));
-  h+=row('Off blocks', fmt(ds.start));
-  h+=row('On blocks', fmt(ds.end));
-  const mins=Math.round((new Date(ds.end)-new Date(ds.start))/60000);
-  if(mins>0) h+=row('Duration', Math.floor(mins/60)+'h'+String(mins%60).padStart(2,'0'));
-  if(ds.planfl) h+=row('Planned', ds.planfl+'  '+ds.plandep+'\\u2192'+ds.planarr);
-  h+='</div>';
-  b.innerHTML=h;
-}
-function renderFlight(d,leg){
-  const b=$('fl-modal-body');
-  let h='<button class="close" onclick="closeFl()">\\u00d7</button>';
-  if(d.error){ b.innerHTML=h+'<div class="empty">'+d.error+'</div>'; return; }
-  h+='<h3>'+d.flight+(d.dep_iata?'  \\u00b7  '+[d.dep_iata].concat(d.via||[],[d.arr_iata]).join('\\u2192'):'')+'</h3>';
-  h+='<div class="sub">'+[d.dep_name,d.arr_name].filter(Boolean).join(' \\u2192 ')+'  \\u00b7  '+fmtD(d.flight_date)+'</div>';
-  if(d.reassigned){ h+='<div class="reassign-banner">\\u26a0 Reassigned \\u2014 originally <b>'+(d.original_reg||'?')+'</b>, now <b>'+(d.current_reg||'?')+'</b></div>'; }
-  h+=confChip(d.hold, d.current_reg);
-  if(d.found){
-    const dur=isoDur(d.duration);
-    h+='<div class="det-grid">';
-    h+=row('Aircraft',(d.current_reg||'?')+(d.current_type?' \\u00b7 '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
-    if(d.seat_map){ const sc=String(d.seat_map.code||'').replace(/[^A-Za-z0-9]/g,'');
-      h+=row('Seat map','<a href="'+d.seat_map.url+'" target="_blank" rel="noopener">'+(d.seat_map.exact?sc+' on aeroLOPA':'aeroLOPA (Lufthansa)')+' \\u2192</a>'); }
-    if(d.cabin){
-      const cb=[]; if(d.cabin.F)cb.push('<b>First '+d.cabin.F+'</b>'); if(d.cabin.C)cb.push('Business '+d.cabin.C);
-      if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
-      h+=row('Cabin',cb.join(' \\u00b7 '));
-    }
-    if(d.legs&&d.legs.length>1){   // a flight of several legs: each with its own (local) times
-      d.legs.forEach((g,i)=>{ const gd=isoDur(g.duration);
-        h+=row('Leg '+(i+1)+' '+g.dep+'\\u2192'+g.arr, fmt(g.dep_sched)+' \\u2192 '+fmt(g.arr_sched)
-          +(gd?' \\u00b7 '+gd:'')+(g.dep_gate?' \\u00b7 Gate '+g.dep_gate:'')); });
-    } else {
-      h+=row('Departure',fmt(d.dep_sched)+(d.dep_term?' \\u00b7 T'+d.dep_term:'')+(d.dep_gate?' \\u00b7 Gate '+d.dep_gate:''));
-      h+=row('Arrival',fmt(d.arr_sched)+(d.arr_term?' \\u00b7 T'+d.arr_term:'')+(d.arr_gate?' \\u00b7 Gate '+d.arr_gate:''));
-      if(dur) h+=row('Flight time',dur);
-    }
-    if(d.status) h+=row('Status',d.status);
-    if(d.codeshares&&d.codeshares.length) h+=row('Codeshare',d.codeshares.join(', '));
-    if(d.prev) h+=row('Previous leg',d.prev+(d.prev_date?' ('+fmtD(d.prev_date)+')':''));
-    h+='</div>';
-  } else { h+='<div class="sub">No current assignment for this date.</div>'; }
-  h+=actualBlock(leg);
-  if(d.history&&d.history.length){
-    h+='<div class="hist-title">Assignment history</div>';
-    let pr=null;
-    d.history.forEach((x,i)=>{
-      const ch = pr!==null && x.reg!==pr;
-      const tags=[]; if(i===0) tags.push('originally planned'); if(i===d.history.length-1) tags.push('current');
-      h+='<div class="hist-row'+(ch?' changed':'')+'"><span class="obs">'+fmtD(x.observed)+'</span>'
-        +'<span class="reg">'+(x.reg||'\\u2014')+'</span>'+(x.allegris?'<span class="abadge" title="Allegris cabin">A</span>':'')+'<span class="tag">'
-        +[x.type,tags.join(' \\u00b7 ')].filter(Boolean).join('  \\u00b7  ')+'</span></div>';
-      pr=x.reg;
-    });
-  }
-  b.innerHTML=h;
-}
-$('gantt').addEventListener('click', e=>{ const f=e.target.closest('.gantt-flight'); if(!f) return;
-  if(f.dataset.num) openFlight(f.dataset.num, f.dataset.fdate, f.dataset.seg);
-  else if(f.dataset.dep) openActual(f.dataset); });
-$('fl-modal').addEventListener('click', e=>{ if(e.target.id==='fl-modal') closeFl(); });
-document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeFl(); });
-
-init();
-</script>
-</body>
-</html>"""
-
-
-@app.route("/schedule")
-def schedule():
-    return render_template_string(_SCHEDULE_HTML)
-
-
-_BOOK_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Catch a Tail | LH Fleet</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/book.css">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1>Catch a <span>Tail</span></h1>
-        <div class="fp-label model">BOOK &middot; Airframe Finder</div>
+    </section>
+    <section class="fp-sec sec--wide" id="rotation" aria-label="Rotation" hidden>
+      <div class="fp-sec__body">
+        <div class="gantt fp-reg"><div class="gantt-scroll"><div class="gantt-inner" id="gantt"></div></div></div>
+        <div class="key">
+          <div><b>Bars</b>
+            <span><i class="k-flown"></i>flew as planned</span>
+            <span><i class="k-extra"></i>unplanned</span>
+            <span><i class="k-plan"></i>planned</span>
+            <span><i class="k-slot"></i>planned slot</span>
+          </div>
+          <div><b>Marks</b>
+            <span><i class="k-swap"></i>swap</span>
+            <span>&#9733; your tails</span>
+          </div>
+        </div>
+        <details class="fold">
+          <summary class="fold__sum">How to read this</summary>
+          <p class="aside">Times in Frankfurt local; a bar is as long as the flight. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. A grey strip at the end of a bar marks a leg whose tail was <b>swapped</b>. Your tails (the ones you planned on <a class="tail-link" href="/book">Catch a Tail</a>, remembered in this browser) are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out and back legs across the time it is <b>parked away from base</b>. Click a leg for details; click a tail for its airframe page.</p>
+        </details>
       </div>
-    </div>
-    <nav class="nav">
-      <a class="nav-link" href="/schedule">Schedule</a>
-      <a class="nav-link" href="/insights">Insights</a>
-      <a class="nav-link" href="/fleet">Fleet DB</a>
-      <a class="nav-link" href="/">&larr; Monitor</a>
-    </nav>
-  </div>
-    <div class="meta"><b>Plan</b> ranks every flight in your dates by the chance <b>your</b> airframe operates it &mdash; from the published tail up to ~4 days out, from history beyond. Or look up what flies by <b>tail</b>, <b>route</b> or <b>location</b>.</div>
-  <div class="fp-seg">
-    <button id="m-plan" class="active" onclick="setMode('plan')">Plan</button>
-    <button id="m-tail" onclick="setMode('tail')">By tail</button>
-    <button id="m-route" onclick="setMode('route')">By route</button>
-    <button id="m-map" onclick="setMode('map')">By location</button>
-  </div>
-  <div class="searchbar">
-    <input id="plan-in" type="text" placeholder="your tail, e.g. D-ABYN" list="targets" autocomplete="off">
-    <datalist id="targets"></datalist>
-    <input id="tail-in" type="text" placeholder="registration, e.g. D-ABYN" style="display:none">
-    <div class="tokbox" id="dep-box">
-      <span class="boxlbl">from</span>
-      <input id="dep-in" type="text" placeholder="add airport, e.g. FRA" autocomplete="off">
-      <div class="sugg" id="dep-sugg"></div>
-    </div>
-    <div class="tokbox" id="arr-box">
-      <span class="boxlbl">to</span>
-      <input id="arr-in" type="text" placeholder="add airport, e.g. HND" autocomplete="off">
-      <div class="sugg" id="arr-sugg"></div>
-    </div>
-    <div class="datebox" id="date-box">
-      <span class="boxlbl">dates</span>
-      <input id="plan-from" type="date" aria-label="first date">
-      <span class="dsep">&ndash;</span>
-      <input id="plan-to" type="date" aria-label="last date">
-    </div>
-    <button class="fp-btn fp-btn--solid" id="search-btn" onclick="search()">Search</button>
-    <button class="fp-btn" id="filter-btn" onclick="toggleFilters()" style="display:none">Filters</button>
-  </div>
-  <div class="mapwrap" id="mapwrap">
-    <div class="maphead">
-      <div class="fp-seg" id="map-layer"><button type="button" data-v="up" class="active">Upcoming</button><button type="button" data-v="net">Network</button></div>
-      <input id="map-tail" type="text" placeholder="only one tail, e.g. D-ABYN" list="targets" autocomplete="off" aria-label="show one tail only">
-      <span class="t" id="map-hint">Click an airport to see what departs</span>
-      <span class="pick" id="map-pick"></span>
-      <span class="t" id="map-count" style="margin-left:auto"></span>
-    </div>
-    <svg class="mapsvg" id="mapsvg" role="group"
-         aria-label="World map of airports with upcoming Lufthansa departures"></svg>
-    <div class="mapctl">
-      <button type="button" id="map-in" aria-label="Zoom in" title="Zoom in">+</button>
-      <button type="button" id="map-out" aria-label="Zoom out" title="Zoom out">&minus;</button>
-      <button type="button" class="sm" id="map-fit" aria-label="Reset view" title="Reset view">FIT</button>
-    </div>
-    <div class="maptip" id="maptip"></div>
-    <div class="mapnote" id="mapnote" style="display:none"></div>
-  </div>
-  <div class="filterbar" id="filterbar">
-    <span class="flabel">Type</span>
-    <span class="fchk" data-fam="747" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t748"></span>747-8</span>
-    <span class="fchk" data-fam="A380" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t388"></span>A380</span>
-    <span class="fchk" data-fam="787" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t789"></span>787</span>
-    <span class="fchk" data-fam="A350" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t359"></span>A350</span>
-    <span class="fsep"></span>
-    <span class="flabel">Allegris</span>
-    <div class="fp-seg" id="f-alleg"><button class="active" data-v="any">any</button><button data-v="yes">yes</button><button data-v="no">no</button></div>
-    <span class="fsep"></span>
-    <span class="flabel">First class</span>
-    <div class="fp-seg" id="f-first"><button class="active" data-v="any">any</button><button data-v="yes">yes</button><button data-v="no">no</button></div>
-    <span class="fsep"></span>
-    <button class="fp-btn" id="f-reset">Reset</button>
-  </div>
-  <div class="hint" id="hint"><span id="hint-lead">Tip: pick the tail you want to fly, optionally a route (several airports per side) and your dates.</span> Tails you have planned for are starred; <span class="abadge">ALLEGRIS</span> marks the new cabin; <span class="cbadge cf">F8</span> <span class="cbadge">C80</span> = First / Business seat count (cabin follows the assigned tail, so mind the hold %).</div>
-  <div class="results" id="results"><div class="empty">Enter the tail you want to fly (e.g. D-ABYN) &mdash; optionally a route and dates &mdash; to rank the flights it could operate.</div></div>
-</div>
-<div class="modal-bg" id="fl-modal"><div class="modal" id="fl-modal-body"></div></div>
-<footer>
-  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
-</footer>
-<script>
-const $ = id => document.getElementById(id);
-let mode = 'plan';
-const HINTS = {
-  plan: 'Tip: pick the tail you want to fly, optionally a route (several airports per side) and your dates.',
-  tail: 'Tip: search a registration to see every upcoming leg that airframe is published on.',
-  route: 'Tip: route mode takes <b>several airports per side</b> &mdash; type a code or city for suggestions, Enter or comma adds it.',
-  map: 'Tip: drag to pan, scroll or +/&minus; to zoom, then click an airport. Marker size is how many departures are published there.',
-};
-function setMode(m){
-  mode = m;
-  ['plan','tail','route','map'].forEach(k => $('m-'+k).classList.toggle('active', m===k));
-  $('plan-in').style.display = m==='plan' ? '' : 'none';
-  $('date-box').style.display = m==='plan' ? '' : 'none';
-  $('tail-in').style.display = m==='tail' ? '' : 'none';
-  $('dep-box').style.display = (m==='route' || m==='plan') ? '' : 'none';
-  $('arr-box').style.display = (m==='route' || m==='plan') ? '' : 'none';
-  // in map mode the marker *is* the query, so the free-text search button goes
-  $('search-btn').style.display = m==='map' ? 'none' : '';
-  // the filters act on the published tail; a plan is about one fixed tail
-  $('filter-btn').style.display = m==='plan' ? 'none' : '';
-  if(m==='plan') $('filterbar').classList.remove('show');
-  $('mapwrap').classList.toggle('show', m==='map');
-  $('hint-lead').innerHTML = HINTS[m] || '';
-  if(m==='map'){ mapInit(); if(MAP.marks.length) mapDraw(); }   // redraw: it sizes to a visible box
-  else { ({plan:$('plan-in'), tail:$('tail-in'), route:$('dep-in')})[m].focus(); }
+    </section>""",
 }
 
-/* ── Your targets: kept in this browser only (no accounts), star your tails
-   everywhere and prefill the Plan input. Storage can be blocked or throw
-   (private windows) — then there are simply no stars. */
-const TKEY = 'lh.targets';
-function loadTargets(){
-  try { const v = JSON.parse(localStorage.getItem(TKEY) || '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : []; }
-  catch(e){ return []; }
-}
-let WATCH = new Set(loadTargets());
-function fillTargets(){
-  WATCH = new Set(loadTargets());
-  $('targets').innerHTML = [...WATCH].map(r => '<option value="'+esc(r)+'">').join('');
-}
-function saveTarget(reg){
-  try { const t = loadTargets().filter(x => x !== reg); t.unshift(reg); localStorage.setItem(TKEY, JSON.stringify(t.slice(0, 8))); }
-  catch(e){}
-  fillTargets();
-}
-fillTargets();
-function isoDay(d){ return d.toISOString().slice(0, 10); }
-$('plan-from').value = isoDay(new Date());
-$('plan-to').value = isoDay(new Date(Date.now() + 14 * 864e5));
 
-/* ── Multi-airport token inputs with suggestions ─────────────────
-   The suggestion list is the collected FIS network (code + city name),
-   so everything offered is actually searchable. Filtering is local. */
-let AIRPORTS = [];
-fetch('/api/book/airports').then(r=>r.json()).then(d=>{ AIRPORTS = d.airports||[]; }).catch(()=>{});
-
-function makeTok(boxId){
-  const box = $(boxId), input = box.querySelector('input'), sugg = box.querySelector('.sugg');
-  const codes = [];
-  let items = [], act = -1;
-  function renderChips(){
-    box.querySelectorAll('.tok').forEach(t=>t.remove());
-    codes.forEach(c=>{
-      const el = document.createElement('span');
-      el.className = 'tok';
-      el.innerHTML = c + '<button type="button" aria-label="remove '+c+'">&times;</button>';
-      el.querySelector('button').addEventListener('click', ev=>{
-        ev.stopPropagation(); codes.splice(codes.indexOf(c),1); renderChips(); });
-      box.insertBefore(el, input);
-    });
-  }
-  function add(c){
-    c = (c||'').trim().toUpperCase();
-    if(/^[A-Z0-9]{3}$/.test(c) && !codes.includes(c)){ codes.push(c); renderChips(); }
-    input.value = ''; hide();
-  }
-  function matches(q){
-    q = q.trim().toUpperCase(); if(!q) return [];
-    const ql = q.toLowerCase();
-    return AIRPORTS
-      .filter(a => !codes.includes(a.code) && (a.code.startsWith(q) || (a.name||'').toLowerCase().includes(ql)))
-      .sort((a,b) => (b.code.startsWith(q) - a.code.startsWith(q)) || (b.n - a.n))
-      .slice(0,8);
-  }
-  function show(){
-    items = matches(input.value); act = -1;
-    if(!items.length){ hide(); return; }
-    sugg.innerHTML = items.map((a,i)=>'<div class="sitem" data-i="'+i+'"><span class="code">'+a.code+'</span><span class="nm">'+(a.name||'')+'</span></div>').join('');
-    sugg.classList.add('show');
-    sugg.querySelectorAll('.sitem').forEach(el=>{
-      el.addEventListener('mousedown', ev=>{ ev.preventDefault(); add(items[+el.dataset.i].code); });
-    });
-  }
-  function hide(){ sugg.classList.remove('show'); items = []; act = -1; }
-  function mark(){ sugg.querySelectorAll('.sitem').forEach((el,i)=>el.classList.toggle('active', i===act)); }
-  function commit(){   // turn whatever is typed into a chip (best match wins)
-    const v = input.value.trim().toUpperCase();
-    if(!v) return;
-    if(/^[A-Z0-9]{3}$/.test(v)) add(v);
-    else { const m = matches(v); if(m.length) add(m[0].code); else input.value=''; }
-  }
-  input.addEventListener('input', show);
-  input.addEventListener('keydown', e=>{
-    if(e.key==='ArrowDown' && items.length){ act = (act+1)%items.length; mark(); e.preventDefault(); }
-    else if(e.key==='ArrowUp' && items.length){ act = (act-1+items.length)%items.length; mark(); e.preventDefault(); }
-    else if(e.key===','){ e.preventDefault(); commit(); }
-    else if(e.key==='Enter'){
-      e.preventDefault();
-      if(act>=0) add(items[act].code);
-      else if(input.value.trim()) commit();
-      else search();
-    }
-    else if(e.key==='Escape' && items.length){ hide(); e.stopPropagation(); }
-    else if(e.key==='Backspace' && !input.value && codes.length){ codes.pop(); renderChips(); }
-  });
-  input.addEventListener('blur', ()=>{ commit(); hide(); });
-  box.addEventListener('click', e=>{ if(e.target===box) input.focus(); });
-  return {
-    codes: ()=>codes.slice(),
-    set(list){ codes.length = 0; input.value=''; (list||[]).forEach(c=>{
-      c = (c||'').trim().toUpperCase();
-      if(/^[A-Z0-9]{3}$/.test(c) && !codes.includes(c)) codes.push(c); }); renderChips(); },
-  };
-}
-const tokDep = makeTok('dep-box'), tokArr = makeTok('arr-box');
-function fmtDay(iso){ if(!iso) return '?'; return new Date(iso).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}); }
-function fmtClock(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
-function tcls(t){ return ({'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'})[t] || 'tother'; }
-
-function miniChip(hold){
-  if(!hold) return '<div class="miniconf"><span class="p" style="color:var(--muted)">&mdash;</span><span class="cn">no data</span></div>';
-  const p = Math.round(hold.p*100);
-  const cls = p>=85 ? 'cg' : (p>=60 ? 'ca' : 'cr');
-  return '<div class="miniconf '+cls+'" title="chance the published tail still holds by departure ('+hold.lead+'d out, '+hold.basis+', n='+hold.n+')">'
-    +'<span class="p">'+p+'%</span><span class="cn">holds</span></div>';
-}
-
-/* cabin config {F,C,E,M} — F/C badges on the card, full breakdown as tooltip */
-function cabinText(c){
-  const t = [];
-  if(c.F) t.push('First '+c.F); if(c.C) t.push('Business '+c.C);
-  if(c.E) t.push('Prem Eco '+c.E); if(c.M) t.push('Economy '+c.M);
-  return t.join(' \\u00b7 ');
-}
-function cabinBadges(c){
-  if(!c) return '';
-  const full = 'Cabin: '+cabinText(c);
-  return (c.F ? '<span class="cbadge cf" title="'+full+'">F'+c.F+'</span>' : '')
-       + (c.C ? '<span class="cbadge" title="'+full+'">C'+c.C+'</span>' : '');
-}
-
-/* ── Result filters (type / Allegris / First) — client-side over the last fetch ── */
-const FILT = { fams:null, alleg:'any', first:'any' };   // fams null = all types
-let LAST = null;
-function famOf(t){ return ({'748':'747','388':'A380','788':'787','789':'787','78X':'787','359':'A350','35K':'A350'})[t] || 'other'; }
-function toggleFilters(){ $('filterbar').classList.toggle('show'); }
-function passes(f){
-  if(FILT.fams && !FILT.fams.has(famOf(f.type))) return false;
-  if(FILT.alleg!=='any' && !!f.allegris !== (FILT.alleg==='yes')) return false;
-  if(FILT.first!=='any' && !!(f.cabin && f.cabin.F) !== (FILT.first==='yes')) return false;
-  return true;
-}
-function syncFilters(){
-  const n = (FILT.fams?1:0) + (FILT.alleg!=='any'?1:0) + (FILT.first!=='any'?1:0);
-  $('filter-btn').textContent = n ? 'Filters \\u00b7 '+n : 'Filters';
-  if(LAST) drawResults();
-  if(MAP.gLayer) mapRender(false);
-}
-function applyFams(){
-  const boxes = [...document.querySelectorAll('.fchk')], on = boxes.filter(x=>!x.classList.contains('off'));
-  FILT.fams = on.length===boxes.length ? null : new Set(on.map(x=>x.dataset.fam));
-  syncFilters();
-}
-document.querySelectorAll('.fchk').forEach(el => {
-  const t = ()=>{ const off=el.classList.toggle('off'); el.setAttribute('aria-checked', off?'false':'true'); applyFams(); };
-  el.addEventListener('click', t);
-  el.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); t(); } });
-});
-function segWire(id, key){
-  $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', ()=>{
-    FILT[key] = b.dataset.v;
-    $(id).querySelectorAll('button').forEach(x=>x.classList.toggle('active', x===b));
-    syncFilters();
-  }));
-}
-segWire('f-alleg','alleg'); segWire('f-first','first');
-$('f-reset').addEventListener('click', ()=>{
-  document.querySelectorAll('.fchk').forEach(x=>{ x.classList.remove('off'); x.setAttribute('aria-checked','true'); });
-  ['f-alleg','f-first'].forEach(id => $(id).querySelectorAll('button')
-    .forEach(x=>x.classList.toggle('active', x.dataset.v==='any')));
-  FILT.fams = null; FILT.alleg = 'any'; FILT.first = 'any';
-  syncFilters();
-});
-
-function renderResults(d){ LAST = d; drawResults(); }
-function drawResults(){
-  const R = $('results'), d = LAST;
-  if(d.error){ R.innerHTML = '<div class="empty">'+d.error+'</div>'; return; }
-  const all = d.flights || [];
-  if(!all.length){ R.innerHTML = '<div class="empty">No upcoming flights found. The schedule is only published ~4 days ahead &mdash; try again closer to your date, or check the spelling.</div>'; return; }
-  const fs = all.filter(passes);
-  if(!fs.length){ R.innerHTML = '<div class="empty">All '+all.length+' flights are hidden by the filters &mdash; adjust or reset them.</div>'; return; }
-  let h = '';
-  fs.forEach(f => {
-    const lead = f.lead===0 ? 'today' : (f.lead===1 ? 'tomorrow' : 'in '+f.lead+' days');
-    const reassigned = f.reassigned ? ' &middot; <span style="color:var(--amber)">&#9888; reassigned before</span>' : '';
-    h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'">'
-      + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+lead+'</div>'
-      + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+viaTxt(f.via)+'</div>'
-      + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
-      + '<div class="tail">'+(WATCH.has(f.reg)?'<span class="star">&#9733;</span>':'')+tlink(f.reg)
-      + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span>'
-      + (f.allegris?'<span class="abadge" title="Allegris cabin">ALLEGRIS</span>':'')
-      + cabinBadges(f.cabin)+'</div>'
-      + miniChip(f.hold) + '</div>';
-  });
-  if(fs.length < all.length) h += '<div class="fnote">'+fs.length+' of '+all.length+' flights shown &mdash; '+(all.length-fs.length)+' hidden by filters</div>';
-  R.innerHTML = h;
-}
-
-/* ── Plan mode: every candidate flight for one target tail, ranked by P ── */
-let PLAN = null, PSORT = 'p';
-// the aeroLOPA seat map for a tail's sub-fleet code (opens their site)
-function seatMapLink(sm){
-  if(!sm || !sm.url) return '';
-  return '<a class="tlink" href="'+esc(sm.url)+'" target="_blank" rel="noopener">'
-    + (sm.exact ? esc(sm.code)+' seat map' : 'seat maps')+' &rarr;</a>';
-}
-// a tail anywhere on the page opens its airframe profile (cabin, where it flies)
-function tlink(reg){ return reg ? '<a class="tlink" href="/airframe/'+encodeURIComponent(reg)+'">'+esc(reg)+'</a>' : '?'; }
-function pctText(p){ const v = p * 100; return v >= 10 ? Math.round(v)+'%' : (v >= 1 ? v.toFixed(1)+'%' : (v > 0 ? '&lt;1%' : '0%')); }
-function srcLabel(s){ return ({published:'published', scheduled:'FIS schedule', projected:'projected'})[s] || s; }
-function leadTxt(fdate){
-  const n = Math.round((new Date(fdate+'T00:00:00Z') - new Date(isoDay(new Date())+'T00:00:00Z')) / 864e5);
-  return n === 0 ? 'today' : (n === 1 ? 'tomorrow' : 'in '+n+' days');
-}
-function renderPlan(d){ PLAN = d; drawPlan(); }
-function drawPlan(){
-  const R = $('results'), d = PLAN;
-  if(d.error){ R.innerHTML = '<div class="empty">'+esc(d.error)+'</div>'; return; }
-  const t = d.target;
-  let h = '<div class="tsum"><div class="tsum-head"><span class="treg">'+tlink(t.reg)+'</span>'
-    + '<span class="tbadge '+tcls(t.type)+'">'+esc(t.type)+'</span>'
-    + (t.allegris ? '<span class="abadge">ALLEGRIS</span>' : '') + cabinBadges(t.cabin)
-    + (t.cabin ? '<span class="tcab">'+cabinText(t.cabin)+'</span>' : '')
-    + (t.seat_map ? '<span class="tcab">'+seatMapLink(t.seat_map)+'</span>' : '') + '</div>';
-  const idle = t.idle_days;
-  h += '<div class="tsum-line">' + (idle == null ? 'No operated flight in the last weeks.'
-    : (idle > 3 ? '&#9888; Has not flown for '+Math.floor(idle)+' days &mdash; possibly in maintenance.'
-    : 'In service &middot; last flew '+(idle < 1 ? 'within the last day' : Math.round(idle)+' day'+(Math.round(idle) === 1 ? '' : 's')+' ago')+'.')) + '</div>';
-  if(t.published_legs && t.published_legs.length){
-    h += '<div class="tsum-line">Published next: ' + t.published_legs.map(l =>
-      '<span class="pleg">'+esc(l.flight)+' '+fmtDay(l.dep_sched)+' '+esc(l.dep)+'&rarr;'+esc(l.arr)+'</span>').join('') + '</div>';
-  }
-  h += '<div class="tsum-note">' + (t.fit && t.fit.m >= 1e5
-    ? 'On the '+esc(t.type)+' fleet, which tail flies a given flight can&rsquo;t be told from its history: every flight after '+fmtD(d.horizon)+' shows the same even share. The published tail, up to ~4 days out, is where the odds move &mdash; check back then.'
-    : 'Tails are published up to '+fmtD(d.horizon)+'; after that the list is the timetable of recent weeks, ranked by how often '+esc(t.reg)+' flew each flight.') + '</div></div>';
-  const fs = (d.flights || []).slice();
-  if(!fs.length){
-    R.innerHTML = h + '<div class="empty">No candidate flights for '+esc(t.reg)+' in these dates'+((d.query.dep || d.query.arr) ? ' on this route' : '')+'.</div>';
-    return;
-  }
-  if(PSORT === 'date') fs.sort((a, b) => (a.dep_sched || '').localeCompare(b.dep_sched || ''));
-  h += '<div class="plan-head"><span class="t">'+fs.length+' candidate flight'+(fs.length === 1 ? '' : 's')+'</span>'
-    + '<div class="fp-seg" id="psort"><button data-v="p" class="'+(PSORT === 'p' ? 'active' : '')+'">Best chance</button>'
-    + '<button data-v="date" class="'+(PSORT === 'date' ? 'active' : '')+'">By date</button></div></div>';
-  fs.slice(0, 150).forEach(f => {
-    h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'" data-src="'+f.source+'">'
-      + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+leadTxt(f.flight_date)+'</div>'
-      + '<div class="route"><div class="pair">'+esc(f.dep)+' &rarr; '+esc(f.arr)+viaTxt(f.via)+'</div>'
-      + '<div class="sub">'+esc(f.flight)+' &middot; dep '+fmtClock(f.dep_sched)+' &middot; <span class="src src-'+f.source+'">'+srcLabel(f.source)+'</span></div>'
-      + '<div class="why">'+esc(f.why)+'</div>'
-      + ((t.cabin && t.cabin.F && f.cabin && !f.cabin.F)
-          ? '<div class="why nof">&#9888; No First on this flight &mdash; Lufthansa publishes it without a First cabin (a route without First).</div>' : '')
-      + '</div>'
-      + '<div class="tail">' + (f.published
-          ? (WATCH.has(f.published) ? '<span class="star">&#9733;</span>' : '')+tlink(f.published)
-            + '<span class="tbadge '+tcls(f.type)+'">'+esc(f.type)+'</span>'
-            + (f.published_allegris ? '<span class="abadge" title="Allegris cabin">ALLEGRIS</span>' : '')
-          : '<span class="nopub">not published yet</span>')
-      + cabinBadges(f.cabin || f.published_cabin) + '</div>'
-      + '<div class="miniconf pchip" title="chance '+esc(t.reg)+' operates this flight"><span class="p">'+pctText(f.p)+'</span><span class="cn">'+esc(t.reg)+'</span></div></div>';
-  });
-  if(fs.length > 150) h += '<div class="fnote">150 of '+fs.length+' flights shown</div>';
-  R.innerHTML = h;
-  R.querySelectorAll('#psort button').forEach(b => b.addEventListener('click', () => { PSORT = b.dataset.v; drawPlan(); }));
-}
-function planQuery(){
-  const q = new URLSearchParams({target: $('plan-in').value.trim().toUpperCase()});
-  const dp = tokDep.codes().join(','), ar = tokArr.codes().join(',');
-  if(dp) q.set('dep', dp);
-  if(ar) q.set('arr', ar);
-  if($('plan-from').value) q.set('from', $('plan-from').value);
-  if($('plan-to').value) q.set('to', $('plan-to').value);
-  return q;
-}
-
-function search(){
-  let url;
-  if(mode==='plan'){
-    const q = planQuery();
-    if(!q.get('target')) return;
-    saveTarget(q.get('target'));
-    history.replaceState(null, '', '?' + q.toString());   // the plan is its own link
-    $('results').innerHTML = '<div class="empty">Ranking flights&hellip;</div>';
-    fetch('/api/book/plan?' + q.toString()).then(r => r.json()).then(renderPlan)
-      .catch(() => { $('results').innerHTML = '<div class="empty">Planning failed.</div>'; });
-    return;
-  }
-  if(mode==='tail'){
-    const r = $('tail-in').value.trim().toUpperCase();
-    if(!r){ return; }
-    url = '/api/book?reg=' + encodeURIComponent(r);
-  } else if(mode==='map'){
-    if(!MAP.sel){ return; }              // the marker is the query
-    url = '/api/book?dep=' + encodeURIComponent(MAP.sel);
-  } else {
-    const dp = tokDep.codes().join(','), ar = tokArr.codes().join(',');
-    if(!dp && !ar){ return; }
-    url = '/api/book?dep=' + encodeURIComponent(dp) + '&arr=' + encodeURIComponent(ar);
-  }
-  $('results').innerHTML = '<div class="empty">Searching&hellip;</div>';
-  fetch(url).then(r=>r.json()).then(renderResults)
-    .catch(()=>{ $('results').innerHTML = '<div class="empty">Search failed.</div>'; });
-}
-
-// route-mode inputs handle Enter themselves (suggestion pick vs. search)
-$('tail-in').addEventListener('keydown', e => { if(e.key==='Enter') search(); });
-$('plan-in').addEventListener('keydown', e => { if(e.key==='Enter') search(); });
-
-/* ── Flight detail modal (shared shape with /schedule) ─────────── */
-function fmt(iso){ if(!iso) return '?'; const d=new Date(iso);
-  return d.toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
-function row(k,v){ return '<span class="k">'+k+'</span><span class="v">'+v+'</span>'; }
-function confChip(hold, reg){
-  if(!hold) return '';
-  const p = Math.round(hold.p*100);
-  const cls = p>=85 ? 'cg' : (p>=60 ? 'ca' : 'cr');
-  const label = p>=85 ? 'likely to hold' : (p>=60 ? 'could still change' : 'often changes');
-  const basis = hold.basis==='route' ? 'this route' : (hold.basis==='type' ? 'this aircraft type' : 'all tracked flights');
-  return '<div class="conf-chip '+cls+'"><span class="cp">'+p+'%</span><span class="ct">'
-    + 'chance it stays <b>'+(reg||'this tail')+'</b> &middot; '+label
-    + '<br><span class="cn">'+hold.lead+'d before departure &middot; based on '+basis+' (n='+hold.n+')</span>'
-    + '</span></div>';
-}
-function fmtD(iso){ if(!iso) return ''; return new Date(iso+'T00:00:00Z').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'}); }
-function isoDur(s){ if(!s) return ''; const m=s.match(/PT(?:(\\d+)H)?(?:(\\d+)M)?/); if(!m) return ''; return (m[1]?m[1]+'h':'')+(m[2]?String(m[2]).padStart(2,'0')+'m':''); }
-function closeFl(){ $('fl-modal').classList.remove('show'); }
-function openFlight(num, fdate){
-  const b = $('fl-modal-body'); b.innerHTML = '<div class="empty">Loading&hellip;</div>'; $('fl-modal').classList.add('show');
-  fetch('/api/schedule/flight/LH/'+num+'/'+fdate).then(r=>r.json()).then(renderFlight)
-    .catch(()=>{ b.innerHTML = '<button class="close" onclick="closeFl()">&times;</button><div class="empty">Failed to load.</div>'; });
-}
-function renderFlight(d){
-  const b = $('fl-modal-body');
-  let h = '<button class="close" onclick="closeFl()">&times;</button>';
-  if(d.error){ b.innerHTML = h+'<div class="empty">'+d.error+'</div>'; return; }
-  h += '<h3>'+d.flight+(d.dep_iata?'  &middot;  '+[d.dep_iata].concat(d.via||[],[d.arr_iata]).map(esc).join('&rarr;'):'')+'</h3>';
-  h += '<div class="sub">'+[d.dep_name,d.arr_name].filter(Boolean).join(' &rarr; ')+'  &middot;  '+fmtD(d.flight_date)+'</div>';
-  if(d.reassigned){ h += '<div class="reassign-banner">&#9888; Reassigned &mdash; originally <b>'+(d.original_reg||'?')+'</b>, now <b>'+(d.current_reg||'?')+'</b></div>'; }
-  h += confChip(d.hold, d.current_reg);
-  if(d.found){
-    const dur = isoDur(d.duration);
-    h += '<div class="det-grid">';
-    h += row('Aircraft',(d.current_reg ? tlink(d.current_reg) : '?')+(d.current_type?' &middot; '+d.current_type:'')+(d.allegris?' <span class="abadge">ALLEGRIS</span>':''));
-    if(d.seat_map) h += row('Seat map', seatMapLink(d.seat_map));
-    if(d.cabin){
-      const cb=[]; if(d.cabin.F)cb.push('<b>First '+d.cabin.F+'</b>'); if(d.cabin.C)cb.push('Business '+d.cabin.C);
-      if(d.cabin.E)cb.push('Prem Eco '+d.cabin.E); if(d.cabin.M)cb.push('Economy '+d.cabin.M);
-      const tot = (d.cabin.F||0)+(d.cabin.C||0)+(d.cabin.E||0)+(d.cabin.M||0);
-      h += row('Cabin',cb.join(' &middot; ')+' &middot; '+tot+' seats');
-    }
-    if(d.legs && d.legs.length > 1){   // a flight of several legs: each with its own (local) times
-      d.legs.forEach((g,i) => { const gd = isoDur(g.duration);
-        h += row('Leg '+(i+1)+' '+esc(g.dep)+'&rarr;'+esc(g.arr), fmt(g.dep_sched)+' &rarr; '+fmt(g.arr_sched)
-          +(gd?' &middot; '+gd:'')+(g.dep_gate?' &middot; Gate '+esc(g.dep_gate):'')); });
-    } else {
-      h += row('Departure',fmt(d.dep_sched)+(d.dep_term?' &middot; T'+d.dep_term:'')+(d.dep_gate?' &middot; Gate '+d.dep_gate:''));
-      h += row('Arrival',fmt(d.arr_sched)+(d.arr_term?' &middot; T'+d.arr_term:'')+(d.arr_gate?' &middot; Gate '+d.arr_gate:''));
-      if(dur) h += row('Flight time',dur);
-    }
-    if(d.status) h += row('Status',d.status);
-    if(d.codeshares&&d.codeshares.length) h += row('Codeshare',d.codeshares.join(', '));
-    if(d.prev) h += row('Previous leg',d.prev+(d.prev_date?' ('+fmtD(d.prev_date)+')':''));
-    h += '</div>';
-  } else { h += '<div class="sub">No current assignment for this date.</div>'; }
-  if(d.history&&d.history.length){
-    h += '<div class="hist-title">Assignment history</div>';
-    let pr = null;
-    d.history.forEach((x,i) => {
-      const ch = pr!==null && x.reg!==pr;
-      const tags = []; if(i===0) tags.push('originally planned'); if(i===d.history.length-1) tags.push('current');
-      h += '<div class="hist-row'+(ch?' changed':'')+'"><span class="obs">'+fmtD(x.observed)+'</span>'
-        + '<span class="reg">'+(x.reg||'&mdash;')+'</span>'+(x.allegris?'<span class="abadge" title="Allegris cabin">A</span>':'')+'<span class="tag">'
-        + [x.type,tags.join(' &middot; ')].filter(Boolean).join('  &middot;  ')+'</span></div>';
-      pr = x.reg;
-    });
-  }
-  b.innerHTML = h;
-}
-$('results').addEventListener('click', e => {
-  if(e.target.closest('a')) return;              // a tail link navigates instead
-  const c = e.target.closest('.fcard');
-  if(c && c.dataset.src !== 'projected') openFlight(c.dataset.num, c.dataset.fdate);  // a projection has no FIS record yet
-});
-$('fl-modal').addEventListener('click', e => { if(e.target.id==='fl-modal') closeFl(); });
-document.addEventListener('keydown', e => { if(e.key==='Escape') closeFl(); });
-
-/* ── Map mode ─────────────────────────────────────────────────────────
-   Basemap and markers share one coordinate system — x = longitude,
-   y = -latitude (equirectangular) — so pan and zoom are nothing but the
-   viewBox, and a marker needs no projection maths. Both payloads come from
-   this app, so the page makes no third-party request. Clicking a marker runs
-   the ordinary dep= search: results, filters and the modal are shared with
-   route mode, and the marker can never disagree with the cards it opens. */
-const SVGNS = 'http://www.w3.org/2000/svg';
-// minW caps the zoom: the outline is Natural Earth 1:110m, so past roughly a
-// 12-degree window it degrades into abstract polygons. 12 degrees still puts
-// ~50px between neighbours as close as HND/NRT or JFK/EWR.
-const MAP = { on:false, svg:null, marks:[], byCode:{}, sel:null, pending:null,
-              moved:0, minW:12, V:{x:-180,y:-70,w:360},
-              layer:'up', up:null, net:null, tail:null, gLayer:null };
-
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,
-  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
-// stops of a flight of several legs (LH568 FRA -> SSG via LOS)
-function viaTxt(v){ return (v && v.length) ? ' via '+v.map(esc).join(', ') : ''; }
-function svgEl(tag, attrs){
-  const e = document.createElementNS(SVGNS, tag);
-  for(const k in attrs) e.setAttribute(k, attrs[k]);
-  return e;
-}
-/* when the viewport outgrows the content, centre instead of clamping */
-function clampRange(v, lo, hi){ return lo > hi ? (lo+hi)/2 : Math.min(hi, Math.max(lo, v)); }
-
-/* Sets the viewBox, then re-sizes everything that must stay constant on
-   screen: inside a scaled viewBox a CSS px is a user unit, so radii and
-   label sizes would otherwise grow with the zoom. */
-function mapDraw(){
-  const svg = MAP.svg, r = svg.getBoundingClientRect(), V = MAP.V;
-  const wpx = Math.max(r.width, 1);
-  V.w = Math.min(360, Math.max(MAP.minW, V.w));
-  const h = V.w * (r.height / wpx);
-  V.x = clampRange(V.x, -186, 186 - V.w);
-  V.y = clampRange(V.y, -88, 62 - h);
-  svg.setAttribute('viewBox', V.x+' '+V.y+' '+V.w+' '+h);
-  const k = V.w / wpx;                       // user units per screen pixel
-  MAP.marks.forEach(m => {
-    m.c.setAttribute('r', (m.r * k).toFixed(4));
-    // label the hubs and the pick always, everything else once zoomed in —
-    // and never label what is scrolled off the canvas
-    const inView = m.lon > V.x - 2 && m.lon < V.x + V.w + 2
-                && -m.lat > V.y - 2 && -m.lat < V.y + h + 2;
-    const show = inView && (V.w < 100 || m.big || m.code === MAP.sel);
-    m.t.style.display = show ? '' : 'none';
-    if(show){
-      m.t.setAttribute('x', (m.lon + (m.r + 3.5) * k).toFixed(4));
-      m.t.setAttribute('y', (-m.lat + 3.7 * k).toFixed(4));
-      m.t.setAttribute('font-size', (10.5 * k).toFixed(4));
-      m.t.setAttribute('stroke-width', (3 * k).toFixed(4));
-    }
-  });
-}
-
-function mapFit(){
-  const r = MAP.svg.getBoundingClientRect(), asp = r.height / Math.max(r.width, 1);
-  if(!MAP.marks.length){ MAP.V = {x:-180, y:-70, w:360}; mapDraw(); return; }
-  let x0=180, x1=-180, y0=90, y1=-90;
-  MAP.marks.forEach(m => {
-    x0 = Math.min(x0, m.lon); x1 = Math.max(x1, m.lon);
-    y0 = Math.min(y0, -m.lat); y1 = Math.max(y1, -m.lat);
-  });
-  const spanX = (x1-x0) * 1.10, spanY = (y1-y0) * 1.18;
-  let w = Math.max(spanX, spanY / Math.max(asp, 0.01), 20);
-  // on a tall canvas, fitting every longitude buys mostly empty ocean — cap the
-  // latitude shown at ~1.9x what the network needs and let the user pan instead
-  w = Math.max(Math.min(w, (spanY * 1.9) / Math.max(asp, 0.01)), 20, MAP.minW);
-  MAP.V = { x:(x0+x1)/2 - w/2, y:(y0+y1)/2 - (w*asp)/2, w:w };
-  mapDraw();
-}
-
-function mapZoomAt(cx, cy, f){
-  const r = MAP.svg.getBoundingClientRect(), V = MAP.V;
-  const wpx = Math.max(r.width, 1), k = V.w / wpx;
-  const wx = V.x + (cx - r.left) * k, wy = V.y + (cy - r.top) * k;
-  const nw = Math.min(360, Math.max(MAP.minW, V.w * f)), nk = nw / wpx;
-  V.x = wx - (cx - r.left) * nk;
-  V.y = wy - (cy - r.top) * nk;
-  V.w = nw;
-  mapDraw();
-}
-function mapZoomCentre(f){
-  const r = MAP.svg.getBoundingClientRect();
-  mapZoomAt(r.left + r.width/2, r.top + r.height/2, f);
-}
-
-function mapTip(m, ev){
-  const tip = $('maptip'), a = m.a;
-  if(a.net){
-    tip.innerHTML = '<b>'+esc(a.code)+'</b> '+esc(a.name)+'<br>'+a.count+' leg'+(a.count===1?'':'s')
-      + ' in '+MAP.net.weeks+' weeks'+(MAP.tail ? ' by '+esc(MAP.tail) : '')
-      + '<br><span class="d">click for its upcoming departures</span>';
-  } else {
-    const nd = a.dests.length;
-    tip.innerHTML = '<b>'+esc(a.code)+'</b> '+esc(a.name)
-      + '<br>'+a.count+' departure'+(a.count===1?'':'s')+(a.count !== a.flights ? ' (of '+a.flights+', filtered)' : '')
-      + ' &middot; '+nd+' destination'+(nd===1?'':'s')
-      + (a.types.length ? '<br><span class="d">'+esc(a.types.join(', '))
-          + (a.next ? ' &middot; from '+fmtD(a.next) : '')+'</span>' : '');
-  }
-  tip.classList.add('show');
-  const wr = $('mapwrap').getBoundingClientRect();
-  const x = Math.min(ev.clientX - wr.left + 14, wr.width - tip.offsetWidth - 8);
-  const y = Math.min(ev.clientY - wr.top + 14, wr.height - tip.offsetHeight - 8);
-  tip.style.left = Math.max(6, x)+'px';
-  tip.style.top = Math.max(6, y)+'px';
-}
-function mapHideTip(){ $('maptip').classList.remove('show'); }
-
-/* Two layers on one basemap. Upcoming: airports with a published departure
-   in the next days (marker = departures). Network: routes flown in the last
-   8 weeks (line width = legs), from the tail that actually flew each leg.
-   Both honour the type/Allegris/First filters and the one-tail box, so "where
-   does D-ABYN go" and "where do Allegris A350s fly" are one click each. */
-function mapBuild(world, data){
-  const svg = MAP.svg;
-  svg.innerHTML = '';
-  svg.appendChild(svgEl('path', {d:world.path, class:'land'}));
-  MAP.gLayer = svgEl('g', {});
-  svg.appendChild(MAP.gLayer);
-  MAP.up = data;
-  mapRender(true);
-}
-function mapKeep(type, reg, alleg, first){      // first === undefined: caller counts it
-  if(FILT.fams && !FILT.fams.has(famOf(type))) return false;
-  if(FILT.alleg!=='any' && !!alleg !== (FILT.alleg==='yes')) return false;
-  if(first !== undefined && FILT.first!=='any' && !!first !== (FILT.first==='yes')) return false;
-  return !MAP.tail || reg === MAP.tail;
-}
-/* a gentle northward arc, so opposite directions and parallel routes separate */
-function arcPath(A, B){
-  const x1 = A.lon, y1 = -A.lat, x2 = B.lon, y2 = -B.lat;
-  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
-  let nx = -dy / len, ny = dx / len;
-  if(ny > 0){ nx = -nx; ny = -ny; }
-  const k = 0.16 * len, cx = (x1 + x2) / 2 + nx * k, cy = (y1 + y2) / 2 + ny * k;
-  return 'M'+x1+','+y1+' Q'+cx.toFixed(3)+','+cy.toFixed(3)+' '+x2+','+y2;
-}
-function mapRender(fit){
-  const g = MAP.gLayer;
-  if(!g) return;
-  g.innerHTML = '';
-  const gLines = svgEl('g', {}), gMk = svgEl('g', {}), gLbl = svgEl('g', {});
-  g.appendChild(gLines); g.appendChild(gMk); g.appendChild(gLbl);
-  MAP.marks = []; MAP.byCode = {};
-  if(MAP.layer === 'net' && !MAP.net) return;      // still loading; mapLayer renders it
-  let pts = [], unplaced = [];
-  if(MAP.layer === 'up'){
-    (MAP.up.airports || []).forEach(a => {
-      const n = (a.rows || []).filter(r => mapKeep(r[0], r[1], r[2], r[3])).length;
-      if(n) pts.push(Object.assign({}, a, {count:n}));
-    });
-    unplaced = (MAP.up.unplaced || []).map(u => u.code);
-    $('map-count').textContent = pts.length + ' airport'+(pts.length===1?'':'s')+' with published departures';
-  } else {
-    const net = MAP.net, agg = {}, keep = [];
-    net.routes.forEach(rt => {
-      let n = 0;
-      // First is per flight (routes without First publish none): count the legs
-      for(const reg in rt.tails){
-        const c = net.tails[reg] || {};
-        if(!mapKeep(c.type, reg, c.allegris)) continue;
-        const f = (rt.first && rt.first[reg]) || 0;
-        n += FILT.first === 'yes' ? f : (FILT.first === 'no' ? rt.tails[reg] - f : rt.tails[reg]);
-      }
-      if(n && net.airports[rt.a] && net.airports[rt.b]) keep.push([rt, n]);
-    });
-    const maxn = keep.reduce((m, x) => Math.max(m, x[1]), 1);
-    keep.sort((x, y) => x[1] - y[1]).forEach(([rt, n]) => {   // busiest drawn last, on top
-      const A = net.airports[rt.a], B = net.airports[rt.b], d = arcPath(A, B);
-      const w = (1 + 5 * Math.sqrt(n / maxn)).toFixed(2);
-      const line = svgEl('path', {d:d, class:'rt', 'stroke-width':w});
-      const hit = svgEl('path', {d:d, class:'rthit', tabindex:'0', role:'button',
-        'aria-label':rt.a+' to '+rt.b+', '+n+' legs'});
-      const info = {rt:rt, n:n};
-      hit.addEventListener('click', () => { if(MAP.moved < 5) mapRoute(rt.a, rt.b); });
-      hit.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); mapRoute(rt.a, rt.b); } });
-      hit.addEventListener('pointerenter', ev => { line.classList.add('on'); mapRouteTip(info, ev); });
-      hit.addEventListener('pointermove', ev => mapRouteTip(info, ev));
-      hit.addEventListener('pointerleave', () => { line.classList.remove('on'); mapHideTip(); });
-      gLines.appendChild(line); gLines.appendChild(hit);
-      [rt.a, rt.b].forEach(c => { agg[c] = (agg[c] || 0) + n; });
-    });
-    pts = Object.keys(agg).map(c => ({code:c, name:net.airports[c].name, lat:net.airports[c].lat,
-                                      lon:net.airports[c].lon, count:agg[c], net:true}));
-    unplaced = net.unplaced || [];
-    $('map-count').textContent = keep.length + ' route'+(keep.length===1?'':'s')+' flown in '+net.weeks+' weeks';
-  }
-  // busiest first, so the small outstations paint on top and stay clickable
-  pts.sort((a, b) => b.count - a.count);
-  const max = pts.length ? pts[0].count : 1;
-  pts.forEach((a, i) => {
-    const c = svgEl('circle', {cx:a.lon, cy:-a.lat, r:0, class:'mk', tabindex:'0',
-      role:'button', 'aria-label':a.code+' '+a.name+', '+a.count+(a.net ? ' legs' : ' departures')});
-    const t = svgEl('text', {x:a.lon, y:-a.lat, class:'mklbl'});
-    t.textContent = a.code;
-    const m = {code:a.code, lon:a.lon, lat:a.lat, a:a, c:c, t:t,
-               r:3.4 + 3.8 * Math.sqrt(a.count / max), big:i < 8};
-    c.classList.toggle('sel', a.code === MAP.sel);
-    c.addEventListener('click', () => { if(MAP.moved < 5) mapSelect(a.code); });
-    c.addEventListener('keydown', e => {
-      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); mapSelect(a.code); } });
-    c.addEventListener('pointerenter', ev => mapTip(m, ev));
-    c.addEventListener('pointermove', ev => mapTip(m, ev));
-    c.addEventListener('pointerleave', mapHideTip);
-    gMk.appendChild(c); gLbl.appendChild(t);
-    MAP.marks.push(m); MAP.byCode[a.code] = a;
-  });
-  $('mapnote').style.display = unplaced.length ? '' : 'none';
-  if(unplaced.length){
-    $('mapnote').innerHTML = unplaced.length+' airport'+(unplaced.length===1?'':'s')
-      + ' not placed on the map ('+unplaced.map(esc).join(', ')+') &mdash; reachable from route mode.';
-  }
-  if(fit) mapFit(); else mapDraw();
-}
-function mapRouteTip(info, ev){
-  const rt = info.rt, tip = $('maptip');
-  const tails = Object.entries(rt.tails).sort((x, y) => y[1] - x[1]);
-  const types = Object.entries(rt.types).map(([k, v]) => k+' '+v).join(', ');
-  const mine = MAP.tail ? (rt.tails[MAP.tail] || 0) : null;
-  tip.innerHTML = '<b>'+esc(rt.a)+' &harr; '+esc(rt.b)+'</b><br>'+info.n+' leg'+(info.n===1?'':'s')+' in '+MAP.net.weeks+' weeks'
-    + (mine != null ? ' by '+esc(MAP.tail)+' ('+Math.round(100*mine/rt.n)+'% of all '+rt.n+')' : '')
-    + '<br><span class="d">'+esc(types)+' &middot; '+tails.length+' tail'+(tails.length===1?'':'s')+'</span>'
-    + '<br><span class="d">click to '+(MAP.tail ? 'plan '+esc(MAP.tail)+' on this route' : 'see upcoming flights')+'</span>';
-  tip.classList.add('show');
-  const wr = $('mapwrap').getBoundingClientRect();
-  tip.style.left = Math.max(6, Math.min(ev.clientX - wr.left + 14, wr.width - tip.offsetWidth - 8))+'px';
-  tip.style.top = Math.max(6, Math.min(ev.clientY - wr.top + 14, wr.height - tip.offsetHeight - 8))+'px';
-}
-/* a route line opens the route: planned for the one-tail filter if set, else
-   the published flights on it (either direction via the hub side first) */
-function mapRoute(a, b){
-  mapHideTip();
-  tokDep.set([a]); tokArr.set([b]);
-  if(MAP.tail){ $('plan-in').value = MAP.tail; setMode('plan'); }
-  else setMode('route');
-  search();
-}
-function mapLayer(v){
-  MAP.layer = v;
-  $('map-layer').querySelectorAll('button').forEach(x => x.classList.toggle('active', x.dataset.v === v));
-  $('map-hint').textContent = v === 'up' ? 'Click an airport to see what departs'
-    : 'Line width = legs flown; click a line to open the route';
-  if(v === 'net' && !MAP.net){
-    $('map-count').textContent = 'Loading the network…';
-    fetch('/api/book/network').then(r => r.json()).then(d => {
-      if(d.error){ $('map-count').textContent = d.error; return; }
-      MAP.net = d; if(MAP.layer === 'net') mapRender(true);
-    }).catch(() => { $('map-count').textContent = 'Network failed to load.'; });
-    return;
-  }
-  mapRender(true);
-}
-$('map-layer').querySelectorAll('button').forEach(b => b.addEventListener('click', () => mapLayer(b.dataset.v)));
-function mapTailSet(){
-  const v = $('map-tail').value.trim().toUpperCase();
-  MAP.tail = v || null;
-  if(MAP.gLayer) mapRender(false);
-}
-$('map-tail').addEventListener('change', mapTailSet);
-$('map-tail').addEventListener('keydown', e => { if(e.key === 'Enter') mapTailSet(); });
-
-function mapWire(){
-  const svg = MAP.svg, ptrs = new Map();
-  let last = null, pinch = 0;
-  function pinchState(){
-    const v = [...ptrs.values()];
-    return {x:(v[0].x+v[1].x)/2, y:(v[0].y+v[1].y)/2,
-            d:Math.hypot(v[0].x-v[1].x, v[0].y-v[1].y)};
-  }
-  // Deliberately no setPointerCapture: capturing retargets the compatibility
-  // click to the <svg>, so a marker's own click would never fire. Tracking the
-  // drag on window instead keeps clicks intact and still follows a pointer
-  // that leaves the map mid-drag.
-  svg.addEventListener('pointerdown', e => {
-    ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
-    MAP.moved = 0;
-    if(ptrs.size === 1){ last = {x:e.clientX, y:e.clientY}; svg.classList.add('grabbing'); }
-    else if(ptrs.size === 2){ pinch = pinchState().d; last = null; }
-  });
-  window.addEventListener('pointermove', e => {
-    if(!ptrs.has(e.pointerId)) return;
-    ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
-    if(ptrs.size >= 2){                       // pinch zoom about the midpoint
-      const p = pinchState();
-      if(pinch > 0 && p.d > 0){ mapZoomAt(p.x, p.y, pinch / p.d); MAP.moved += 10; }
-      pinch = p.d;
-      return;
-    }
-    if(!last) return;
-    const r = svg.getBoundingClientRect(), k = MAP.V.w / Math.max(r.width, 1);
-    const dx = e.clientX - last.x, dy = e.clientY - last.y;
-    MAP.moved += Math.abs(dx) + Math.abs(dy);   // tells a drag from a click
-    if(MAP.moved > 4) mapHideTip();
-    MAP.V.x -= dx * k; MAP.V.y -= dy * k;
-    last = {x:e.clientX, y:e.clientY};
-    mapDraw();
-  });
-  function up(e){
-    if(!ptrs.delete(e.pointerId)) return;
-    if(ptrs.size < 2) pinch = 0;
-    if(ptrs.size === 0){ last = null; svg.classList.remove('grabbing'); }
-  }
-  window.addEventListener('pointerup', up);
-  window.addEventListener('pointercancel', up);
-  svg.addEventListener('wheel', e => {
-    e.preventDefault();
-    mapZoomAt(e.clientX, e.clientY, Math.exp(e.deltaY * 0.0016));
-  }, {passive:false});
-  $('map-in').addEventListener('click', () => mapZoomCentre(1/1.5));
-  $('map-out').addEventListener('click', () => mapZoomCentre(1.5));
-  $('map-fit').addEventListener('click', mapFit);
-  window.addEventListener('resize', () => { if(MAP.marks.length) mapDraw(); });
-}
-
-function mapSelect(code){
-  if(!MAP.byCode[code]){ MAP.pending = code; return; }   // still loading
-  MAP.sel = code;
-  MAP.marks.forEach(m => m.c.classList.toggle('sel', m.code === code));
-  const a = MAP.byCode[code];
-  $('map-pick').innerHTML = esc(a.code)+' &middot; '+esc(a.name);
-  mapDraw();                   // the pick keeps its label at any zoom
-  search();
-}
-
-function mapInit(){
-  if(MAP.on) return;
-  MAP.on = true;
-  MAP.svg = $('mapsvg');
-  mapWire();
-  Promise.all([
-    fetch('/book/world.json').then(r => r.json()),
-    fetch('/api/book/map').then(r => r.json()),
-  ]).then(([w, d]) => {
-    if(d.error){ $('map-count').textContent = d.error; return; }
-    mapBuild(w, d);
-    if(MAP.layer === 'net') mapLayer('net');   // a ?map=net link asked before the basemap was in
-    if(MAP.pending){ const c = MAP.pending; MAP.pending = null; mapSelect(c); }
-  }).catch(() => { $('map-count').textContent = 'Map failed to load.'; });
-}
-
-/* Prefill + auto-search from URL (?target=[&dep=&arr=&from=&to=], ?reg=, ?dep=&arr=,
-   ?loc=, or ?map=net|up[&tail=]) so links land on results */
-(function(){
-  const p = new URLSearchParams(location.search);
-  if(p.get('map')){
-    if(p.get('tail')){ $('map-tail').value = p.get('tail').trim().toUpperCase(); MAP.tail = $('map-tail').value; }
-    MAP.layer = p.get('map') === 'net' ? 'net' : 'up';
-    $('map-layer').querySelectorAll('button').forEach(x => x.classList.toggle('active', x.dataset.v === MAP.layer));
-    setMode('map');
-  }
-  else if(p.get('target')){ setMode('plan'); $('plan-in').value = p.get('target');
-    tokDep.set((p.get('dep')||'').split(/[,\\s]+/));
-    tokArr.set((p.get('arr')||'').split(/[,\\s]+/));
-    if(p.get('from')) $('plan-from').value = p.get('from');
-    if(p.get('to')) $('plan-to').value = p.get('to');
-    search(); }
-  else if(p.get('reg')){ setMode('tail'); $('tail-in').value = p.get('reg'); search(); }
-  else if(p.get('loc')){ setMode('map'); mapSelect(p.get('loc').trim().toUpperCase()); }
-  else if(p.get('dep') || p.get('arr')){ setMode('route');
-    tokDep.set((p.get('dep')||'').split(/[,\\s]+/));
-    tokArr.set((p.get('arr')||'').split(/[,\\s]+/)); search(); }
-})();
-</script>
-</body>
-</html>"""
-
-
-@app.route("/book")
-def book():
-    return render_template_string(_BOOK_HTML)
-
-
-_INSIGHTS_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fleet Insights | LH Fleet</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/figure.css?v={{ v }}">
-<link rel="stylesheet" href="/static/css/insights.css?v={{ v }}">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1>Fleet <span>Insights</span></h1>
-        <div class="fp-label model">INSIGHTS &middot; Field Guide</div>
+_BOOK = {
+    "title": "Catch a Tail | LH Fleet",
+    "current": "/book",
+    "styles": ("book.css",),
+    "scripts": ("page.js", "flight.js", "book.js"),
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label">
+        <p class="fp-label">Book &middot; Airframe finder</p>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display">Catch a Tail</h1>
+        <div class="query">
+          <div class="fp-seg" id="modes" role="group" aria-label="What to look up">
+            <button type="button" id="m-plan" data-mode="plan" class="is-on" aria-pressed="true">Plan</button>
+            <button type="button" id="m-tail" data-mode="tail" aria-pressed="false">By tail</button>
+            <button type="button" id="m-route" data-mode="route" aria-pressed="false">By route</button>
+            <button type="button" id="m-map" data-mode="map" aria-pressed="false">By location</button>
+          </div>
+          <div class="searchbar">
+            <input class="input" id="plan-in" type="text" placeholder="your tail, e.g. D-ABYN" list="targets" autocomplete="off" aria-label="Your tail">
+            <datalist id="targets"></datalist>
+            <input class="input" id="tail-in" type="text" placeholder="registration, e.g. D-ABYN" style="display:none" aria-label="Registration">
+            <div class="tokbox" id="dep-box">
+              <span class="boxlbl">from</span>
+              <input id="dep-in" type="text" placeholder="add airport, e.g. FRA" autocomplete="off" aria-label="From">
+              <div class="sugg" id="dep-sugg"></div>
+            </div>
+            <div class="tokbox" id="arr-box">
+              <span class="boxlbl">to</span>
+              <input id="arr-in" type="text" placeholder="add airport, e.g. HND" autocomplete="off" aria-label="To">
+              <div class="sugg" id="arr-sugg"></div>
+            </div>
+            <div class="datebox" id="date-box">
+              <span class="boxlbl">dates</span>
+              <input id="plan-from" type="date" aria-label="first date">
+              <span class="dsep">&ndash;</span>
+              <input id="plan-to" type="date" aria-label="last date">
+            </div>
+            <button class="fp-btn" id="search-btn" type="button">Search</button>
+          </div>
+        </div>
       </div>
-    </div>
-    <nav class="nav">
-      <a class="nav-link" href="/book">Book</a>
-      <a class="nav-link" href="/schedule">Schedule</a>
-      <a class="nav-link" href="/fleet">Fleet DB</a>
-      <a class="nav-link" href="/">&larr; Monitor</a>
-    </nav>
-  </div>
-  <div class="controls">
-    <div class="fp-seg" id="fleets"></div>
-    <div class="meta" id="meta">Loading&hellip;</div>
-  </div>
-  <div id="body"></div>
-</div>
-<footer>
-  <a href="/impressum">Impressum</a> <span class="sep">&middot;</span> <a href="/datenschutz">Datenschutz</a>
-</footer>
-<div class="tip" id="tip" hidden></div>
-<script src="/static/js/figure.js?v={{ v }}"></script>
-<script src="/static/js/insights.js?v={{ v }}"></script>
-</body>
-</html>"""
-
-
-@app.route("/insights")
-def insights():
-    return render_template_string(_INSIGHTS_HTML, v=_asset_v(
-        "js/figure.js", "js/insights.js", "css/figure.css", "css/insights.css"))
-
-
-_AIRFRAME_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Airframe | LH Fleet</title>
-<link rel="stylesheet" href="/static/css/fonts.css">
-<link rel="stylesheet" href="/faceplate/faceplate.tokens.css">
-<link rel="stylesheet" href="/faceplate/faceplate.components.css">
-<link rel="stylesheet" href="/static/css/airframe.css">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-</head>
-<body class="fp" data-fp-intensity="02">
-<div class="container">
-  <div class="header">
-    <div class="brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg></span>
-      <div>
-        <h1>Air<span>frame</span></h1>
-        <div class="fp-label model">AIRFRAME &middot; Profile &amp; hard product</div>
+    </section>
+    <section class="fp-sec sec--wide" id="map-sec" hidden>
+      <header class="fp-sec__label">
+        <span class="fp-index">01</span><h2 class="fp-sec__title">Map</h2>
+        <div class="fp-sec__note filters">
+          <div class="fp-seg" id="map-layer" role="group" aria-label="What the map shows"><button type="button" data-v="up" class="is-on">Upcoming</button><button type="button" data-v="net">Network</button></div>
+          <input class="input" id="map-tail" type="text" placeholder="only one tail, e.g. D-ABYN" list="targets" autocomplete="off" aria-label="show one tail only">
+        </div>
+      </header>
+      <div class="fp-sec__body">
+        <div class="maphead">
+          <span id="map-hint">Marker size = departures published; click an airport to see them</span>
+          <span class="pick" id="map-pick"></span>
+          <span id="map-count"></span>
+        </div>
+        <div class="mapwrap fp-reg" id="mapwrap">
+          <svg class="mapsvg" id="mapsvg" role="group"
+               aria-label="World map of airports with upcoming Lufthansa departures"></svg>
+          <div class="mapctl">
+            <button type="button" id="map-in" aria-label="Zoom in" title="Zoom in">+</button>
+            <button type="button" id="map-out" aria-label="Zoom out" title="Zoom out">&minus;</button>
+            <button type="button" class="sm" id="map-fit" aria-label="Reset view" title="Reset view">FIT</button>
+          </div>
+          <div class="maptip" id="maptip"></div>
+        </div>
+        <p class="mapnote" id="mapnote" style="display:none"></p>
       </div>
-    </div>
-    <nav class="nav">
-      <a class="nav-link" href="/book">Book</a>
-      <a class="nav-link" href="/schedule">Schedule</a>
-      <a class="nav-link" href="/insights">Insights</a>
-      <a class="nav-link" href="/fleet">Fleet DB</a>
-    </nav>
-  </div>
-  <div id="body"><div class="empty">Loading&hellip;</div></div>
-</div>
-<footer>
-  <a href="/impressum">Impressum</a> <span style="margin:0 var(--fp-space-2)">&middot;</span> <a href="/datenschutz">Datenschutz</a>
-</footer>
-<script>
-const $ = id => document.getElementById(id);
-const REG = decodeURIComponent(location.pathname.split('/').pop() || '').toUpperCase();
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
-function viaTxt(v){ return (v && v.length) ? ' via '+v.map(esc).join(', ') : ''; }
-function tcls(t){ return ({'748':'t748','388':'t388','788':'t789','789':'t789','78X':'t789','359':'t359','35K':'t359'})[t] || 'tother'; }
-function fmtDay(iso){ if(!iso) return ''; return new Date(iso.length===10 ? iso+'T00:00:00Z' : iso).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}); }
-function fmtClock(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}); }
-function ago(iso){
-  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if(m < 60) return m+' min ago';
-  if(m < 48*60) return Math.round(m/60)+' h ago';
-  return Math.round(m/1440)+' days ago';
+    </section>
+    <section class="fp-sec fp-sec--tint sec--wide" id="results-sec">
+      <header class="fp-sec__label">
+        <span class="fp-index" id="results-index">01</span><h2 class="fp-sec__title">Flights</h2>
+        <div class="fp-sec__note filterbar" id="filterbar" hidden>
+          <span class="fchk" data-fam="747" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t748"></span>747-8</span>
+          <span class="fchk" data-fam="A380" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t388"></span>A380</span>
+          <span class="fchk" data-fam="787" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t789"></span>787</span>
+          <span class="fchk" data-fam="A350" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t359"></span>A350</span>
+          <span class="flabel">Allegris</span>
+          <div class="fp-seg" id="f-alleg"><button type="button" class="is-on" data-v="any">any</button><button type="button" data-v="yes">yes</button><button type="button" data-v="no">no</button></div>
+          <span class="flabel">First</span>
+          <div class="fp-seg" id="f-first"><button type="button" class="is-on" data-v="any">any</button><button type="button" data-v="yes">yes</button><button type="button" data-v="no">no</button></div>
+          <button class="fp-btn" id="f-reset" type="button">Reset</button>
+        </div>
+      </header>
+      <div class="fp-sec__body">
+        <div class="results" id="results"><p class="empty" data-prompt>Enter the tail you want to fly, e.g. D-ABYN, and optionally a route and dates: every flight is ranked by the chance that your tail operates it.</p></div>
+      </div>
+    </section>""",
 }
-function yn(v, extra){ return v==null ? '&mdash;' : (v ? 'yes'+(extra?' &middot; '+esc(extra):'') : 'no'); }
-function module(title, sub, inner){
-  return '<div class="module"><div class="modhead">'+title+(sub?'<span class="sub">'+sub+'</span>':'')+'</div><div class="modbody">'+inner+'</div></div>';
-}
-function tailLink(r){ return r===REG ? '<b>'+esc(r)+'</b>' : '<a class="tail-link" href="/airframe/'+encodeURIComponent(r)+'">'+esc(r)+'</a>'; }
 
-function cabinBlock(d){
-  const c = d.cabin || {};
-  const rows = [['First','F'],['Business','C'],['Premium Economy','E'],['Economy','M']];
-  const tot = rows.reduce((s,[,k]) => s + (c[k]||0), 0);
-  let h = '<div class="kv">';
-  rows.forEach(([n,k]) => { h += '<span class="k">'+n+'</span><span class="v">'+(c[k] ? '<b>'+c[k]+'</b> seats' : '&mdash;')+'</span>'; });
-  h += '<span class="k">Total</span><span class="v">'+(tot ? '<b>'+tot+'</b>' : '&mdash;')+(d.seat_config ? ' &middot; '+esc(d.seat_config) : '')+'</span>';
-  h += '<span class="k">Allegris</span><span class="v">'+yn(d.allegris)+'</span>';
-  const a = d.amenities || {};
-  h += '<span class="k">Wi-Fi</span><span class="v">'+yn(a.wifi, a.wifi_type)+'</span>';
-  h += '<span class="k">Seatback IFE</span><span class="v">'+yn(a.ife)+'</span>';
-  h += '<span class="k">USB power</span><span class="v">'+yn(a.usb_power)+'</span>';
-  if(a.livery) h += '<span class="k">Livery</span><span class="v">'+esc(a.livery)+'</span>';
-  if(d.seat_map) h += '<span class="k">Seat map</span><span class="v"><a class="tail-link" href="'+esc(d.seat_map.url)+'" target="_blank" rel="noopener">'
-    + (d.seat_map.exact ? esc(d.seat_map.code)+' layout on aeroLOPA' : 'Lufthansa seat maps on aeroLOPA')+' &rarr;</a></span>';
-  h += '</div>';
-  if(d.first_not_sold && d.first_not_sold.length){
-    h += '<div class="note"><b>First isn&rsquo;t sold on every flight.</b> First is a route product: on these routes the '+esc(d.type)+' fleet was published without a First cabin (last '+d.window_weeks+' weeks, legs without First / legs): '
-      + d.first_not_sold.map(r => esc(r.dep)+'&rarr;'+esc(r.arr)+' '+r.without+'/'+r.legs).join(', ')+'.</div>';
-  }
-  if(d.variant){
-    const others = d.variant.tails.filter(t => t !== REG);
-    h += '<div class="note">Cabin variant <b>'+esc(d.variant.label)+'</b> of '+d.variants+' on the '+esc(d.type)+' fleet'
-      + (others.length ? ' &mdash; the same cabin as '+others.map(tailLink).join(', ')+'.' : ' &mdash; the only tail with this cabin.')
-      + '</div>';
-  }
-  h += '<div class="note">Everything above is what Lufthansa&rsquo;s own flight-status feed publishes for this tail; the layout is the one it is most often sold with'
-    + (d.amenities_seen ? ' (last seen '+ago(d.amenities_seen)+')' : '')+'.</div>';
-  h += '<div class="photo" id="photo"><button class="fp-btn" id="photo-btn">Show photo</button>'
-    + '<div class="credit">Loads from planespotters.net &mdash; nothing is requested from them until you click.</div></div>';
-  return h;
+
+_INSIGHTS = {
+    "title": "Fleet Insights | LH Fleet",
+    "current": "/insights",
+    "styles": ("figure.css", "insights.css"),
+    "scripts": ("page.js", "figure.js", "insights.js"),
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label">
+        <p class="fp-label">Insights &middot; Field guide</p>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display">Insights</h1>
+        <div class="filters"><div class="fp-seg" id="fleets" role="group" aria-label="Fleet"></div></div>
+        <p class="fp-lede" id="lede"><span class="fp-status state state--wait">Loading</span></p>
+        <p class="fp-label">From Lufthansa flight status</p>
+      </div>
+    </section>""",
 }
-function statusLine(d){
-  const s = d.status || {}, bits = [];
-  if(s.idle_days == null) bits.push('No operated flight in the last weeks.');
-  else if(s.idle_days > 3) bits.push('<span class="warn">&#9888; Has not flown for '+Math.floor(s.idle_days)+' days &mdash; possibly in maintenance.</span>');
-  else bits.push('In service &middot; last flew '+(s.idle_days < 1 ? 'within the last day' : Math.round(s.idle_days)+' day'+(Math.round(s.idle_days)===1?'':'s')+' ago')+'.');
-  const a = s.adsb;
-  if(a) bits.push('Last ADS-B position '+ago(a.at)+': '+(a.on_ground ? 'on the ground'+(a.airport ? ' at <b>'+esc(a.airport)+'</b>' : '') : 'airborne'+(a.callsign ? ' as '+esc(a.callsign) : ''))+'.');
-  return bits.join(' ');
+
+
+_AIRFRAME = {
+    "title": "Airframe | LH Fleet",
+    "current": None,
+    "styles": ("airframe.css",),
+    "scripts": ("page.js", "airframe.js"),
+    "main": """\
+    <section class="fp-sec fp-sec--lead">
+      <div class="fp-sec__label"><div class="lead-label">
+        <p class="fp-label">Airframe &middot; Profile &amp; hard product</p>
+        <div id="state"></div>
+      </div></div>
+      <div class="fp-sec__body">
+        <h1 class="fp-display" id="reg">&nbsp;</h1>
+        <p class="fp-lede" id="lede"></p>
+        <p id="about"><span class="fp-status state state--wait">Loading</span></p>
+        <ul class="fp-links" id="links"></ul>
+      </div>
+    </section>""",
 }
-function upcomingBlock(d){
-  const u = d.upcoming || [];
-  if(!u.length) return '<div class="empty">Not published on any flight in the next days.</div>';
-  let h = '<table><tr><th>Date</th><th>Flight</th><th>Route</th><th class="r">Dep</th><th class="r">Holds</th></tr>';
-  u.forEach(l => {
-    h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+viaTxt(l.via)+'</td>'
-      + '<td class="r">'+fmtClock(l.dep_sched)+'</td>'
-      + '<td class="r pct" title="'+(l.hold ? 'how often a tail published '+l.hold.band+'h out still flies it ('+l.hold.basis+', n='+l.hold.n+')' : '')+'">'+(l.hold ? Math.round(l.hold.p*100)+'%' : '&mdash;')+'</td></tr>';
-  });
-  return h + '</table><div class="note">Holds = the chance the tail published now is still the one that flies.</div>';
+
+
+# ── The pages ────────────────────────────────────────────────────────
+# Every page is the chassis (chassis.py) around the lead and sections of its
+# spec; the route decides nothing else. A literal: the preview tools read it
+# together with the specs.
+_PAGES = {
+    "/": "_HOME",
+    "/insights": "_INSIGHTS",
+    "/impressum": "_IMPRESSUM",
+    "/datenschutz": "_DATENSCHUTZ",
+    "/fleet": "_FLEET",
+    "/fleet/<icao24>": "_FLEET_DETAIL",
+    "/airframe/<reg>": "_AIRFRAME",
+    "/schedule": "_SCHEDULE",
+    "/book": "_BOOK",
 }
-function routesBlock(d){
-  const r = d.routes || [];
-  if(!r.length) return '<div class="empty">No operated legs in the last '+d.window_weeks+' weeks.</div>';
-  let h = '<table><tr><th>Route</th><th class="r">Legs</th><th class="r">Of all legs on it</th><th></th></tr>';
-  r.forEach(x => {
-    const q = new URLSearchParams({target: REG, dep: x.dep, arr: x.arr});
-    h += '<tr><td>'+esc(x.dep)+' &rarr; '+esc(x.arr)+'</td><td class="r">'+x.k+'</td>'
-      + '<td class="r"><span class="pct">'+Math.round(x.share*100)+'%</span> of '+x.n+'</td>'
-      + '<td class="r"><a class="tail-link" href="/book?'+q.toString()+'">plan</a></td></tr>';
-  });
-  return h + '</table>';
-}
-function historyBlock(d){
-  const hs = d.cabin_history || [];
-  if(!hs.length) return '<div class="empty">No cabin data yet.</div>';
-  const refits = hs.filter(x => !x.glitch && !x.concurrent);
-  let h = '<table><tr><th>Layout</th><th>Allegris</th><th>Sub-type</th><th class="r">From</th><th class="r">To</th></tr>';
-  hs.forEach(x => {
-    const tag = x.glitch ? ' &middot; one-off' : (x.concurrent ? ' &middot; alongside' : '');
-    h += '<tr class="'+(x.glitch?'glitch':'')+'"><td>'+esc(x.seat_config||'?')+'</td><td>'+(x.allegris?'yes':'no')+'</td><td>'+esc(x.sub_type||'')+'</td>'
-      + '<td class="r">'+fmtDay(x.first_seen)+'</td><td class="r">'+fmtDay(x.last_seen)+tag+'</td></tr>';
-  });
-  h += '</table>';
-  if(hs.some(x => x.concurrent)) h += '<div class="note">Layouts marked <i>alongside</i> were published at the same time as another: the same cabin published differently on some flights (no First on a route without it), not a refit.</div>';
-  if(refits.length > 1) h += '<div class="note">The cabin changed while we were watching &mdash; most recently from '+fmtDay(refits[refits.length-1].first_seen)+'.</div>';
-  return h;
-}
-function recentBlock(d){
-  const r = d.recent || [];
-  if(!r.length) return '<div class="empty">No operated legs in the last weeks.</div>';
-  let h = '<table><tr><th>Date</th><th>Flight</th><th>Route</th></tr>';
-  r.forEach(l => { h += '<tr><td>'+fmtDay(l.flight_date)+'</td><td>'+esc(l.flight)+'</td><td>'+esc(l.dep)+' &rarr; '+esc(l.arr)+viaTxt(l.via)+'</td></tr>'; });
-  return h + '</table>';
-}
-function loadPhoto(){
-  const box = $('photo');
-  box.innerHTML = '<div class="credit">Loading from planespotters.net&hellip;</div>';
-  fetch('/api/airframe/'+encodeURIComponent(REG)+'/photo').then(r => r.json()).then(p => {
-    if(p.error || !p.photo){ box.innerHTML = '<div class="credit">'+(p.error ? esc(p.error) : 'No photo of '+esc(REG)+' on planespotters.net.')+'</div>'; return; }
-    const ph = p.photo;
-    box.innerHTML = '<a href="'+esc(ph.link)+'" target="_blank" rel="noopener noreferrer">'
-      + '<img src="'+esc(ph.src)+'" alt="'+esc(REG)+' on planespotters.net"'+(ph.size ? ' width="'+ph.size.width+'" height="'+ph.size.height+'"' : '')+'></a>'
-      + '<div class="credit">&copy; '+esc(ph.photographer || 'photographer')+' &middot; <a href="'+esc(ph.link)+'" target="_blank" rel="noopener noreferrer">planespotters.net</a></div>';
-  }).catch(() => { box.innerHTML = '<div class="credit">Photo lookup failed.</div>'; });
-}
-fetch('/api/airframe/'+encodeURIComponent(REG)).then(r => r.json()).then(d => {
-  if(d.error){ $('body').innerHTML = '<div class="empty">'+esc(d.error)+'</div>'; return; }
-  document.title = d.reg + ' | LH Fleet';
-  const sub = [d.fis_type, d.sub_type ? 'sub-fleet '+d.sub_type : null, d.serial ? 'MSN '+d.serial : null, d.model].filter(Boolean);
-  let h = '<div class="ahead"><span class="areg">'+esc(d.reg)+'</span>'
-    + (d.type ? '<span class="tbadge '+tcls(d.type)+'">'+esc(d.type)+'</span>' : '')
-    + (d.allegris ? '<span class="abadge">ALLEGRIS</span>' : '') + '</div>'
-    + '<div class="asub">'+sub.map(esc).join(' &middot; ')+'</div>'
-    + '<div class="astatus">'+statusLine(d)+'</div>'
-    + '<div class="actions"><a class="fp-btn fp-btn--solid" href="/book?target='+encodeURIComponent(d.reg)+'">Plan a booking on '+esc(d.reg)+'</a>'
-    + '<a class="fp-btn" href="/insights?type='+encodeURIComponent(d.type_code||'')+'&amp;reg='+encodeURIComponent(d.reg)+'">Insights</a></div>';
-  h += '<div class="cols"><div>'+module('Cabin &amp; hard product', '', cabinBlock(d))+'</div><div>'
-    + module('Published next', 'from the flight-status feed', upcomingBlock(d))
-    + module('Where it flies', 'last '+d.window_weeks+' weeks &middot; share = its legs of all legs on that route', routesBlock(d))
-    + '</div></div>';
-  h += '<div class="cols"><div>'+module('Cabin history', 'every layout the feed has published for it', historyBlock(d))+'</div><div>'
-    + module('Recent flights', 'operated, newest first', recentBlock(d))+'</div></div>';
-  $('body').innerHTML = h;
-  $('photo-btn').addEventListener('click', loadPhoto);
-}).catch(() => { $('body').innerHTML = '<div class="empty">Failed to load.</div>'; });
-</script>
-</body>
-</html>
-"""
+
+
+def _page(spec):
+    return lambda **_: chassis.page(**spec)
+
+
+for _route, _spec in _PAGES.items():
+    app.add_url_rule(_route, "page" + _spec.lower(), _page(globals()[_spec]))
 
 
 if __name__ == "__main__":

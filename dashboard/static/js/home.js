@@ -1,7 +1,8 @@
 // / — the monitor: how the site runs, and the big picture of what it logged.
 //
-// Draws the status and four figures from /api/monitor (monitor_stats.py), with
-// the helpers and the figure scaffold of figure.js.
+// Draws the lead and the sections of the page chassis from /api/monitor
+// (monitor_stats.py): how things stand, four figures and what has been logged,
+// with the helpers and the figure scaffold of figure.js.
 //
 // Colour keeps the roles it has on /insights: sage is what worked or what was
 // measured, grey is plan and context, terracotta is the exception (a read
@@ -10,8 +11,8 @@
 (() => {
 'use strict';
 
-const {$, targets, el, svg, text, line, textW, boxed, rect, crisp, clamp, pct, plural, plot, marker, dodge,
-       MONTHS, DOW, dayLabel, isoDay, say, showTip, moveTip, hideTip, seg, key, table, figure, redraw, watch} = window.Fig;
+const {$, targets, el, svg, text, line, textW, boxed, rect, crisp, clamp, pct, plural, plot, marks, baseline, marker, dodge,
+       MONTHS, DOW, dayLabel, isoDay, say, showTip, moveTip, hideTip, seg, key, table, section, state, stats, figure, redraw, watch} = window.Fig;
 const MINE = targets();
 const FLEET = {B748: '747-8', A388: 'A380', B787: '787', A350: 'A350'};
 const KIND = {pulse: 'pulse', probe: 'pulse and probe', watch: 'watch', far: 'far pass',
@@ -41,8 +42,8 @@ const LEVEL = {ok: ['OK', 'sage'], warn: ['Note', 'gray'], bad: ['Fault', 'terra
 const STATE = {ok: ['OK', 'sage'], stale: ['Stale', 'gray'], bad: ['Fault', 'terra']};
 const chip = c => el('span', 'fp-chip fp-chip--' + c[1], c[0]);
 
+// How things stand, for the lead: a state and a sentence each, then the collectors.
 function status(D) {
-  const box = el('section', 'status');
   const lines = el('ul', 'status-lines');
   D.headline.forEach(h => {
     const li = el('li'), p = el('p');
@@ -50,39 +51,45 @@ function status(D) {
     li.append(chip(LEVEL[h.level] || LEVEL.warn), p);
     lines.append(li);
   });
-  const t = el('table', 'collectors');
+  const t = el('table', 'table collectors');
   const head = el('tr');
-  [['Collector', ''], ['What it does', 'wide'], ['Runs', 'wide'], ['Last run', ''], ['Result', '']]
+  [['Collector', ''], ['What it does', 'wide'], ['Runs', 'wide'], ['Last run', 'num'], ['Result', '']]
     .forEach(([h, c]) => head.append(el('th', c, h)));
   t.append(head);
   D.collectors.forEach(c => {
     const tr = el('tr');
     const name = el('td', 'c-name');
     name.append(chip(STATE[c.state] || STATE.bad), document.createTextNode(c.name));
-    tr.append(name, el('td', 'wide', c.does), el('td', 'wide', c.cadence),
-              el('td', 'c-num', c.last ? c.ago + ' ago' : '—'), el('td', 'c-num c-res', c.result));
+    tr.append(name, el('td', 'wide', c.does), el('td', 'wide c-runs', c.cadence),
+              el('td', 'num', c.last ? c.ago + ' ago' : '—'), el('td', 'c-res', c.result));
     t.append(tr);
   });
-  box.append(lines, t);
-  return box;
+  return [lines, t];
+}
+// The lead's own marker: the worst of the status lines.
+function overall(D) {
+  const count = level => D.headline.filter(h => h.level === level).length;
+  const bad = count('bad'), warn = count('warn');
+  return bad ? state('bad', plural(bad, 'fault')) : warn ? state('note', plural(warn, 'note')) : state('ok', 'All in order');
+}
+// When the page's rows were read, for the stamp of the top bar (Berlin time).
+const STAMP = new Intl.DateTimeFormat('en-GB', {timeZone: 'Europe/Berlin', hourCycle: 'h23',
+                                               day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
+function stamp(iso) {
+  const p = {};
+  STAMP.formatToParts(new Date(iso)).forEach(x => { p[x.type] = x.value; });
+  return p.day + ' ' + p.month + ' · ' + p.hour + ':' + p.minute;
 }
 
-// What has been logged, as a row of figures.
+// What has been logged, as a row of key figures.
 function ledger(D) {
-  const L = D.ledger, row = el('dl', 'ledger');
-  if (!L) return row;
-  const since = iso => 'since ' + isoDay(iso.slice(0, 10));
-  [[num(L.flights), 'flights logged', since(L.flights_since)],
-   [num(L.flights_week), 'flights', 'last 7 days'],
-   [num(L.aircraft), 'aircraft followed', num(L.airborne) + ' in the air'],
-   [num(L.legs), 'long-haul flights planned', since(L.legs_since)],
-   [num(L.lookups), 'schedule lookups', since(L.lookups_since)],
-   [L.db_size, 'database', '']].forEach(([value, what, sub]) => {
-    const cell = el('div', 'ledger-cell');
-    cell.append(el('dd', 'ledger-n', value), el('dt', 'ledger-what', what), el('span', 'ledger-sub', sub));
-    row.append(cell);
-  });
-  return row;
+  const L = D.ledger, since = iso => 'since ' + isoDay(iso.slice(0, 10));
+  return stats([['flights logged', num(L.flights), since(L.flights_since)],
+                ['flights', num(L.flights_week), 'last 7 days'],
+                ['aircraft followed', num(L.aircraft), num(L.airborne) + ' in the air'],
+                ['long-haul planned', num(L.legs), since(L.legs_since)],
+                ['schedule lookups', num(L.lookups), since(L.lookups_since)],
+                ['database', L.db_size, '']]);
 }
 
 // ── Schedule reads by flight day ───────────────────────────────────────
@@ -90,7 +97,7 @@ const READ_TEXT = {read: 'read', failed: 'asked, nothing came back', missed: 'pl
 const COV_TEXT = {full: 'known', part: 'most flights known', thin: 'a few flights known',
                   missing: 'should have been read, is not', unread: 'not read at this distance'};
 function readsFig(D) {
-  const f = figure('reads', 'Schedule reads by flight day', {compact: true});
+  const f = figure('reads', 'Schedule reads', {compact: true, kind: 'ink', note: 'By flight day'});
   const R = D.reads, days = R.days, today = R.today;
   const t0 = Date.parse(R.from), t1 = Date.parse(R.to), now = Date.parse(R.now);
   const covOf = tier => D.coverage.filter(c => c.tier === tier.id);
@@ -170,7 +177,7 @@ function readsFig(D) {
         rect(s, xa, rowY(i) + 3, w, rh - 6, 'rd ' + c.state);
         hits.push({x: xa - 2, y: rowY(i), w: Math.max(w + 4, 8), h: rh, slot, c, tier});
       }));
-      rect(s, crisp(L), crisp(y0), pw, ph, 'frame');
+      marks(s, L, y0, pw, ph);
 
       // rows: the flight day, its distance from today, the planned reads a day
       text(s, 2, y0 - 22, tier.name, 't-lab');
@@ -259,7 +266,7 @@ function readsFig(D) {
 const RUN_TEXT = {ok: 'went through', cut: 'stopped early or partly blocked', failed: 'nothing came back',
                   lost: 'never finished', running: 'running', skipped: 'did not run'};
 function recordFig(D) {
-  const f = figure('record', 'Collector runs, last ' + D.record.days + ' days', {compact: true});
+  const f = figure('record', 'Collector runs', {compact: true, kind: 'ink', field: 'tint', note: 'Last ' + D.record.days + ' days'});
   const C = D.record, N = C.days;
   const first = Date.parse(C.first + 'T00:00:00Z');
   const dayIso = i => new Date(first + i * 864e5).toISOString().slice(0, 10);
@@ -291,7 +298,7 @@ function recordFig(D) {
     const rowY = i => top + i * rh;                               // newest day at the bottom
 
     for (let h = 0; h <= 24; h += 2) {
-      line(s, crisp(x(h * 60)), top, crisp(x(h * 60)), top + ph, 'grid');
+      if (h % 24) line(s, crisp(x(h * 60)), top, crisp(x(h * 60)), top + ph, 'grid');     // the marks hold the edges
       if (!tight || h % 4 === 0) text(s, x(h * 60), top + ph + 14, pad2(h % 24), 't-tick t-muted', 'middle');
     }
     text(s, L + pw, top + ph + 27, 'time of day, Berlin', 't-title', 'end');
@@ -303,11 +310,11 @@ function recordFig(D) {
       }
     }
     text(s, L - 8, rowY(N - 1) + rh - 2, 'today', 't-strong', 'end');
-    rect(s, crisp(L), crisp(top), pw, ph, 'frame');
+    marks(s, L, top, pw, ph);
 
     // above: how often each slot went wrong, and which pass it is
     const base = 26 + mTop;
-    line(s, L, crisp(base), L + pw, crisp(base), 'tick');
+    baseline(s, L, L + pw, base);
     text(s, L + pw, 12, tight ? 'share of runs that went wrong' : 'share of each slot’s runs that went wrong', 't-title', 'end');
     [0.25, 0.5].forEach(v => {
       line(s, L, crisp(base - v * mTop * 2), L + pw, crisp(base - v * mTop * 2), 'grid');
@@ -343,7 +350,7 @@ function recordFig(D) {
         rect(s, bx, rowY(i) + 3, d.found / top1 * bw, rh - 6, 'mg');
         rect(s, bx + d.found / top1 * bw, rowY(i) + 3, d.blocked / top1 * bw, rh - 6, 'mg bad');
       });
-      line(s, crisp(bx), top, crisp(bx), top + ph, 'tick');
+      line(s, Math.round(bx), top, Math.round(bx), top + ph, 'base');
       text(s, bx + bw, top + ph + 14, num(top1), 't-tick t-muted', 'end');
     }
 
@@ -386,7 +393,7 @@ function recordFig(D) {
 
 // ── Hub departures by time of day ──────────────────────────────────────
 function hubsFig(D) {
-  const f = figure('hubs', 'Hub departures by time of day', {compact: true});
+  const f = figure('hubs', 'Hub departures', {compact: true, note: 'By time of day'});
   const hubs = D.hubs.hubs, FROM = 16, TO = 96, NB = TO - FROM;      // 04:00 to midnight, in quarter-hours
   let hub = hubs[0];
   const binAt = b => hhmm(b * 15);
@@ -401,7 +408,7 @@ function hubsFig(D) {
     say(f.find, ...parts);
   };
   describe();
-  f.tools.prepend(seg(hubs.map(h => [h.id, h.name]), hub.id, v => {
+  f.tools.append(seg(hubs.map(h => [h.id, h.name]), hub.id, v => {
     hub = hubs.find(h => h.id === v); describe(); f.dirty = true; redraw();
     f.refresh();
   }, 'Hub'));
@@ -437,10 +444,10 @@ function hubsFig(D) {
       rect(s, xa, mid, w, p.dep.med[b] * sc, 'dep');
       rect(s, xa, mid, w, p.dep_long.med[b] * sc, 'dep long');
     }
-    line(s, L, crisp(mid), L + pw, crisp(mid), 'tick');
+    baseline(s, L, L + pw, mid);
     if (tight) {
       text(s, L, top - 4, 'arrivals', 't-title');
-      text(s, L, mid + half + 11, 'departures', 't-title');
+      text(s, L + 12, mid + half + 6, 'departures', 't-title');      // clear of the registration mark below
     } else {
       text(s, 2, mid - 8, 'arrivals', 't-title');
       text(s, 2, mid + 16, 'departures', 't-title');
@@ -449,7 +456,7 @@ function hubsFig(D) {
 
     // below: every day's departures
     for (let hr = 4; hr <= 24; hr += 2) {
-      line(s, crisp(x(hr * 4)), y0, crisp(x(hr * 4)), y0 + ph, 'grid');
+      if (hr > 4 && hr < 24) line(s, crisp(x(hr * 4)), y0, crisp(x(hr * 4)), y0 + ph, 'grid');
       if (hr < 24 && (!tight || hr % 4 === 0)) text(s, x(hr * 4), y0 + ph + 14, pad2(hr), 't-tick t-muted', 'middle');
     }
     text(s, L + pw, y0 + ph + 27, 'take-off time, Berlin', 't-title', 'end');
@@ -457,7 +464,7 @@ function hubsFig(D) {
       const d = dayIso(i), wd = new Date(d + 'T00:00:00Z').getUTCDay(), y = y0 + i * rh;
       if (wd === 1) {
         line(s, L - 4, crisp(y), L, crisp(y), 'tick');
-        if (i % 2 === 0 || n < 40) text(s, L - 8, y + 6, (tight ? '' : 'Mon ') + isoDay(d), 't-row', 'end');
+        if (i < n - 1 && (i % 2 === 0 || n < 40)) text(s, L - 8, y + 6, (tight ? '' : 'Mon ') + isoDay(d), 't-row', 'end');   // the last row says "today"
       }
       const row = h.dep[i];
       for (let b = FROM; b < TO; b++) {
@@ -466,7 +473,7 @@ function hubsFig(D) {
       }
     }
     text(s, L - 8, y0 + ph - 1, 'today', 't-strong', 'end');
-    rect(s, crisp(L), crisp(y0), pw, ph, 'frame');
+    marks(s, L, y0, pw, ph);
 
     // on the right: each day's total
     if (!tight) {
@@ -480,7 +487,7 @@ function hubsFig(D) {
       });
       line(s, crisp(tX(h.median)), y0, crisp(tX(h.median)), y0 + ph, 'ref');
       done.forEach((v, i) => rect(s, tX(v) - 2, y0 + i * rh + 1, 4, 4, 'day-dot'));
-      rect(s, crisp(tx), crisp(y0), tw, ph, 'frame');
+      baseline(s, tx, tx + tw, y0 + ph);
     }
 
     // hover
@@ -514,7 +521,7 @@ function hubsFig(D) {
 
 // ── Aircraft utilisation ───────────────────────────────────────────────
 function useFig(D) {
-  const f = figure('use', 'Aircraft utilisation, last ' + D.use.days + ' days', {compact: true});
+  const f = figure('use', 'Aircraft utilisation', {compact: true, field: 'tint', note: 'Last ' + D.use.days + ' days'});
   const U = D.use, pts = U.points;
   const byType = Object.fromEntries(U.types.map(t => [t.type, t]));
   const longest = U.types[0], busiest = U.types.reduce((a, t) => t.sectors > a.sectors ? t : a, U.types[0]);
@@ -540,14 +547,15 @@ function useFig(D) {
     const xMax = Math.max(7, Math.ceil(Math.max(...pts.map(p => p.sectors)))), yMax = Math.max(16, Math.ceil(Math.max(...pts.map(p => p.hours)) / 2) * 2);
     const x = v => L + v / xMax * pw, y = v => top + ph - v / yMax * ph;
     for (let v = 0; v <= xMax; v++) {
-      line(s, crisp(x(v)), top, crisp(x(v)), top + ph, 'grid');
-      text(s, x(v), top + ph + 14, v, 't-tick t-muted', 'middle');
+      line(s, crisp(x(v)), top + ph, crisp(x(v)), top + ph + 6, 'tick');
+      text(s, x(v), top + ph + 18, v, 't-tick t-muted', 'middle');
     }
-    for (let v = 0; v <= yMax; v += 2) {
+    for (let v = 2; v <= yMax; v += 2) {
       line(s, L, crisp(y(v)), L + pw, crisp(y(v)), 'grid');
       text(s, L - 8, y(v) + 3, v, 't-tick t-muted', 'end');
     }
-    text(s, L + pw, top + ph + 32, 'flights a day', 't-title', 'end');
+    text(s, L - 8, y(0) + 3, 0, 't-tick t-muted', 'end');
+    text(s, L + pw, top + ph + 34, 'flights a day', 't-title', 'end');
     text(s, 2, top - 12, 'flight hours a day', 't-title');
     // lines of equal flight length
     [1, 2, 4, 8, 12].forEach(k => {
@@ -556,7 +564,7 @@ function useFig(D) {
       const lab = k + (tight ? ' h' : ' h a flight'), atTop = ye >= yMax - 1e-9;
       boxed(s, atTop ? x(xe) + 6 : x(xe) - textW(lab) - 8, atTop ? y(ye) + 14 : y(ye) - 6, lab, 't-tick t-muted');
     });
-    rect(s, crisp(L), crisp(top), pw, ph, 'frame');
+    baseline(s, L, L + pw, top + ph);
 
     pts.forEach(p => {
       const mine = MINE.has(p.reg);
@@ -629,41 +637,39 @@ function useFig(D) {
 }
 
 // ── page ───────────────────────────────────────────────────────────────
-const chapter = title => el('h2', 'chapter', title);
-const failed = what => el('p', 'empty', what + ' could not be loaded.');
-
 async function load() {
   return (await fetch('/api/monitor')).json();
 }
+// The lead is in the page from the start; the sections follow it into <main>.
+// Whatever could not be loaded leaves a status marker where it would stand.
 async function init() {
-  const body = $('body');
+  const main = document.querySelector('main'), lead = $('status'), mark = $('state');
+  const how = D => {
+    lead.replaceChildren(...status(D));
+    mark.replaceChildren(overall(D));
+    $('stamp').textContent = stamp(D.generated);
+  };
   let D;
-  try { D = await load(); } catch (e) { body.replaceChildren(el('p', 'empty', 'Failed to load.')); return; }
+  try { D = await load(); } catch (e) { lead.replaceChildren(state('bad', 'The monitor could not be loaded')); return; }
   const errors = D.errors || {};
-  body.replaceChildren();
-  let top = null;
   if (D.headline) {
-    top = status(D);
-    body.append(top,
-      chapter('The collector'),
-      readsFig(D).root, recordFig(D).root);
-  } else body.append(failed('The collector’s status'));
-  body.append(chapter('What it has logged'));
-  if (D.ledger) body.append(ledger(D));
-  if (D.hubs) body.append(hubsFig(D).root, useFig(D).root);
-  else body.append(failed('The flight figures'));
+    how(D);
+    main.append(readsFig(D).root, recordFig(D).root);
+  } else lead.replaceChildren(state('bad', 'The collector’s status could not be loaded'));
+  const logged = section({id: 'logged', title: 'What it has logged', field: 'tint', wide: true});
+  logged.body.append(D.ledger ? ledger(D) : state('bad', 'The counts could not be loaded'));
+  main.append(logged.root);
+  if (D.hubs) main.append(hubsFig(D).root, useFig(D).root);
+  else logged.body.append(state('bad', 'The flight figures could not be loaded'));
   if (errors.collector || errors.data) console.warn('monitor:', errors);
   redraw();
-  watch(body);
-  // the status moves with every run; the figures keep what the page loaded with
+  watch(main);
+  // how things stand moves with every run; the figures keep what the page loaded with
   setInterval(async () => {
-    if (document.hidden || !top) return;
+    if (document.hidden || !D.headline) return;
     try {
       const N = await load();
-      if (!N.headline) return;
-      const next = status(N);
-      top.replaceWith(next);
-      top = next;
+      if (N.headline) how(N);
     } catch (e) { /* the next tick tries again */ }
   }, 60000);
 }

@@ -1,0 +1,212 @@
+/* What LH·Fleet adds to Faceplate, on every page.
+ *
+ * The pages are built on the chassis of faceplate.components.css (chassis.html);
+ * this file holds the parts an app needs and the package does not ship, every
+ * value a token. They read the context roles (the ones named ctx), so they stay
+ * legible on a field.
+ *
+ * No bare element rules and no universal reset: unlayered CSS beats Faceplate's
+ * layers whatever its specificity, so either would restyle every component.
+ */
+
+body{ margin:0; }
+/* Faceplate's components set their own display, which outranks the browser's
+   rule for the hidden attribute; a part that a script hides must stay hidden. */
+.fp-page [hidden]{ display:none !important; }
+
+/* -- A wide section ---------------------------------------------------------
+   A dense plot needs all twelve columns. Its label is then a line above the
+   body (index, title, the note at the right), which is what the chassis does
+   with every section on a phone. */
+.sec--wide > .fp-sec__label{ grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); padding-bottom:0; }
+.sec--wide > .fp-sec__label > .fp-sec__title{ margin-top:0; }
+.sec--wide > .fp-sec__label > .fp-sec__note{ margin:0 0 0 auto; }
+.sec--wide > .fp-sec__body{ grid-column:1 / -1; padding-top:var(--fp-space-4); }
+/* a page that is one chart or one table: its section has no label, the lead names it */
+.sec--wide > .fp-sec__body:first-child{ padding-top:var(--fp-space-5); }
+/* in a label line the index square keeps its shape beside a long title */
+.fp-sec__label > .fp-index{ flex:none; }
+/* a note may hold a control beside its words */
+.fp-sec__note:has(.fp-seg){ display:flex; flex-wrap:wrap; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); }
+
+/* -- State ------------------------------------------------------------------
+   A status marker says how something stands, and stands in for content that
+   is loading or could not be loaded. Its dot takes the state: the accent in
+   order, ink for a note, muted while the page waits. A fault keeps Faceplate's
+   own dot, terracotta — except in the lead, which is a solid field once the
+   dial is turned up: terracotta sinks into the sage there, so the dot takes
+   the field's ink and the words carry the fault. Nothing here names a level. */
+.state{ margin:0; }
+.state--ok::before{ color:var(--fp-ctx-accent); }
+.state--note::before{ color:var(--fp-ctx-ink); }
+.state--wait::before{ color:var(--fp-ctx-muted); }
+.fp-sec--lead .state--bad::before{ color:var(--fp-ctx-ink); }
+
+/* An empty state is not a state of the system but an instruction or an
+   answer: a plain sentence where the result will stand. */
+.empty{ margin:0; font-size:var(--fp-text-base); line-height:var(--fp-leading); color:var(--fp-ctx-body); max-width:var(--fp-page-measure); }
+
+/* -- Running text: paragraphs at the measure -------------------------------- */
+.prose{ max-width:var(--fp-page-measure); }
+.prose > :is(p, ul, ol){ margin:0; font-size:var(--fp-text-base); line-height:var(--fp-leading); color:var(--fp-ctx-body); }
+.prose > :is(p, ul, ol) + :is(p, ul, ol){ margin-top:var(--fp-space-3); }
+
+/* -- The lead's label column ------------------------------------------------
+   What names the page, top to bottom: the way back (on a page below a top-bar
+   entry), the identifying line, how things stand, a control for the whole
+   page. On a phone the column is a line, and these run along it. */
+.lead-label{ display:flex; flex-direction:column; align-items:flex-start; gap:var(--fp-space-3); }
+.lead-label > :is(p, a, div){ margin:0; }
+.lead-label:empty, .lead-label > :empty{ display:none; }
+@media (max-width:760px){ .lead-label{ flex-direction:row; flex-wrap:wrap; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); } }
+/* the way back: a mono link on an accent keyline, its arrow pointing home */
+.lead-back{ font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label);
+  text-transform:uppercase; color:var(--fp-ctx-ink); text-decoration:none; padding-bottom:var(--fp-space-1);
+  border-bottom:var(--fp-keyline) solid var(--fp-ctx-accent); }
+.lead-back:hover{ border-bottom-color:var(--fp-ctx-ink); }
+.lead-back:focus-visible{ outline:var(--fp-focus-ring-width) solid var(--fp-ctx-ink); outline-offset:var(--fp-focus-ring-offset); }
+/* The lead may be a solid field; a control on it brings its own white ground,
+   like an input, so its ink keeps its contrast at every level. */
+.fp-sec--lead .fp-seg{ background:var(--fp-bg); }
+
+/* parts of a lead that a script fills take no room while they are empty */
+.fp-lede:empty, .fp-links:empty{ display:none; }
+/* a lede built from data picks its figures out with <b> */
+.fp-lede b{ font-weight:inherit; color:var(--fp-lead-em); }
+
+/* -- A tail: the registration as a link to its airframe page ---------------- */
+.tail-link{ font-family:var(--fp-font-mono); font-weight:var(--fp-heading-h3-weight); color:var(--fp-ctx-ink); text-decoration:none; white-space:nowrap;
+  border-bottom:var(--fp-keyline) solid var(--fp-ctx-accent); }
+.tail-link:hover{ border-bottom-color:var(--fp-ctx-ink); }
+
+/* -- Key figures: a rule, what it counts, the number, a note ---------------
+   Each figure spans three rows of the grid, so the numbers of a row stand on
+   one line even where a label wraps. */
+.stats{ display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:var(--fp-space-1) var(--fp-page-gutter); margin:0; }
+.stat{ display:grid; grid-row:span 3; grid-template-rows:subgrid; align-content:start; margin-bottom:var(--fp-space-4);
+  padding-top:var(--fp-space-3); border-top:var(--fp-line) solid var(--fp-ctx-ink); }
+.stat__key, .stat__note{ margin:0; font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label);
+  text-transform:uppercase; line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+.stat__num{ margin:0; font-weight:var(--fp-wordmark-weight); font-size:var(--fp-text-h1); letter-spacing:var(--fp-track-tight); line-height:var(--fp-leading-tight);
+  color:var(--fp-ctx-ink); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.stats--4{ grid-template-columns:repeat(4, minmax(0, 1fr)); }
+.stats--3{ grid-template-columns:repeat(3, minmax(0, 1fr)); }
+@media (max-width:1100px){ .stats{ grid-template-columns:repeat(3, minmax(0, 1fr)); } .stats--4{ grid-template-columns:repeat(4, minmax(0, 1fr)); } }
+@media (max-width:760px){ .stats, .stats--4{ grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+
+/* -- Spec rows: a mono key, a dotted leader in the signature grey, the value
+   at the right (Faceplate's spec row) ---------------------------------------- */
+.spec{ margin:0; max-width:var(--fp-page-measure); }
+.spec > div{ display:flex; align-items:baseline; gap:var(--fp-space-2); padding-block:var(--fp-space-1); }
+.spec dt{ display:flex; flex:1; align-items:baseline; gap:var(--fp-space-2); font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight);
+  font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; white-space:nowrap; color:var(--fp-ctx-body); }
+.spec dt::after{ content:""; flex:1; border-bottom:var(--fp-hairline) dotted var(--fp-ctx-rule); }
+.spec dd{ margin:0; text-align:right; font-size:var(--fp-text-sm); color:var(--fp-ctx-ink); }
+.spec dd b{ font-family:var(--fp-font-mono); font-weight:var(--fp-heading-h3-weight); }
+
+/* -- A fold: what explains a chart, kept out of the way until it is asked for.
+   Faceplate ships no disclosure; this one is a mono label on an accent keyline. */
+.fold{ margin-top:var(--fp-space-3); }
+.fold__sum{ display:inline-block; cursor:pointer; list-style:none; font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight);
+  font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-ctx-ink);
+  padding-bottom:var(--fp-space-1); border-bottom:var(--fp-keyline) solid var(--fp-ctx-accent); }
+.fold__sum::-webkit-details-marker{ display:none; }
+.fold__sum::before{ content:"+ "; }
+.fold[open] > .fold__sum::before{ content:"− "; }
+.fold__sum:hover{ border-bottom-color:var(--fp-ctx-ink); }
+.fold__sum:focus-visible{ outline:var(--fp-focus-ring-width) solid var(--fp-ctx-ink); outline-offset:var(--fp-focus-ring-offset); }
+.fold > .aside:first-of-type{ margin-top:var(--fp-space-3); }
+
+/* -- A key: what the marks of a chart or a list mean, in a line of mono ------ */
+.key{ display:flex; flex-wrap:wrap; gap:var(--fp-space-2) var(--fp-space-5); margin-top:var(--fp-space-3);
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--fp-ctx-body); }
+.key > div{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); }
+.key b{ font-weight:var(--fp-label-weight); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-ctx-ink); }
+.key span{ display:inline-flex; align-items:center; gap:var(--fp-space-2); white-space:nowrap; }
+
+/* -- Small print under a table or a list: how to read it -------------------- */
+.aside{ margin:var(--fp-space-3) 0 0; font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); max-width:var(--fp-page-measure); }
+.aside b{ font-weight:var(--fp-heading-h3-weight); color:var(--fp-ctx-ink); }
+
+/* -- Inputs: square, an ink keyline, a white ground of their own, so they read
+   the same on the paper and on a field. Faceplate ships no input. ----------- */
+.input{ box-sizing:border-box; min-width:0; font-family:var(--fp-font-sans); font-size:var(--fp-text-sm); line-height:var(--fp-leading-tight);
+  color:var(--fp-ink); background:var(--fp-bg); border:var(--fp-keyline) solid var(--fp-ink); border-radius:var(--fp-radius);
+  padding:var(--fp-space-2) var(--fp-space-3); }
+.input::placeholder{ color:var(--fp-muted); }
+.input:focus-visible{ outline:var(--fp-focus-ring-width) solid var(--fp-ctx-ink); outline-offset:var(--fp-focus-ring-offset); }
+/* the filters of a list or a chart stand in its section's note; where the list
+   is the page, in the lead, in the mono of a label and the colour of their field */
+.filters{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); }
+.filters .input{ padding-block:var(--fp-space-1); }
+.fp-sec--lead .filters{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-ctx-body); }
+.fp-sec--lead .filters .input{ text-transform:none; letter-spacing:0; }
+
+/* -- The controls of a lead -------------------------------------------------
+   Whatever a page is steered with stands directly under its display line: a
+   switch (one of several), toggles (any of several), fields. They are
+   different kinds and look it, but they share a place, a height, a white
+   ground and an ink keyline. */
+.fp-sec--lead :is(.fp-seg, .input, .fp-btn, .tchks, .tokbox, .datebox){ box-sizing:border-box; min-block-size:var(--fp-space-5); }
+.fp-sec--lead .input{ padding-block:var(--fp-space-1); }
+.fp-sec--lead .fp-btn{ display:inline-flex; align-items:center; }
+.fp-sec--lead .filters{ align-items:stretch; }
+.fp-sec--lead .filters > span{ align-self:center; }
+
+/* -- Tables: a keyline under the head, hairlines between rows, numbers in mono
+   and right-aligned. Borders are separate so that a head can stay put while
+   its rows scroll. */
+.table{ width:100%; border-collapse:separate; border-spacing:0; font-size:var(--fp-text-sm); }
+.table th{ text-align:left; font-family:var(--fp-font-mono); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs);
+  letter-spacing:var(--fp-track-label); text-transform:uppercase; white-space:nowrap; color:var(--fp-ctx-body);
+  padding:var(--fp-space-2) var(--fp-space-3) var(--fp-space-2) 0; border-bottom:var(--fp-keyline) solid var(--fp-ctx-ink); }
+.table td{ padding:var(--fp-space-2) var(--fp-space-3) var(--fp-space-2) 0; border-bottom:var(--fp-hairline) solid var(--fp-ctx-rule);
+  line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+.table td.num{ font-family:var(--fp-font-mono); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--fp-ctx-ink); }
+.table th.num{ text-align:right; }
+.table th:last-child, .table td:last-child{ padding-right:0; }
+.table .mono{ font-family:var(--fp-font-mono); }
+.table .dim{ color:var(--fp-ctx-muted); }
+.table .fp-chip + .fp-chip{ margin-left:var(--fp-space-1); }
+/* a row that leads somewhere answers the pointer with a wash */
+.table tr[data-href]{ cursor:pointer; }
+.table tr[data-href]:hover > td{ background:var(--fp-wash); }
+.table td > a:not([class]){ color:inherit; text-decoration:none; }
+/* a page's main table runs its full length: the window scrolls, the head stays */
+.table--page th{ position:sticky; top:0; z-index:1; background:var(--fp-ctx-bg); }
+/* a column head that sorts */
+.table th[data-key]{ cursor:pointer; user-select:none; }
+.table th[data-key] i{ font-style:normal; visibility:hidden; }
+.table th[data-key][aria-sort] i{ visibility:visible; }
+.table th[data-key][aria-sort]{ color:var(--fp-ctx-ink); }
+/* a long table scrolls inside a region of its own; a hairline closes it */
+.table-scroll{ overflow:auto; max-height:28rem; border-bottom:var(--fp-hairline) solid var(--fp-ctx-rule); }
+.table-scroll th{ position:sticky; top:0; background:var(--fp-ctx-bg); }
+.table-scroll tr:last-child > td{ border-bottom:0; }
+
+/* -- The flight dialog (flight.js): a control surface with its own edge, so
+   the one card. It stands on a veil of ink over the page. ------------------- */
+.dialog-bg{ display:none; position:fixed; inset:0; z-index:100; justify-content:center; align-items:center; padding:var(--fp-space-3);
+  background:color-mix(in srgb, var(--fp-ink) 55%, transparent); }
+.dialog-bg.show{ display:flex; }
+.dialog{ position:relative; box-sizing:border-box; width:100%; max-width:30rem; max-height:88vh; overflow-y:auto;
+  background:var(--fp-card-background); border:var(--fp-card-border-width) solid var(--fp-card-border); padding:var(--fp-card-padding); }
+.dialog > * + *{ margin-top:var(--fp-space-3); }
+.dialog__close{ position:absolute; top:var(--fp-space-2); right:var(--fp-space-3); margin:0; border:0; background:none; cursor:pointer;
+  font-family:var(--fp-font-sans); font-size:var(--fp-text-h2); line-height:1; color:var(--fp-body); }
+.dialog__close:hover{ color:var(--fp-ink); }
+.dialog__close:focus-visible{ outline:var(--fp-focus-ring-width) solid var(--fp-focus-ring-color); outline-offset:var(--fp-focus-ring-offset); }
+.dialog__title{ margin:0; padding-right:var(--fp-space-5); font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-h3);
+  letter-spacing:var(--fp-track-heading); line-height:var(--fp-heading-h3-line-height); color:var(--fp-ink); }
+.dialog__sub{ margin:var(--fp-space-1) 0 0; font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-body); }
+.dialog__h{ margin-bottom:0; color:var(--fp-body); }
+.dialog .state, .dialog .empty, .dialog .spec{ margin-bottom:0; }
+.dialog .state b{ font-weight:var(--fp-heading-h2-weight); }
+.dialog .fp-row{ padding-block:var(--fp-space-2); margin-top:0; }
+.dialog .fp-row .fp-chip{ vertical-align:middle; }
+/* how likely the published tail is to hold: the share, large, and its basis */
+.hold{ display:flex; align-items:center; gap:var(--fp-space-3); padding-block:var(--fp-space-3);
+  border-top:var(--fp-keyline) solid var(--fp-ink); border-bottom:var(--fp-hairline) solid var(--fp-gray); }
+.hold__p{ font-weight:var(--fp-wordmark-weight); font-size:var(--fp-text-h1); letter-spacing:var(--fp-track-tight); line-height:1; color:var(--fp-ink); }
+.hold__t{ margin:0; font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ink); }
+.hold__t small{ display:block; font-size:var(--fp-text-xs); color:var(--fp-body); }

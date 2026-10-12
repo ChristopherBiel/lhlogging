@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64" role="img" aria-label="LH Fleet Monitor">
-  <!-- Product mark: the aircraft glyph the header uses, in sage. Layer 1 only —
-       this project does not carry the Faceplate personal layer. -->
-  <path fill="#5E7A50" d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64" role="img" aria-label="LH·Fleet">
+  <!-- The project glyph (static/icons/lh-fleet.svg) in sage. A browser tab gives an icon no text colour to
+       inherit, so this copy carries its own; tests/test_chassis.py holds the two drawings together. -->
+  <path fill="none" stroke="#5E7A50" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21.5 14.5H17L8 3H5L8.5 14.5L2.5 16.5L14 20.5H21.5"/>
 </svg>

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="{{lang}}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{title}}</title>
+<link rel="stylesheet" href="/faceplate/fonts.css?v={{v}}">
+<link rel="stylesheet" href="/faceplate/faceplate.tokens.css?v={{v}}">
+<link rel="stylesheet" href="/faceplate/faceplate.components.css?v={{v}}">
+<link rel="stylesheet" href="/static/css/app.css?v={{v}}">
+{{styles}}
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<!-- The page chassis of every route. Faceplate: level project, intensity 04 Field, theme light.
+     chassis.py fills the slots in double braces. The intensity is declared here and nowhere
+     else, so the whole site keeps one level and turning the dial is this one attribute (the
+     project-app card's own choice is 02 Tint); the project's name and glyph lead, and
+     Christopher's signature stands in the footer only. -->
+<body class="fp" data-fp-intensity="04">
+<div class="fp-page"><div class="fp-page__sheet">
+
+  <header class="fp-top">
+    <a class="fp-top__id" href="/">{{glyph}}<span class="fp-top__name">LH&middot;Fleet</span></a>
+    <nav class="fp-top__nav" aria-label="Pages">{{nav}}</nav>
+    <span class="fp-top__note" id="stamp"></span>
+  </header>
+
+  <main>
+{{main}}
+  </main>
+
+  <footer class="fp-foot">
+    <a class="fp-signature" href="https://chris.biels.net">{{mark}}Christopher Biel</a>
+    <nav class="fp-foot__nav" aria-label="Legal"><a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a></nav>
+  </footer>
+</div></div>
+{{scripts}}
+</body>
+</html>

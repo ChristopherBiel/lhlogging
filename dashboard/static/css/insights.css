@@ -1,41 +1,35 @@
-/* /insights only — the page frame, the figure scaffold and the plot
-   vocabulary come from figure.css. */
-/* -- What changed lately --------------------------------------------------- */
-.news { display:grid; grid-template-columns:1fr 1fr; gap:var(--fp-space-3) var(--fp-space-5); background:var(--surface);
-  border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-3) var(--fp-space-4); margin-bottom:var(--fp-space-5); }
-@media (max-width:820px){ .news { grid-template-columns:1fr; } }
-.news-h { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:500; letter-spacing:var(--fp-track-label);
-  text-transform:uppercase; color:var(--muted); margin-bottom:var(--fp-space-2); }
-.news-list { list-style:none; display:grid; gap:var(--fp-space-2); }
-.news-list li { display:grid; grid-template-columns:3.6rem 5.4rem 1fr; gap:var(--fp-space-2); align-items:baseline;
-  font-size:var(--fp-text-sm); color:var(--text); line-height:1.45; }
-.news-when { font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--muted); white-space:nowrap; }
-.news-list .fp-chip { justify-self:start; }
-.news-none { font-size:var(--fp-text-sm); color:var(--muted); }
+/* /insights only — the chassis comes from Faceplate, the state marker, tables
+   and tail links from app.css, the figure scaffold and the plot vocabulary
+   from figure.css. */
+
+/* -- What changed lately: two dated lists ---------------------------------- */
+.news-group + .news-group{ margin-top:var(--fp-space-5); }
+.news-group > .fp-label{ margin:0 0 var(--fp-space-2); color:var(--fp-ctx-body); }
+.news-group .fp-chip{ margin-right:var(--fp-space-2); vertical-align:middle; }
 
 /* this fleet is sage, the other fleets are context */
 .plot .ser-line { fill:none; stroke-width:var(--fp-keyline); stroke-linejoin:miter; }
 .plot .ser-line.this { stroke:var(--fp-sage); }
-.plot .ser-line.ctx { stroke:var(--muted); stroke-width:var(--fp-hairline); }
-.plot .ser-mark.this { fill:var(--fp-sage); stroke:var(--surface); stroke-width:var(--fp-keyline); paint-order:stroke; }
-.plot .ser-mark.ctx { fill:var(--surface); stroke:var(--muted); stroke-width:1.5px; }
+.plot .ser-line.ctx { stroke:var(--fp-ctx-muted); stroke-width:var(--fp-hairline); }
+.plot .ser-mark.this { fill:var(--fp-sage); stroke:var(--fp-ctx-bg); stroke-width:var(--fp-keyline); paint-order:stroke; }
+.plot .ser-mark.ctx { fill:var(--fp-ctx-bg); stroke:var(--fp-ctx-muted); stroke-width:var(--fp-hairline); }
 .plot .band { fill:var(--fp-sage); fill-opacity:.16; }
 .plot .gain { fill:var(--fp-sage); fill-opacity:.28; }
 .plot .gain-top { stroke:var(--fp-sage); stroke-width:var(--fp-keyline); }
 
 /* routes: outbound solid, return open; sage above the fleet, terracotta below */
-.plot .whisker { stroke:var(--muted); stroke-width:var(--fp-hairline); }
+.plot .whisker { stroke:var(--fp-ctx-muted); stroke-width:var(--fp-hairline); }
 .plot .pair { stroke:var(--fp-ink); stroke-width:var(--fp-hairline); }
 .plot .dot { fill:var(--fp-ink); stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }
 .plot .dot.hi { fill:var(--fp-sage); stroke:var(--fp-sage); }
 .plot .dot.lo { fill:var(--fp-terra); stroke:var(--fp-terra); }
-.plot .dot.open { fill:var(--surface); }
+.plot .dot.open { fill:var(--fp-ctx-bg); }
 
 /* turnarounds */
 .plot .rail { stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }
 .plot .node { fill:var(--fp-ink); }
-.plot .leader { fill:none; stroke:var(--line); stroke-width:var(--fp-hairline); }
-.plot .lk { fill:none; stroke:var(--muted); stroke-opacity:.3; }
+.plot .leader { fill:none; stroke:var(--fp-ctx-rule); stroke-width:var(--fp-hairline); }
+.plot .lk { fill:none; stroke:var(--fp-ctx-muted); stroke-opacity:.3; }
 .plot .lk.strong { stroke:var(--fp-sage); stroke-opacity:.82; }
 .plot .lk.next { stroke-dasharray:6 4; }
 .plot .lk.hot { stroke:var(--fp-ink); stroke-opacity:1; }
@@ -45,11 +39,11 @@
 
 /* matrices */
 .plot .cell { fill:var(--fp-sage); }
-.plot .group { fill:var(--surface2); }
+.plot .group { fill:var(--fp-sage-xl); }
 .plot .cell.prod { fill:var(--fp-ink); }
 .plot .mg { fill:var(--fp-seq-5); }
-.plot .mg.thin { fill:var(--line); }
-.plot .pending { fill:var(--border); }
+.plot .mg.thin { fill:var(--fp-ctx-rule); }
+.plot .pending { fill:var(--fp-border); }
 .plot .stop { stroke:var(--fp-terra); stroke-width:var(--fp-hairline); }
-.plot .stop-tag { fill:var(--surface); }
+.plot .stop-tag { fill:var(--fp-ctx-bg); }
 .plot .first { stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }

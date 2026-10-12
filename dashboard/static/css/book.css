@@ -1,243 +1,154 @@
-:root {
-  --bg:var(--fp-surface); --surface:var(--fp-bg); --surface2:var(--fp-sage-xl); --border:var(--fp-border); --line:var(--fp-gray);
-  --text:var(--fp-body); --text-bright:var(--fp-ink); --muted:var(--fp-muted);
-  --accent:var(--fp-sage); --green:var(--fp-dv-4); --amber:var(--fp-dv-3); --red:var(--fp-terra); --purple:var(--fp-dv-5); --cyan:var(--fp-dv-4);
-  --accent-dim:var(--fp-sage-tint); --green-dim:color-mix(in srgb,var(--fp-dv-4) 16%,var(--fp-bg)); --amber-dim:color-mix(in srgb,var(--fp-dv-3) 22%,var(--fp-bg)); --red-dim:var(--fp-terra-tint); --purple-dim:color-mix(in srgb,var(--fp-dv-5) 18%,var(--fp-bg));
-}
-/* Scoped reset. A universal `* { margin:0; padding:0 }` reaches into
-   @layer fp.components and silently zeroes .fp-btn / .fp-chip / .fp-seg
-   padding -- unlayered CSS beats layered CSS regardless of specificity, which
-   is how a real project shipped a segmented control reading "anyyesno".
-   See dist/docs/using-faceplate.md#a-note-on-resets
+/* /book only — the chassis comes from Faceplate; inputs, state markers, tail
+   links and the flight dialog from app.css. */
 
-   The exclusion is wrapped in :where() on purpose. Bare
-   :not([class*="fp-"]):not([class*="fp-"] *) carries the specificity of its
-   arguments -- two attribute selectors, (0,2,0) -- which outranks every
-   single-class rule in this file and quietly flattens .container's
-   `margin:0 auto`. :where() is always (0,0,0), so this keeps the reach of the
-   old universal reset and none of its weight. */
-* { box-sizing:border-box; }
-*:where(:not([class*="fp-"]):not([class*="fp-"] *)) { margin:0; padding:0; }
-body { background:var(--bg); color:var(--text); font-size:var(--fp-text-sm); line-height:1.5; font-family:var(--fp-font-sans); -webkit-font-smoothing:antialiased; }
-.container { width:96vw; max-width:1100px; margin:0 auto; padding:0 var(--fp-space-3) var(--fp-space-6); }
-/* -- Header - structural (intensity 02) ------------------------------------
-   Faceplate unbranded: no band, no monogram plate, no wordmark. Identity is
-   the product glyph plus an ink keyline; colour coverage stays inside 02. */
-.header { display:flex; align-items:center; gap:var(--fp-space-3) var(--fp-space-4); flex-wrap:wrap;
-  padding:0 0 var(--fp-space-3); margin:var(--fp-space-3) 0 var(--fp-space-4);
-  border-bottom:var(--fp-keyline) solid var(--fp-ink); }
-.brand { display:flex; align-items:center; gap:var(--fp-space-3); }
-.brand-mark { width:var(--fp-space-5); height:var(--fp-space-5); flex-shrink:0;
-  display:inline-grid; place-items:center; color:var(--fp-sage); }
-.brand-mark svg { width:100%; height:100%; display:block; }
-.header h1 { font-family:var(--fp-font-sans); font-size:var(--fp-text-h3); font-weight:800;
-  letter-spacing:var(--fp-track-tight); color:var(--fp-ink); text-transform:uppercase;
-  line-height:var(--fp-leading-tight); margin-bottom:0; }
-.header h1 span { color:var(--fp-sage); }
-.model { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label);
-  color:var(--fp-muted); text-transform:uppercase; margin-top:var(--fp-space-1); }
-.nav { display:flex; gap:var(--fp-space-3); flex-wrap:wrap; margin-left:auto; }
-.nav a, .nav-link { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); font-weight:500;
-  letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-body); text-decoration:none;
-  padding:var(--fp-space-1) 0; border-bottom:var(--fp-keyline) solid transparent;
-  transition:color .14s, border-color .14s; }
-.nav a:hover, .nav-link:hover { color:var(--fp-sage-deep); border-bottom-color:var(--fp-sage); text-decoration:none; }
-.updated { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--fp-muted); }
-.meta { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); line-height:1.6; }
-.meta b { color:var(--text); font-weight:700; }
-/* segmented control = Faceplate .fp-seg; reset <button> UA borders + map .active */
-.fp-seg { margin-bottom:var(--fp-space-3); }
-.fp-seg > button { border-top:0; border-bottom:0; border-left:0; color:var(--fp-ink); cursor:pointer; }
-.fp-seg > .active { background:var(--fp-ink); color:var(--fp-text-inverse); }
-.searchbar { display:flex; gap:var(--fp-space-2); flex-wrap:wrap; margin-bottom:var(--fp-space-2); align-items:stretch; }
-.searchbar > input { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-2) var(--fp-space-3); font-size:var(--fp-text-sm); font-family:var(--fp-font-sans); color:var(--text-bright); width:200px; text-transform:uppercase; }
-.searchbar > input::placeholder { color:var(--muted); text-transform:none; }
-.searchbar > input:focus { outline:none; border-color:var(--accent); }
-.fp-btn:hover { opacity:.88; }  /* search button uses .fp-btn--solid */
-/* buttons stretch with the row so they match the input/tokbox height */
-.searchbar .fp-btn { display:inline-flex; align-items:center; padding-top:0; padding-bottom:0; }
-/* filter drawer — tucked behind the Filters button */
-.filterbar { display:none; align-items:center; flex-wrap:wrap; gap:var(--fp-space-2) var(--fp-space-3); border:var(--fp-keyline) solid var(--fp-ink);
-  background:var(--surface); padding:var(--fp-space-2) var(--fp-space-3); margin-bottom:var(--fp-space-2); }
-.filterbar.show { display:flex; }
-.filterbar .fp-seg { margin-bottom:0; }
-.filterbar .fp-btn { font-size:var(--fp-text-xs); padding:.45em .8em; }
-.flabel { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
-.fchk { display:inline-flex; align-items:center; gap:var(--fp-space-2); cursor:pointer; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700; color:var(--fp-ink); user-select:none; }
-.fchk:focus-visible { outline:var(--fp-focus-ring-width) solid var(--fp-focus-ring-color); outline-offset:var(--fp-focus-ring-offset); }
-/* colour square is the toggle — filled = shown, hollow = filtered out (no checkbox) */
-.fchk .sw { width:12px; height:12px; border:var(--fp-keyline) solid var(--_c,var(--fp-ink)); background:var(--_c,var(--fp-ink)); }
-.fchk .sw.t748 { --_c:var(--accent); } .fchk .sw.t388 { --_c:var(--fp-dv-2); }
-.fchk .sw.t789 { --_c:var(--fp-dv-4); } .fchk .sw.t359 { --_c:var(--fp-dv-3); }
-.fchk.off { color:var(--muted); }
-.fchk.off .sw { background:transparent; }
-.fchk:hover .sw { outline:var(--fp-keyline) solid var(--fp-gray); outline-offset:var(--fp-focus-ring-offset); }
-.fsep { width:1.5px; height:18px; background:var(--border); }
-.fnote { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); padding:var(--fp-space-2) var(--fp-space-1) 0; }
-/* multi-airport token inputs (route mode) — chips + inline input + suggestions */
-.tokbox { display:flex; align-items:center; flex-wrap:wrap; gap:var(--fp-space-1); background:var(--surface);
-  border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-1) var(--fp-space-2); width:280px; position:relative; cursor:text; }
-.tokbox:focus-within { border-color:var(--accent); }
-.tokbox .boxlbl, .datebox .boxlbl { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-right:var(--fp-space-1); }
-.tok { display:inline-flex; align-items:center; gap:var(--fp-space-1); background:var(--fp-ink); color:var(--fp-text-inverse);
-  font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700; padding:var(--fp-space-1) var(--fp-space-2); }
-.tok button { border:none; background:none; color:color-mix(in srgb,var(--fp-text-inverse) 72%,transparent); cursor:pointer; font-size:var(--fp-text-sm); line-height:1; padding:0; }
-.tok button:hover { color:var(--fp-text-inverse); }
-.tokbox input { flex:1; min-width:76px; border:none; background:none; padding:var(--fp-space-1) var(--fp-space-1); font-size:var(--fp-text-sm);
-  font-family:var(--fp-font-sans); color:var(--text-bright); text-transform:uppercase; }
-.tokbox input:focus { outline:none; }
-.tokbox input::placeholder { color:var(--muted); text-transform:none; }
-.sugg { display:none; position:absolute; top:calc(100% + 1.5px); left:-1.5px; right:-1.5px; z-index:60;
-  background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); max-height:264px; overflow-y:auto; }
-.sugg.show { display:block; }
-.sugg .sitem { display:flex; align-items:baseline; gap:var(--fp-space-2); padding:var(--fp-space-2) var(--fp-space-2); cursor:pointer; }
-.sugg .sitem .code { font-family:var(--fp-font-mono); font-weight:700; font-size:var(--fp-text-xs); color:var(--text-bright); }
-.sugg .sitem .nm { font-size:var(--fp-text-xs); color:var(--muted); }
-.sugg .sitem:hover, .sugg .sitem.active { background:var(--surface2); }
-/* ── Map mode ── the basemap is an inline equirectangular SVG (x=lon, y=-lat),
-   so pan/zoom is just the viewBox and no tile server ever sees a visitor.
-   Marker radius and label size are set in JS: CSS px inside a scaled viewBox
-   are user units, which would grow with zoom. Strokes use non-scaling-stroke. */
-.mapwrap { display:none; position:relative; border:var(--fp-keyline) solid var(--fp-ink); background:var(--surface); margin-bottom:var(--fp-space-2); }
-.mapwrap.show { display:block; }
-.maphead { display:flex; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); flex-wrap:wrap; padding:var(--fp-space-2) var(--fp-space-3); border-bottom:var(--fp-keyline) solid var(--fp-ink); }
-.maphead .t { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); }
-.maphead .pick { font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:700; color:var(--text-bright); }
-.maphead .fp-seg { margin-bottom:0; }
-.maphead input { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-1) var(--fp-space-2);
-  font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--text-bright); width:190px; text-transform:uppercase; }
-.maphead input::placeholder { color:var(--muted); text-transform:none; font-family:var(--fp-font-sans); }
-.maphead input:focus { outline:none; border-color:var(--accent); }
-/* figure/ground: sea takes the page grey, land the sage tint, so the coastline
-   reads at a glance and a sage marker still sits clearly on top of it */
-.mapsvg { display:block; width:100%; height:clamp(300px,52vh,470px); touch-action:none;
-  cursor:grab; background:var(--bg); }
-/* a portrait canvas would fit the world's width into a sliver and pad it with
-   empty ocean — keep the map box landscape on narrow screens */
-@media (max-width:640px){ .mapsvg { height:clamp(230px,62vw,320px); } }
-.mapsvg.grabbing { cursor:grabbing; }
-.land { fill:var(--fp-sage-tint); stroke:color-mix(in srgb,var(--fp-sage) 42%,var(--fp-sage-tint));
-  stroke-width:.8; vector-effect:non-scaling-stroke; }
-/* Network layer: arcs sized in screen px (non-scaling-stroke, width set in JS
-   by legs flown); a wide invisible twin takes the pointer so thin lines are
-   still easy to hit */
-.rt { fill:none; stroke:var(--fp-sage-deep); stroke-opacity:.5; stroke-linecap:round; vector-effect:non-scaling-stroke; pointer-events:none; }
-.rt.on { stroke:var(--fp-terra); stroke-opacity:1; }
-.rthit { fill:none; stroke:transparent; stroke-width:12; vector-effect:non-scaling-stroke; cursor:pointer; pointer-events:stroke; }
-.rthit:focus { outline:none; }
-.rthit:focus-visible { stroke:var(--fp-ink); stroke-opacity:.25; }
-.mk { fill:var(--accent); stroke:var(--fp-bg); stroke-width:1.3; vector-effect:non-scaling-stroke; cursor:pointer; }
-.mk:hover { fill:var(--fp-ink); }
-.mk.sel { fill:var(--fp-terra); stroke:var(--fp-ink); stroke-width:1.8; }
-/* the UA focus ring is an `outline:auto` drawn in SVG user space, so it blows up
-   with the zoom — replace it with a stroke, which honours non-scaling-stroke */
-.mk:focus { outline:none; }
-.mk:focus-visible { stroke:var(--fp-ink); stroke-width:2.6; }
-.mklbl { font-family:var(--fp-font-mono); font-weight:700; fill:var(--text-bright); pointer-events:none;
-  paint-order:stroke; stroke:var(--surface); stroke-linejoin:round; }
-.mapctl { position:absolute; top:52px; right:10px; display:flex; flex-direction:column; gap:var(--fp-space-1); }
-.mapctl button { width:29px; height:29px; padding:0; border:var(--fp-keyline) solid var(--fp-ink); background:var(--surface);
-  color:var(--text-bright); font-family:var(--fp-font-mono); font-size:var(--fp-text-sm); font-weight:700; line-height:1; cursor:pointer; }
-.mapctl button:hover { background:var(--surface2); }
-.mapctl button.sm { font-size:var(--fp-text-xxs); letter-spacing:.4px; }
-.maptip { display:none; position:absolute; z-index:20; pointer-events:none; max-width:215px;
-  background:var(--fp-ink); color:var(--fp-text-inverse); padding:var(--fp-space-2) var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); line-height:1.5; }
-.maptip.show { display:block; }
-.maptip b { font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); }
-.maptip .d { color:color-mix(in srgb,var(--fp-text-inverse) 72%,transparent); }
-.mapnote { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); padding:var(--fp-space-2) var(--fp-space-3); border-top:var(--fp-keyline) solid var(--border); }
-/* ── Plan mode ── date range, the target summary, ranked candidate cards */
-.datebox { display:flex; align-items:center; gap:var(--fp-space-1); background:var(--surface);
-  border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-1) var(--fp-space-2); }
-.datebox:focus-within { border-color:var(--accent); }
-.datebox input { border:none; background:none; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs);
-  color:var(--text-bright); padding:var(--fp-space-1); }
-.datebox input:focus { outline:none; }
-.datebox .dsep { color:var(--muted); }
-.tsum { display:flex; flex-direction:column; gap:var(--fp-space-2); border:var(--fp-keyline) solid var(--fp-ink);
-  background:var(--surface); padding:var(--fp-space-3); }
-.tsum-head { display:flex; align-items:center; flex-wrap:wrap; gap:var(--fp-space-1) var(--fp-space-2); }
-.tsum .treg { font-family:var(--fp-font-mono); font-weight:700; font-size:var(--fp-text-base); color:var(--text-bright); }
-.tsum .tcab { font-size:var(--fp-text-xs); color:var(--muted); }
-.tsum-line { font-size:var(--fp-text-xs); color:var(--text); }
-.tsum .pleg { display:inline-block; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); white-space:nowrap;
-  margin-right:var(--fp-space-3); }
-.tsum-note { font-size:var(--fp-text-xs); color:var(--muted); border-top:var(--fp-keyline) solid var(--border);
-  padding-top:var(--fp-space-2); }
-.plan-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--fp-space-2);
-  margin-top:var(--fp-space-2); }
-.plan-head .t { font-size:var(--fp-text-xs); color:var(--muted); }
-.plan-head .fp-seg { margin-bottom:0; }
-.fcard .why { font-size:var(--fp-text-xs); color:var(--muted); margin-top:var(--fp-space-1); }
-.fcard .why.nof { color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
-.src { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.4px; }
-.src-published { color:var(--fp-ink); font-weight:700; }
-.src-projected, .src-scheduled { color:var(--muted); }
-.nopub { font-family:var(--fp-font-sans); font-weight:400; font-size:var(--fp-text-xs); color:var(--muted); }
-.pchip .cn { text-transform:none; font-family:var(--fp-font-mono); }
-.hint { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); }
-.results { display:flex; flex-direction:column; gap:var(--fp-space-2); }
-.fcard { display:flex; align-items:center; gap:var(--fp-space-3); border:var(--fp-keyline) solid var(--fp-ink); background:var(--surface); padding:var(--fp-space-3) var(--fp-space-3); cursor:pointer; transition:border-color .12s; }
-.fcard:hover { border-color:var(--accent); }
-.fcard .when { width:96px; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--muted); flex-shrink:0; line-height:1.5; }
-.fcard .when b { display:block; color:var(--text-bright); font-size:var(--fp-text-sm); }
-.fcard .route { flex:1; min-width:0; }
-.fcard .route .pair { font-size:var(--fp-text-base); font-weight:700; color:var(--text-bright); }
-.fcard .route .sub { font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--muted); margin-top:var(--fp-space-1); }
-.fcard .tail { font-family:var(--fp-font-mono); font-weight:700; font-size:var(--fp-text-sm); color:var(--text-bright); display:flex; align-items:center; flex-wrap:wrap; gap:var(--fp-space-1); min-width:90px; }
-.fcard .tail .star { color:var(--amber); }
-/* tail -> airframe profile; ink with a sage keyline, like a quiet link */
-.tlink { color:inherit; text-decoration:none; border-bottom:var(--fp-keyline) solid var(--fp-sage); white-space:nowrap; }
-.tlink:hover { color:var(--fp-sage-deep); }
-.tbadge { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; padding:var(--fp-space-1) var(--fp-space-1); color:var(--fp-text-inverse); }
-.tbadge.t748 { background:var(--accent); } .tbadge.t388 { background:var(--fp-dv-2); }
-.tbadge.t789 { background:var(--fp-dv-4); }
-.tbadge.t359 { background:var(--fp-dv-3); color:var(--fp-ink); } .tbadge.tother { background:var(--surface2); color:var(--muted); }
-.abadge { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; padding:var(--fp-space-1) var(--fp-space-1);
-  background:var(--fp-ink); color:var(--fp-text-inverse); letter-spacing:.4px; }   /* Allegris cabin */
-/* cabin-config badges: F<n> = First (amber, the catch), C<n> = Business */
-.cbadge { font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:700; padding:var(--fp-space-1) var(--fp-space-1); letter-spacing:.4px;
-  border:var(--fp-keyline) solid var(--line); color:var(--text); background:var(--surface); }
-.cbadge.cf { border-color:var(--amber); background:var(--amber-dim); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); }
-.miniconf { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:62px; padding:var(--fp-space-1) var(--fp-space-2); border:var(--fp-keyline) solid var(--fp-ink); flex-shrink:0; }
-.miniconf .p { font-family:var(--fp-font-mono); font-weight:700; font-size:var(--fp-text-base); line-height:1; }
-.miniconf .cn { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:var(--fp-space-1); }
-/* confidence tiers are monochrome — the % carries the level (no traffic-light hue) */
-.miniconf.cg, .miniconf.ca, .miniconf.cr { background:var(--surface); }
-.miniconf.cg .p, .miniconf.ca .p, .miniconf.cr .p { color:var(--fp-ink); }
-.empty { color:var(--muted); padding:var(--fp-space-5); text-align:center; font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); border:var(--fp-keyline) dashed var(--border); }
-footer { text-align:center; padding:var(--fp-space-4) 0 var(--fp-space-2); font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
-footer a { color:var(--muted); text-decoration:none; } footer a:hover { color:var(--text); }
-.modal-bg { display:none; position:fixed; inset:0; background:color-mix(in srgb,var(--fp-ink) 55%,transparent); z-index:100; justify-content:center; align-items:center; padding:var(--fp-space-3); }
-.modal-bg.show { display:flex; }
-.modal { background:var(--surface); border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-4); width:100%; max-width:460px; max-height:88vh; overflow-y:auto; position:relative; }
-.modal h3 { font-size:var(--fp-text-base); color:var(--text-bright); margin-bottom:var(--fp-space-1); padding-right:var(--fp-space-4); }
-.modal .sub { font-size:var(--fp-text-xs); color:var(--muted); margin-bottom:var(--fp-space-3); }
-.modal .close { position:absolute; top:14px; right:18px; cursor:pointer; color:var(--muted); font-size:var(--fp-text-h3); line-height:1; border:none; background:none; }
-.modal .close:hover { color:var(--text-bright); }
-.reassign-banner { background:var(--amber-dim); border:var(--fp-keyline) solid var(--amber); color:color-mix(in srgb,var(--fp-dv-3) 72%,var(--fp-ink)); padding:var(--fp-space-2) var(--fp-space-2); font-size:var(--fp-text-xs); margin-bottom:var(--fp-space-3); }
-.conf-chip { display:flex; align-items:center; gap:var(--fp-space-3); border:var(--fp-keyline) solid var(--fp-ink); padding:var(--fp-space-2) var(--fp-space-3); margin-bottom:var(--fp-space-3); }
-.conf-chip .cp { font-family:var(--fp-font-mono); font-size:var(--fp-text-h3); font-weight:700; line-height:1; flex-shrink:0; }
-.conf-chip .ct { font-size:var(--fp-text-xs); color:var(--text-bright); line-height:1.45; }
-.conf-chip .cn { color:var(--muted); font-size:var(--fp-text-xs); font-family:var(--fp-font-sans); }
-/* confidence tiers are monochrome — the % and wording carry the level (no traffic-light hue) */
-.conf-chip.cg, .conf-chip.ca, .conf-chip.cr { background:var(--surface); }
-.conf-chip.cg .cp, .conf-chip.ca .cp, .conf-chip.cr .cp { color:var(--fp-ink); }
-.det-grid { display:grid; grid-template-columns:auto 1fr; gap:var(--fp-space-2) var(--fp-space-3); font-size:var(--fp-text-xs); margin-bottom:var(--fp-space-3); }
-.det-grid .k { color:var(--muted); white-space:nowrap; font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); text-transform:uppercase; letter-spacing:.3px; }
-.det-grid .v { color:var(--text-bright); }
-.hist-title { font-family:var(--fp-font-sans); font-size:var(--fp-text-xxs); text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 var(--fp-space-2); }
-.hist-row { display:flex; align-items:center; gap:var(--fp-space-2); font-size:var(--fp-text-xs); padding:var(--fp-space-2) 0; border-bottom:var(--fp-keyline) solid var(--border); }
-.hist-row:last-child { border-bottom:none; }
-.hist-row .obs { width:96px; color:var(--muted); flex-shrink:0; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); }
-.hist-row .reg { font-family:var(--fp-font-mono); font-weight:700; color:var(--text-bright); min-width:64px; }
-.hist-row.changed .reg { color:var(--amber); }
-.hist-row .tag { font-size:var(--fp-text-xxs); color:var(--muted); }
-/* phones: a card's four columns become two rows — date + route, then tail +
-   chance — instead of squeezing the route into a one-word column. Last in the
-   file so it outranks the base .fcard rules above. */
-@media (max-width:560px){
-  .fcard { flex-wrap:wrap; }
-  .fcard .route { flex:1 1 calc(100% - 96px - var(--fp-space-3)); }
-  .fcard .tail { flex:1 1 auto; }
+/* -- The query, in the lead ---------------------------------------------------
+   Every control brings a white ground of its own, so the form reads the same
+   on the paper and on the lead's field. */
+.query{ display:flex; flex-direction:column; align-items:flex-start; gap:var(--fp-space-2); }
+.searchbar{ display:flex; flex-wrap:wrap; align-items:stretch; gap:var(--fp-space-2); }
+.searchbar > .input{ inline-size:13rem; text-transform:uppercase; }
+.searchbar > .input::placeholder{ text-transform:none; }
+.searchbar .fp-btn{ display:inline-flex; align-items:center; }
+/* several airports to a side: chips, an input, suggestions under it */
+.tokbox, .datebox{ display:flex; align-items:center; gap:var(--fp-space-1); background:var(--fp-bg);
+  border:var(--fp-keyline) solid var(--fp-ink); padding:0 var(--fp-space-2); }
+.tokbox{ position:relative; flex-wrap:wrap; inline-size:17.5rem; cursor:text; }
+.boxlbl{ margin-right:var(--fp-space-1); font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label);
+  text-transform:uppercase; color:var(--fp-body); }
+.tok{ display:inline-flex; align-items:center; gap:var(--fp-space-1); background:var(--fp-ink); color:var(--fp-text-inverse);
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:var(--fp-heading-h2-weight); line-height:var(--fp-leading-tight); padding:var(--fp-space-1) var(--fp-space-2); }
+.tok button{ border:0; background:none; padding:0; cursor:pointer; font-size:var(--fp-text-sm); line-height:1; color:var(--fp-gray); }
+.tok button:hover{ color:var(--fp-text-inverse); }
+.tokbox input, .datebox input{ border:0; background:none; padding:0 var(--fp-space-1); color:var(--fp-ink); }
+.tokbox input{ flex:1; min-width:4.75rem; font-family:var(--fp-font-sans); font-size:var(--fp-text-sm); text-transform:uppercase; }
+.tokbox input::placeholder{ color:var(--fp-muted); text-transform:none; }
+.datebox input{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); }
+.tokbox input:focus, .datebox input:focus{ outline:none; }
+.tokbox:focus-within, .datebox:focus-within{ outline:var(--fp-focus-ring-width) solid var(--fp-ctx-ink); outline-offset:var(--fp-focus-ring-offset); }
+.dsep{ color:var(--fp-body); }
+.sugg{ display:none; position:absolute; top:calc(100% + var(--fp-keyline)); left:calc(-1 * var(--fp-keyline)); right:calc(-1 * var(--fp-keyline)); z-index:60;
+  background:var(--fp-bg); border:var(--fp-keyline) solid var(--fp-ink); max-height:16.5rem; overflow-y:auto; }
+.sugg.show{ display:block; }
+.sitem{ display:flex; align-items:baseline; gap:var(--fp-space-2); padding:var(--fp-space-2); cursor:pointer; }
+.sitem .code{ font-family:var(--fp-font-mono); font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-xs); color:var(--fp-ink); }
+.sitem .nm{ font-size:var(--fp-text-xs); color:var(--fp-body); }
+.sitem:hover, .sitem.active{ background:var(--fp-sage-xl); }
+
+/* -- Badges: the type's hue (as on the schedule), the Allegris cabin, the
+   First and Business seat counts ---------------------------------------------- */
+.tbadge, .abadge, .cbadge{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:var(--fp-heading-h2-weight); padding:var(--fp-space-1); white-space:nowrap; }
+.tbadge{ color:var(--fp-text-inverse); }
+.tbadge.t748{ background:var(--fp-sage); } .tbadge.t388{ background:var(--fp-dv-2); }
+.tbadge.t789{ background:var(--fp-dv-4); }
+.tbadge.t359{ background:var(--fp-dv-3); color:var(--fp-ink); } .tbadge.tother{ background:var(--fp-gray); color:var(--fp-ink); }
+.abadge{ background:var(--fp-ink); color:var(--fp-text-inverse); }
+.cbadge{ background:var(--fp-bg); color:var(--fp-ink); outline:var(--fp-hairline) solid var(--fp-ink); outline-offset:calc(-1 * var(--fp-hairline)); }
+.cbadge.cf{ background:var(--fp-terra-tint); }
+.star{ color:var(--fp-ctx-ink); }
+
+/* -- The filters of the flights: the type squares are legend and control in one */
+.filterbar{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--fp-space-2) var(--fp-space-3); }
+.filterbar[hidden]{ display:none; }
+.flabel{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-ctx-body); }
+.fchk{ display:inline-flex; align-items:center; gap:var(--fp-space-2); cursor:pointer; user-select:none;
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:var(--fp-label-weight); color:var(--fp-ctx-ink); }
+.fchk:focus-visible{ outline:var(--fp-focus-ring-width) solid var(--fp-ctx-ink); outline-offset:var(--fp-focus-ring-offset); }
+.fchk .sw{ width:var(--fp-space-3); height:var(--fp-space-3); border:var(--fp-keyline) solid var(--_c, var(--fp-ink)); background:var(--_c, var(--fp-ink)); }
+.fchk .sw.t748{ --_c:var(--fp-sage); } .fchk .sw.t388{ --_c:var(--fp-dv-2); }
+.fchk .sw.t789{ --_c:var(--fp-dv-4); } .fchk .sw.t359{ --_c:var(--fp-dv-3); }
+.fchk.off{ color:var(--fp-ctx-muted); }
+.fchk.off .sw{ background:transparent; }
+.fchk:hover .sw{ outline:var(--fp-keyline) solid var(--fp-gray); outline-offset:var(--fp-focus-ring-offset); }
+.filterbar .fp-seg{ background:var(--fp-bg); }
+
+/* -- The map: an inline equirectangular SVG (x = lon, y = -lat), so pan and
+   zoom are just the viewBox and no tile server ever sees a visitor. A map has
+   no axis and no frame: four registration marks hold it. Marker radius and
+   label size are set in the script (CSS px inside a scaled viewBox are user
+   units); strokes do not scale. ----------------------------------------------- */
+.mapwrap{ position:relative; padding:var(--fp-space-2); }
+.maphead{ display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--fp-space-2) var(--fp-space-3); margin-bottom:var(--fp-space-3);
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--fp-ctx-body); }
+.maphead .pick{ font-weight:var(--fp-heading-h2-weight); color:var(--fp-ctx-ink); }
+.maphead #map-count{ margin-left:auto; }
+#map-tail{ inline-size:13rem; text-transform:uppercase; }
+#map-tail::placeholder{ text-transform:none; }
+/* figure and ground: the sea is the quiet surface, the land the sage tint */
+.mapsvg{ display:block; width:100%; height:clamp(18.75rem, 52vh, 29.375rem); touch-action:none; cursor:grab; background:var(--fp-surface); }
+/* a portrait canvas would fit the world's width into a sliver: keep the map landscape on a phone */
+@media (max-width:640px){ .mapsvg{ height:clamp(14.375rem, 62vw, 20rem); } }
+.mapsvg.grabbing{ cursor:grabbing; }
+.land{ fill:var(--fp-sage-tint); stroke:var(--fp-seq-3); stroke-width:var(--fp-hairline); vector-effect:non-scaling-stroke; }
+/* the network: arcs as wide as the legs flown (set in the script); a wide
+   invisible twin takes the pointer, so a thin line is still easy to hit */
+.rt{ fill:none; stroke:var(--fp-sage-deep); stroke-opacity:.5; stroke-linecap:round; vector-effect:non-scaling-stroke; pointer-events:none; }
+.rt.on{ stroke:var(--fp-terra); stroke-opacity:1; }
+.rthit{ fill:none; stroke:transparent; stroke-width:12; vector-effect:non-scaling-stroke; cursor:pointer; pointer-events:stroke; }
+.rthit:focus{ outline:none; }
+.rthit:focus-visible{ stroke:var(--fp-ink); stroke-opacity:.25; }
+.mk{ fill:var(--fp-sage); stroke:var(--fp-bg); stroke-width:var(--fp-hairline); vector-effect:non-scaling-stroke; cursor:pointer; }
+.mk:hover{ fill:var(--fp-ink); }
+.mk.sel{ fill:var(--fp-terra); stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }
+/* the browser's focus ring is drawn in user space and blows up with the zoom: a stroke stands in */
+.mk:focus{ outline:none; }
+.mk:focus-visible{ stroke:var(--fp-ink); stroke-width:var(--fp-keyline); }
+.mklbl{ font-family:var(--fp-font-mono); font-weight:var(--fp-heading-h2-weight); fill:var(--fp-ink); pointer-events:none;
+  paint-order:stroke; stroke:var(--fp-surface); stroke-linejoin:round; }
+.mapctl{ position:absolute; top:var(--fp-space-7); right:var(--fp-space-4); display:flex; flex-direction:column; gap:var(--fp-space-1); }
+.mapctl button{ width:var(--fp-space-5); height:var(--fp-space-5); padding:0; border:var(--fp-keyline) solid var(--fp-ink); background:var(--fp-bg);
+  color:var(--fp-ink); font-family:var(--fp-font-mono); font-size:var(--fp-text-sm); font-weight:var(--fp-heading-h2-weight); line-height:1; cursor:pointer; }
+.mapctl button:hover{ background:var(--fp-sage-xl); }
+.mapctl button.sm{ font-size:var(--fp-text-xxs); }
+/* the map's tooltip is the same card as a plot's */
+.maptip{ display:none; position:absolute; z-index:20; pointer-events:none; max-width:14rem; background:var(--fp-card-background);
+  border:var(--fp-card-border-width) solid var(--fp-card-border); padding:var(--fp-space-2) var(--fp-space-3);
+  font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); line-height:var(--fp-leading-snug); color:var(--fp-body); }
+.maptip.show{ display:block; }
+.maptip b{ font-family:var(--fp-font-sans); font-size:var(--fp-text-xs); color:var(--fp-ink); }
+.maptip .d{ color:var(--fp-muted); }
+.mapnote{ margin:var(--fp-space-2) 0 0; font-size:var(--fp-text-sm); color:var(--fp-ctx-body); }
+
+/* -- The flights: one row each, a hairline between; no cards ----------------- */
+.results{ display:flex; flex-direction:column; }
+.results > .state, .results > .empty{ margin:0; }
+.results > .key{ margin:0 0 var(--fp-space-3); }
+.key .abadge, .key .cbadge{ margin-right:calc(-1 * var(--fp-space-1)); }
+.key .cbadge + .cbadge{ margin-left:var(--fp-space-1); }
+/* the tail the plan is for */
+.tsum{ display:flex; flex-direction:column; gap:var(--fp-space-2); padding-bottom:var(--fp-space-4); }
+.tsum-head{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--fp-space-1) var(--fp-space-2); }
+.treg{ font-size:var(--fp-text-h3); }
+.tcab{ font-size:var(--fp-text-sm); color:var(--fp-ctx-body); }
+.tsum-line{ font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-ink); }
+.pleg{ display:inline-block; margin-right:var(--fp-space-3); font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); white-space:nowrap; }
+.tsum-note{ font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); max-width:var(--fp-page-measure); }
+.plan-head{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--fp-space-2);
+  padding-block:var(--fp-space-2); border-top:var(--fp-keyline) solid var(--fp-ctx-ink); }
+.plan-head .t{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-ctx-body); }
+.plan-head .fp-seg{ background:var(--fp-bg); }
+.fcard{ display:flex; align-items:center; gap:var(--fp-space-3) var(--fp-page-gutter); padding:var(--fp-space-3) 0; cursor:pointer;
+  border-top:var(--fp-hairline) solid var(--fp-ctx-rule); }
+.fcard:hover{ background:var(--fp-wash); }
+.fcard .when{ flex:none; inline-size:7rem; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+.fcard .when b{ display:block; font-size:var(--fp-text-sm); font-weight:var(--fp-heading-h3-weight); color:var(--fp-ctx-ink); }
+.fcard .route{ flex:1; min-width:0; }
+.fcard .pair{ font-size:var(--fp-text-base); font-weight:var(--fp-heading-h2-weight); color:var(--fp-ctx-ink); }
+.fcard .sub, .fcard .why{ margin-top:var(--fp-space-1); font-size:var(--fp-text-sm); line-height:var(--fp-leading-snug); color:var(--fp-ctx-body); }
+.fcard .why.nof, .warn{ color:var(--fp-terra-deep); }
+.fcard .tail{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--fp-space-1); min-inline-size:6rem;
+  font-family:var(--fp-font-mono); font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-sm); color:var(--fp-ctx-ink); }
+.src{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label); text-transform:uppercase; }
+.src-published{ font-weight:var(--fp-heading-h2-weight); color:var(--fp-ctx-ink); }
+.nopub{ font-family:var(--fp-font-sans); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); color:var(--fp-ctx-body); }
+/* the share: how likely the tail holds, or (in a plan) that it is your tail */
+.miniconf{ flex:none; display:flex; flex-direction:column; align-items:flex-end; min-inline-size:4.5rem; }
+.miniconf .p{ font-weight:var(--fp-wordmark-weight); font-size:var(--fp-text-h3); letter-spacing:var(--fp-track-tight); line-height:1; color:var(--fp-ctx-ink); }
+.miniconf .p.none{ color:var(--fp-ctx-muted); }
+.miniconf .cn{ margin-top:var(--fp-space-1); font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label); text-transform:uppercase; color:var(--fp-ctx-body); }
+.pchip .cn{ text-transform:none; letter-spacing:0; }
+.fnote{ padding-top:var(--fp-space-3); border-top:var(--fp-hairline) solid var(--fp-ctx-rule); font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); color:var(--fp-ctx-body); }
+@media (max-width:760px){
+  .fcard{ flex-wrap:wrap; }
+  .fcard .route{ flex-basis:calc(100% - 9rem); }
+  .tokbox, .searchbar > .input{ inline-size:100%; }
 }

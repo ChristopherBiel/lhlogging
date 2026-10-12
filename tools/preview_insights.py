@@ -2,10 +2,11 @@
 Preview /insights locally, on real legs, without a database.
 
 A push to main deploys, and the dashboard cannot run here (no Postgres), so
-this is the way to look at the page before it is live: it serves the page
-shell out of dashboard/app.py, the real static files, and /api/insights
-computed by the same dashboard/leg_stats.insights() from the offline leg
-export. Stdlib only — app.py is read, never imported, so Flask is not needed.
+this is the way to look at the page before it is live: it serves the page as
+the dashboard builds it (tools/_preview.py), the real static files, and
+/api/insights computed by the same dashboard/leg_stats.insights() from the
+offline leg export. Stdlib only — app.py is read, never imported, so Flask is
+not needed. ?intensity=02 shows the page at another level of Faceplate's dial.
 
 "Now" is the newest look in the export, so the page shows what the dashboard
 showed when the data was pulled.
@@ -19,7 +20,6 @@ Usage:
     python3 tools/preview_insights.py --port 9000 --dump tmp/insights   # also write the payloads
 """
 import argparse
-import ast
 import csv
 import json
 import sys
@@ -28,23 +28,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-ROOT = Path(__file__).resolve().parent.parent
-DASH = ROOT / "dashboard"
-sys.path.insert(0, str(DASH))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _preview  # noqa: E402
+from _preview import DASH, ROOT, constant as _constant  # noqa: E402
 import booking_model as bm  # noqa: E402
 import leg_stats  # noqa: E402
 
 DEFAULT_CSV = ROOT / "tmp" / "leg_outcomes.csv"
-TYPES = {".css": "text/css", ".js": "text/javascript", ".woff2": "font/woff2",
-         ".svg": "image/svg+xml"}
-
-
-def _constant(name):
-    """A module-level literal out of dashboard/app.py, without importing it."""
-    for node in ast.parse((DASH / "app.py").read_text()).body:
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == name:
-            return ast.literal_eval(node.value)
-    raise SystemExit(f"{name} not found in dashboard/app.py")
 
 
 def load(path):
@@ -112,21 +102,15 @@ def main():
         def do_GET(self):
             url = urlparse(self.path)
             if url.path in ("/", "/insights"):
-                # read on every request, so an edit shows on reload
-                html = _constant("_INSIGHTS_HTML").replace("{{ v }}", "preview")
+                # built on every request, so an edit shows on reload
+                html = _preview.page("/insights?" + url.query)
                 return self.reply(html.encode(), "text/html; charset=utf-8")
             if url.path == "/api/insights":
                 asked = (parse_qs(url.query).get("type") or [""])[0]
                 return self.reply(json.dumps(payload(asked)).encode(), "application/json")
-            f = None
-            if url.path.startswith("/static/"):
-                f = (DASH / url.path.lstrip("/")).resolve()
-            elif url.path.startswith("/faceplate/"):
-                f = DASH / "dist" / Path(url.path).name
-            elif url.path == "/favicon.svg":
-                f = DASH / "static" / "favicon.svg"
-            if f and f.is_file() and DASH in f.parents:
-                return self.reply(f.read_bytes(), TYPES.get(f.suffix, "application/octet-stream"))
+            found = _preview.asset(url.path)
+            if found:
+                return self.reply(*found)
             self.reply(b"not in the preview", "text/plain", 404)
 
     print(f"{len(legs)} legs, as of {now:%Y-%m-%d %H:%M} UTC")

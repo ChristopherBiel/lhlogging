@@ -6,8 +6,9 @@ this is the way to look at the page before it is live. `--pull` sends the very
 queries the dashboard runs (dashboard/monitor_stats.QUERIES) to the production
 database, read-only, and keeps the rows in tmp/monitor/; without it the page is
 served from the rows of the last pull. The payload comes from the same
-monitor_stats functions the dashboard calls. Stdlib only — app.py is read,
-never imported, so Flask is not needed.
+monitor_stats functions the dashboard calls, and the page is built as the dashboard builds it
+(tools/_preview.py). Stdlib only — app.py is read, never imported, so Flask is
+not needed.
 
 "Now" is the moment of the pull, so the page shows what the dashboard showed
 then.
@@ -16,13 +17,16 @@ Configure the pull like tools/pull_data.sh, via environment or the gitignored
 .env.local: LHLOGGING_SSH, LHLOGGING_REMOTE_DIR, [LHLOGGING_DB_USER],
 [LHLOGGING_DB_NAME].
 
+The site declares one Faceplate intensity, in dashboard/chassis.html. For
+review only, the preview shows the page at another level of the dial:
+http://127.0.0.1:8792/?intensity=02 (01 to 04).
+
 Usage:
     python3 tools/preview_monitor.py --pull      # fetch, then serve
     python3 tools/preview_monitor.py             # http://127.0.0.1:8792/
     python3 tools/preview_monitor.py --dump tmp/monitor/payload.json --no-serve
 """
 import argparse
-import ast
 import csv
 import json
 import os
@@ -34,26 +38,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-ROOT = Path(__file__).resolve().parent.parent
-DASH = ROOT / "dashboard"
-sys.path.insert(0, str(DASH))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _preview  # noqa: E402
+from _preview import ROOT, constant as _constant  # noqa: E402
 import monitor_stats  # noqa: E402
 
 DATA = ROOT / "tmp" / "monitor"
-TYPES = {".css": "text/css", ".js": "text/javascript", ".woff2": "font/woff2",
-         ".svg": "image/svg+xml"}
 # columns that stay text although they can look like a number or a flag
 TEXT = {"icao24", "registration", "type", "run_type", "status", "detail", "hub", "kind", "db_size"}
 FLAGS = {"long"}
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)(\.\d+)?([+-]\d\d)$")
-
-
-def _constant(name):
-    """A module-level literal out of dashboard/app.py, without importing it."""
-    for node in ast.parse((DASH / "app.py").read_text()).body:
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == name:
-            return ast.literal_eval(node.value)
-    raise SystemExit(f"{name} not found in dashboard/app.py")
 
 
 def _env():
@@ -156,20 +150,13 @@ def main():
         def do_GET(self):
             url = urlparse(self.path)
             if url.path == "/":
-                # read on every request, so an edit shows on reload
-                html = _constant("_HTML").replace("{{ v }}", "preview")
-                return self.reply(html.encode(), "text/html; charset=utf-8")
+                # built on every request, so an edit shows on reload
+                return self.reply(_preview.page(self.path).encode(), "text/html; charset=utf-8")
             if url.path == "/api/monitor":
                 return self.reply(body, "application/json")
-            f = None
-            if url.path.startswith("/static/"):
-                f = (DASH / url.path.lstrip("/")).resolve()
-            elif url.path.startswith("/faceplate/"):
-                f = DASH / "dist" / Path(url.path).name
-            elif url.path == "/favicon.svg":
-                f = DASH / "static" / "favicon.svg"
-            if f and f.is_file() and DASH in f.parents:
-                return self.reply(f.read_bytes(), TYPES.get(f.suffix, "application/octet-stream"))
+            found = _preview.asset(url.path)
+            if found:
+                return self.reply(*found)
             self.reply(b"not in the preview", "text/plain", 404)
 
     print(f"rows as of {now:%Y-%m-%d %H:%M} UTC, {len(body) // 1024} kB payload")
