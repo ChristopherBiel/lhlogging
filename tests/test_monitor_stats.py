@@ -144,6 +144,8 @@ class Runs(unittest.TestCase):
         self.assertEqual(ms.outcome(run(0, "11:20", total=220, found=103, blocked=112), NOW), "cut")
         self.assertEqual(ms.outcome(run(0, "02:45", total=7, found=0, blocked=7), NOW), "failed")   # under the breaker
         self.assertEqual(ms.outcome(run(0, "02:45", total=0, found=0), NOW), "ok")                  # nothing to watch
+        self.assertEqual(ms.outcome(run(0, "14:10", total=0, found=0, status="blocked",            # the door shut
+                                        detail="feed shut since 14:13: 3 sessions ..."), NOW), "failed")
         self.assertEqual(ms.outcome(run(0, "16:45", status="running"), NOW), "running")
         self.assertEqual(ms.outcome(run(-2, "05:45", status="running"), NOW), "lost")
         self.assertEqual(ms.outcome(None, NOW), "skipped")
@@ -293,6 +295,17 @@ class Collectors(unittest.TestCase):
         first = ms.headline(slots, ms.record(slots, extra, NOW), [], NOW)[0]
         self.assertEqual(first["parts"][-1], " The 16:45 pulse is running.")
         self.assertIn("Schedule last read ", first["parts"][0])                               # the last finished one
+
+    def test_a_run_waiting_for_the_feed_says_so(self):
+        wait = "waiting for the feed, next try 17:05"
+        row = {"run_type": "flightstatus", "status": "running", "started_at": NOW - timedelta(minutes=4),
+               "finished_at": None, "total": None, "found": None, "blocked": None, "stored": None, "detail": wait}
+        live = ms.collectors([row], NOW)[0]
+        self.assertEqual((live["state"], live["result"]), ("ok", "running since 16:45, " + wait))
+        pulse = run(0, "16:45", status="running", detail=wait)
+        slots, extra = ms.match(healthy() + [pulse], NOW - timedelta(days=29), NOW + ms.READS_AHEAD, NOW)
+        first = ms.headline(slots, ms.record(slots, extra, NOW), [], NOW)[0]
+        self.assertEqual(first["parts"][-1], " The 16:45 pulse is " + wait + ".")
 
 
 class Flown(unittest.TestCase):

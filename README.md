@@ -298,7 +298,10 @@ ADS-B pipeline can only observe after the fact.
   `FIS_SEED_LOOKBACK_DAYS` (2), `FIS_MAX_LOOKUPS` (700), `FIS_SESSION_LOOKUPS` (80),
   `FIS_REQUEST_DELAY_MIN_S`/`MAX_S`, `FIS_BLOCK_BACKOFF_S`, `FIS_MAX_CONSECUTIVE_BLOCKS`
   (10: a run stops after that many blocked lookups in a row, logged as status `blocked`, so a
-  blocked run frees the lock for the next slot instead of crawling on for hours), `FIS_LEGS_REFRESH_DAYS`
+  blocked run frees the lock for the next slot instead of crawling on for hours), `FIS_DOOR_TRIES`
+  (3), `FIS_DOOR_WAIT_MIN` (0; 15 in the crontab) and `FIS_DOOR_MARGIN_MIN` (3: when that many
+  sessions in a row open without the bot check and are refused, a scheduled run waits and tries
+  again until shortly before the next slot, `flightstatus/door.py`), `FIS_LEGS_REFRESH_DAYS`
   (3: every run rebuilds `fis_legs` from D-3 on). Dashboard: `BOOK_HORIZON_DAYS`
   (4: furthest day the pages show published tails for). Ad-hoc single lookup:
   `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`

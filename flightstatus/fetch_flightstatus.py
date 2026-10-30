@@ -11,11 +11,13 @@ route/times, status, and the aircraft's previous flight into
 `flight_status_observations`. Forward dates are the provisional plan; the past
 (backfill) dates return the actually-operated tail (ARRIVED) as ground truth.
 
-The endpoint sits behind Imperva/Distil bot management, which blocks plain HTTP
-clients and headless browsers. The only thing that gets through is a *real*
-(headed) Chromium — here driven by Playwright and run under Xvfb (see
-run_nightly.sh). We load the timetable page once to establish the session, then
-issue same-origin `fetch()`es from inside the page.
+The endpoint sits behind Cloudflare's bot management, which blocks plain HTTP
+clients and headless browsers. Only a headed Chromium gets answers — here driven
+by Playwright and run under Xvfb (see run_nightly.sh) — and only while its
+session is on Cloudflare's check page, about two minutes per session. We load the
+timetable page to open a session, then issue same-origin `fetch()`es from inside
+the page. A session that opens without the check gets no answers at all; when
+the feed stays that way, a run waits for it instead of retrying (door.py).
 
 Coverage is tiered by fleet type. The *deep* tier (B748 + A388) is tracked at
 high cadence in the D+1/D+2 window so we can date a reassignment to a few hours
@@ -58,12 +60,14 @@ import sys
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg
 from playwright.sync_api import sync_playwright
 from psycopg.types.json import Jsonb
 
 import census
+import door
 import legs
 
 # --- config (env-overridable, mirrors the lhlogging config style) -----------
@@ -182,7 +186,20 @@ BLOCK_BACKOFF_S = float(os.environ.get("FIS_BLOCK_BACKOFF_S", "45.0"))
 # pass) and the flock made the next slots skip: the evening sweep and the
 # morning sweep were lost. Stopping lets the next slot try with a new browser.
 MAX_CONSECUTIVE_BLOCKS = int(os.environ.get("FIS_MAX_CONSECUTIVE_BLOCKS", "10"))
-BLOCKED_STATUS = "blocked"  # batch_runs.status for a run the breaker stopped
+BLOCKED_STATUS = "blocked"  # batch_runs.status for a run the breaker or the door stopped
+# The door (door.py, 2026-10-30): this many sessions in a row that open without
+# the bot check and have their first lookup refused mean the feed is shut, and
+# the run waits FIS_DOOR_WAIT_MIN before it tries one more session — until the
+# next run in FIS_CRONTAB starts (less FIS_DOOR_MARGIN_MIN), then it stops.
+# FIS_DOOR_WAIT_MIN 0 (the default, so a run by hand) stops at once; the crontab
+# sets it for the scheduled runs. Such sessions never answered (2 lookups of
+# 1,652 sessions, 20 Sep-11 Oct), so they are no "blocked" lookups: a lookup
+# the door stopped is simply not done.
+DOOR_TRIES = int(os.environ.get("FIS_DOOR_TRIES", "3"))
+DOOR_WAIT_MIN = float(os.environ.get("FIS_DOOR_WAIT_MIN", "0"))
+DOOR_MARGIN_MIN = float(os.environ.get("FIS_DOOR_MARGIN_MIN", "3"))
+CRONTAB = os.environ.get("FIS_CRONTAB", "/etc/cron.d/flightstatus")
+LOCAL_TZ = ZoneInfo(os.environ.get("TZ") or "Europe/Berlin")
 # Rotation-chain expansion: many legs (esp. westbound MUC departures) fly under
 # tactical callsigns (DLH3Y, DLH8P, …) so they never enter the ADS-B-derived
 # seed. The FIS `previousFlight` field names them, so after the seed fetch we
@@ -1313,12 +1330,14 @@ async (url) => {
 """
 
 
-def seed_session(page) -> None:
-    """Load the timetable page to establish the Distil/CF session.
+def seed_session(page) -> int | None:
+    """Load the timetable page to open a session; returns the status the page
+    load was answered with (None if it failed).
 
-    The page nav answered 403 is the bot check, which a real headed browser
-    passes — the same-origin API fetches then go through. Answered 200, the
-    check did not run and the fetches are refused (see "diagnostics" above).
+    403 is Cloudflare's check page: while it is up (~2 min) the same-origin
+    API fetches are answered, and refused once it has completed. 200 is the
+    page without the check: the fetches are refused from the start (see
+    "diagnostics" above, and door.py).
     """
     diag, seen, resp, error = diag_on(), [], None, None
     note = lambda r: _diag_response(seen, r)
@@ -1339,67 +1358,111 @@ def seed_session(page) -> None:
             _diag_session(page, resp, seen, error)
         except Exception as e:
             log(f"diag: session record failed ({_brief(e)})")
+    return resp.status if resp else None
 
 
 def _open_session(browser):
-    """Open a fresh browser context (new cf_clearance) and prime it. Returns
-    (context, page). Recreating the context resets Distil's per-session budget."""
+    """Open a fresh browser context (new cookies) and load the timetable page
+    in it. Returns (context, page, status of the page load)."""
     ctx = browser.new_context(locale="en-US", user_agent=USER_AGENT)
     ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
     page = ctx.new_page()
-    seed_session(page)
-    return ctx, page
+    nav = seed_session(page)
+    return ctx, page, nav
 
 
-def fetch_one(sess, flight_number: str, target: date, reset_cb):
-    """Fetch one flight/date; returns parsed JSON dict or None if blocked.
+def run_deadline(now: datetime) -> datetime | None:
+    """When a run that waits for the feed has to be done: the next run's start
+    in the crontab, less DOOR_MARGIN_MIN. None without a crontab to read."""
+    try:
+        with open(CRONTAB) as f:
+            nxt = door.next_slot(f.read(), now)
+    except OSError:
+        return None
+    return nxt - timedelta(minutes=DOOR_MARGIN_MIN) if nxt else None
 
-    `sess` is a mutable {"page": ...} holder; on a block we wait then call
-    `reset_cb()` to swap in a *fresh* session (the effective cure for Distil's
-    per-session cap) before retrying.
 
-    Two failure modes share the same wait-and-reset retry: an HTTP block (Distil
-    403 / non-JSON in the response), and a *thrown* `page.evaluate` error — the
-    in-page `fetch()` rejecting with `TypeError: Failed to fetch` when the
-    document context is torn down (Imperva redirect/interstitial), the renderer
-    crashes, or the network blips. Catching the latter keeps one bad lookup from
-    aborting the whole batch (it propagated to run_batch and killed the run).
+def _door(browser, conn: psycopg.Connection | None = None, run_id: int | None = None) -> door.Door:
+    """The door of one run (door.py): fresh sessions on `browser`; while it
+    waits, the run's batch_runs row says so, for the monitor."""
+    held = {}
+
+    def close_session():
+        ctx = held.pop("ctx", None)
+        if ctx:
+            try:
+                ctx.close()
+            except Exception:
+                pass
+
+    def open_session():
+        close_session()
+        held["ctx"], page, nav = _open_session(browser)
+        return page, nav
+
+    def on_wait(wake):
+        if conn is None or run_id is None:
+            return
+        text = f"waiting for the feed, next try {wake:%H:%M}" if wake else None
+        try:  # the monitor's line, never the run's problem
+            with conn.cursor() as cur:
+                cur.execute("UPDATE batch_runs SET error_detail = %s WHERE id = %s", (text, run_id))
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            log(f"door: could not note the wait ({_brief(e)})")
+
+    now = lambda: datetime.now(LOCAL_TZ)
+    return door.Door(open_session, close_session,
+                     deadline=run_deadline(now()) if DOOR_WAIT_MIN > 0 else None,
+                     wait=timedelta(minutes=DOOR_WAIT_MIN), tries=DOOR_TRIES,
+                     retries=MAX_FETCH_RETRIES, backoff_s=BLOCK_BACKOFF_S, now=now,
+                     log=log, on_wait=on_wait)
+
+
+def fetch_one(gate: door.Door, flight_number: str, target: date):
+    """Fetch one flight/date through the run's door; returns the parsed JSON
+    (a JSON 404 as {}), or None if the lookup was given up. Raises door.Stop
+    when the run has to stop (the lookup is then not done).
+
+    A refusal is either an HTTP status that is no answer (Cloudflare's 403 page,
+    non-JSON) or a *thrown* `page.evaluate` error — the in-page `fetch()`
+    rejecting with `TypeError: Failed to fetch` when the document is torn down
+    (the check page reloading itself when it completes), the renderer crashes,
+    or the network blips. The door retries both in a fresh session; catching
+    the latter keeps one bad lookup from aborting the whole batch.
     """
     fn = f"LH{flight_number}"
     url = f"/service/api/fis/byflightnumber?flightNumber={fn}&date={target.isoformat()}"
-    for attempt in range(1, MAX_FETCH_RETRIES + 1):
+
+    def ask(page):
         try:
-            res = sess["page"].evaluate(_FETCH_JS, url)
-            status, ct = res.get("status"), res.get("ct", "")
-            if status == 200 and "json" in ct:
-                try:
-                    return json.loads(res["body"])
-                except json.JSONDecodeError:
-                    log(f"  {fn} {target}: 200 but bad JSON")
-                    return None
-            if status == 404 and "json" in ct:
-                # A JSON 404 is FIS answering authoritatively "no such flight"
-                # (charter/ferry numbers like LH9910 that entered the catalog via
-                # the ADS-B seed). Not a block: record a not-found so the catalog
-                # lifecycle retires the number, and don't burn retries/backoffs
-                # on it (3 numbers x 7 slices was costing ~24 min per sweep).
-                log(f"  {fn} {target}: 404 — not a FIS flight, recording not-found")
-                return {}
-            log(f"  {fn} {target}: HTTP {status} ({ct[:40]}) attempt {attempt}/{MAX_FETCH_RETRIES}")
-            if diag_on():
-                try:
-                    _diag_refusal(sess["page"], fn, target, res)
-                except Exception as e:
-                    log(f"diag: refusal record failed ({_brief(e)})")
+            res = page.evaluate(_FETCH_JS, url)
         except Exception as e:
-            # in-page fetch rejected / evaluate threw (context destroyed, renderer
-            # crash, network blip) — recoverable; fall through to the reset+retry
-            first = str(e).splitlines()[0][:80]
-            log(f"  {fn} {target}: evaluate error ({first}) attempt {attempt}/{MAX_FETCH_RETRIES}")
-        if attempt < MAX_FETCH_RETRIES:
-            time.sleep(BLOCK_BACKOFF_S)
-            reset_cb()  # fresh session — the real fix for a per-session block
-    return None
+            return door.REFUSED, None, f"evaluate error ({str(e).splitlines()[0][:80]})"
+        status, ct = res.get("status"), res.get("ct", "")
+        if status == 200 and "json" in ct:
+            try:
+                return door.ANSWER, json.loads(res["body"]), None
+            except json.JSONDecodeError:
+                log(f"  {fn} {target}: 200 but bad JSON")
+                return door.BAD, None, None
+        if status == 404 and "json" in ct:
+            # A JSON 404 is FIS answering authoritatively "no such flight"
+            # (a flight that does not run that day, or a charter/ferry number
+            # like LH9910 that entered the catalog via the ADS-B seed). Not a
+            # block: record a not-found so the catalog lifecycle retires the
+            # number, and don't burn retries/backoffs on it.
+            log(f"  {fn} {target}: 404 — not a FIS flight, recording not-found")
+            return door.ANSWER, {}, None
+        if diag_on():
+            try:
+                _diag_refusal(page, fn, target, res)
+            except Exception as e:
+                log(f"diag: refusal record failed ({_brief(e)})")
+        return door.REFUSED, None, f"HTTP {status} ({ct[:40]})"
+
+    return gate.fetch(f"{fn} {target}", ask)
 
 
 # --- runners ----------------------------------------------------------------
@@ -1550,30 +1613,24 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
                 headless=False,
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
             )
-            sess = {}
-
-            def open_session():
-                old = sess.get("ctx")
-                if old:
-                    try:
-                        old.close()
-                    except Exception:
-                        pass
-                sess["ctx"], sess["page"] = _open_session(browser)
-                sess["n"] = 0
-
-            open_session()
+            gate = _door(browser, conn, run_id)
 
             while work and total < MAX_LOOKUPS:
-                flight_number, target, seed_type, hop = work.pop(0)
+                flight_number, target, seed_type, hop = work[0]
                 # recycle the session before it hits Distil's per-session cap
-                if sess["n"] >= SESSION_LOOKUPS:
-                    log(f"  recycling session after {sess['n']} lookups")
+                if gate.asked >= SESSION_LOOKUPS:
+                    log(f"  recycling session after {gate.asked} lookups")
                     resets += 1
-                    open_session()
+                    gate.open()
+                try:
+                    payload = fetch_one(gate, flight_number, target)
+                except door.Stop as e:
+                    status = BLOCKED_STATUS
+                    detail = f"{e} ({total} done, {len(work)} left)"
+                    log(f"door: {detail}")
+                    break
+                work.pop(0)
                 total += 1
-                payload = fetch_one(sess, flight_number, target, open_session)
-                sess["n"] += 1
                 if payload is None:
                     err += 1
                     streak += 1
@@ -1610,18 +1667,16 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
                             chained += 1
                 time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
 
-            if sess.get("ctx"):
-                try:
-                    sess["ctx"].close()
-                except Exception:
-                    pass
+            if status == "ok" and gate.waits:
+                detail = f"waited for the feed {gate.waited()}"
+            gate.close()
             browser.close()
         # catalog lifecycle: retire numbers that stopped returning a widebody.
         # Owned by the near sweeps only — the far pass just reads the catalog.
         # Not after a stopped run: every number it never reached would accrue a
         # miss and drift toward retirement for no reason.
         if status == BLOCKED_STATUS:
-            log("catalog prune skipped: run stopped early by the circuit breaker")
+            log("catalog prune skipped: run stopped early (circuit breaker or door)")
         elif using_catalog and not far:
             try:
                 prune_catalog(conn)
@@ -1701,27 +1756,20 @@ def run_light_pass(label: str, work: list, conn: psycopg.Connection,
                 headless=False,
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
             )
-            sess = {}
-
-            def open_session():
-                old = sess.get("ctx")
-                if old:
-                    try:
-                        old.close()
-                    except Exception:
-                        pass
-                sess["ctx"], sess["page"] = _open_session(browser)
-                sess["n"] = 0
-
-            open_session()
+            gate = _door(browser, conn, run_id)
             for w in work[:MAX_LOOKUPS]:
-                if sess["n"] >= SESSION_LOOKUPS:
-                    log(f"  recycling session after {sess['n']} lookups")
+                if gate.asked >= SESSION_LOOKUPS:
+                    log(f"  recycling session after {gate.asked} lookups")
                     resets += 1
-                    open_session()
+                    gate.open()
+                try:
+                    payload = fetch_one(gate, w["flight_number"], w["flight_date"])
+                except door.Stop as e:
+                    status = BLOCKED_STATUS
+                    detail = f"{e} ({total} of {min(len(work), MAX_LOOKUPS)} done)"
+                    log(f"{label} door: {detail}")
+                    break
                 total += 1
-                payload = fetch_one(sess, w["flight_number"], w["flight_date"], open_session)
-                sess["n"] += 1
                 obs = parse_flight(payload, w["flight_number"], w["flight_date"], w["seed_type"])
                 upsert_observation(conn, obs, obs_run_id)
                 conn.commit()
@@ -1743,11 +1791,9 @@ def run_light_pass(label: str, work: list, conn: psycopg.Connection,
                             f"{obs['dep_airport_iata']}->{obs['arr_airport_iata']} {obs['overall_status']}")
                 time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
 
-            if sess.get("ctx"):
-                try:
-                    sess["ctx"].close()
-                except Exception:
-                    pass
+            if status == "ok" and gate.waits:
+                detail = f"waited for the feed {gate.waited()}"
+            gate.close()
             browser.close()
     except Exception as e:
         status, detail = "error", str(e)
@@ -1878,18 +1924,13 @@ def run_single(flight: str, target: str) -> int:
             headless=False,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
-        ctx, page = _open_session(browser)
-        sess = {"ctx": ctx, "page": page, "n": 0}
-
-        def reset():
-            try:
-                sess["ctx"].close()
-            except Exception:
-                pass
-            sess["ctx"], sess["page"] = _open_session(browser)
-            sess["n"] = 0
-
-        payload = fetch_one(sess, fn, tgt, reset)
+        gate = _door(browser)
+        try:
+            payload = fetch_one(gate, fn, tgt)
+        except door.Stop as e:
+            log(f"door: {e}")
+            payload = None
+        gate.close()
         browser.close()
     if payload is None:
         log(f"LH{fn} {tgt}: blocked or no response")

@@ -266,7 +266,8 @@ def outcome(run, now):
     if run["status"] == "running":
         return "running" if now - run["started_at"] < RUNNING_MAX else "lost"
     total, found, blocked = run["total"] or 0, run["found"] or 0, run["blocked"] or 0
-    if run["status"] == "error" or (total and not found):
+    # a run the door stopped before its first lookup has done none (2026-10-30)
+    if run["status"] == "error" or (total and not found) or (run["status"] == "blocked" and not found):
         return "failed"
     if run["status"] == "blocked" or (blocked >= 5 and blocked >= 0.1 * total):
         return "cut"
@@ -555,7 +556,8 @@ def headline(slots, rec, cov, now):
 
     for s in slots:
         if s["state"] == "running":
-            out[0]["parts"].append(" The %s %s is running." % (s["at"].strftime("%H:%M"), KIND_NAME[s["kind"]]))
+            out[0]["parts"].append(" The %s %s is %s." % (s["at"].strftime("%H:%M"), KIND_NAME[s["kind"]],
+                                                          (s["run"] or {}).get("detail") or "running"))
 
     # how far ahead each fleet's plan is known
     by_through = defaultdict(list)
@@ -642,8 +644,10 @@ def collectors(rows, now):
                       "fleet_discovery": "%d new" % (r["found"] or 0),
                       "fleet_refresh": "%d of %d updated" % (r["found"] or 0, r["total"] or 0)}[key]
         if r["status"] == "running":
-            # the counts are written when a run ends; until then they say nothing
+            # the counts are written when a run ends; until then they say nothing.
+            # A run waiting for the feed says so in its detail (door.py).
             result = ("running since %s" % r["started_at"].astimezone(BERLIN).strftime("%H:%M")
+                      + (", " + r["detail"] if r.get("detail") else "")
                       if state == "ok" else "never finished")
         elif r["status"] != "ok":
             result = r["detail"] or r["status"]

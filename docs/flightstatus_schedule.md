@@ -179,6 +179,7 @@ changed four times and staleness statistics are meaningless across the seams:
 | 2026-10-06 | wide tier (787/A350): sweeps +1 day, far D+4 |
 | 2026-10-12 | far pass moved from 03:30 to 11:20; 03:30 is a pulse, the 11:35 pulse is gone (the far pass asks its slices first) |
 | 2026-10-30 (written 10-13) | the 22:00 pulse also asks the wide tier's unread flight days of D+5..D+8; census at 08:15; an empty answer is stored as one (`raw` = `{}`) |
+| 2026-10-30 | a run waits for the feed when it is shut (`door.py`) and gives way to the next slot |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.
@@ -224,7 +225,7 @@ timetable page load is answered:
 
 | page load answered | sessions | lookups that worked | refused |
 |---|---|---|---|
-| 403 — the bot check, which the headed browser passes | 2,203 | 35,259 | 1,827 |
+| 403 — Cloudflare's check page (answered until the check completes, ~2 min) | 2,203 | 35,259 | 1,827 |
 | 200 — the page without a check | 1,652 | 2 | 2,361 |
 
 So a "blocked" run is neither a rate limit nor an outage: its session was never
@@ -326,6 +327,49 @@ Budget: +~90 a night and +~47 a morning, about 2,240 lookups a day (+6%).
 docker compose exec flightstatus python fetch_flightstatus.py --census --dry-run
 docker compose exec -e FIS_PULSE_OFFSETS=1,2,5,6,7,8,9 -e FIS_TIMETABLE_OFFSETS=5,6,7,8 \
     flightstatus python fetch_flightstatus.py --pulse --dry-run
+```
+
+## When the feed is shut (2026-10-30)
+
+From 27 October the page without the check stopped keeping to the night. Share
+of the day's page loads that came without it:
+
+| 15–26 Oct | 27 Oct | 28 Oct | 29 Oct | 30 Oct, to 10:30 |
+|---|---|---|---|---|
+| 1–6% | 34% | 47% | 79% | 94% |
+
+From 29 Oct 14:13 every run was refused from its first lookup, except the
+10:30 and 13:00 watches and part of the 02:00 pulse; each spent ~19 min on 21
+sessions (10 lookups × 3 attempts) before the circuit breaker stopped it, and
+found nothing. Nothing had changed on our side (collector code from 12 Oct).
+Why the check page stays away is still not known.
+
+**The door** (`flightstatus/door.py`). A session that opened without the check
+and had its first lookup refused counts as shut; a session that opened that way
+but is answered counts as open, so the rule follows if Cloudflare changes. After
+three shut sessions in a row (`FIS_DOOR_TRIES`), a scheduled run waits 15 min
+(`FIS_DOOR_WAIT_MIN`, set in the crontab; a run by hand stops at once), holding
+no session, and tries one more — until 3 min before the next line of the
+crontab is due (`FIS_DOOR_MARGIN_MIN`). Then it stops, `blocked`, with a detail
+such as "feed shut since 14:13: 7 sessions opened without the bot check and
+were refused, waited 14:16-15:01 (0 of 62 done)". A run that waited and got in
+also stops reading at that point ("gave way to the next run …"), so the next
+slot runs with its own fresh work instead of being skipped by the lock. A run
+that never had to wait keeps the old behaviour. A shut spell now costs a run
+3 page loads and one more per 15 min instead of 21, and the reader keeps
+trying through the gaps between slots. Lookups the door stopped are not done
+and leave no row; they are not "blocked" lookups. While a run waits, its
+`batch_runs.error_detail` says "waiting for the feed, next try HH:MM", and the
+monitor shows it. Lookups refused in sessions that did open are handled as
+before (three attempts in fresh sessions, then the breaker).
+
+What a session back from the check page brings: after an unchecked session the
+next was checked within 3–8 min 13% of the time, within 25–60 min ~21%, within
+90–150 min 49% (20 Sep–11 Oct). A 15 min step is a page load every quarter
+hour, where the old retries made 21 in 19 min.
+
+```
+docker compose exec flightstatus grep "door:" /var/log/lhlogging/flightstatus.log | tail
 ```
 
 ## Known gaps

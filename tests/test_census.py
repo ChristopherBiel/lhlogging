@@ -68,7 +68,7 @@ class Schedule(unittest.TestCase):
         src = (ROOT / "flightstatus" / "fetch_flightstatus.py").read_text()
         local = {m for m in re.findall(r"^import (\w+)$", src, re.M) if (ROOT / "flightstatus" / (m + ".py")).exists()}
         copied = re.search(r"^COPY (.*) \./$", (ROOT / "flightstatus" / "Dockerfile").read_text(), re.M).group(1).split()
-        self.assertEqual(local, {"legs", "census"})
+        self.assertEqual(local, {"legs", "census", "door"})
         self.assertTrue({m + ".py" for m in local} <= set(copied), copied)
 
 

@@ -5,6 +5,11 @@ TZ=Europe/Berlin
 # day, then off by themselves. Two nights and the days between, to see what the
 # page that comes without a bot check is — and what a checked one looks like.
 FIS_DIAG_UNTIL=2026-10-13
+# The door (flightstatus/door.py, 2026-10-30): when three sessions in a row open
+# without the bot check and are refused, a run waits this many minutes and tries
+# one more, until the next line below is due; then it stops. A run by hand
+# (docker compose exec ...) does not have this and stops at once.
+FIS_DOOR_WAIT_MIN=15
 
 # Lufthansa flight-status fetch — 15 slots/day, tiered by fleet type.
 #
@@ -79,6 +84,14 @@ FIS_DIAG_UNTIL=2026-10-13
 # blocks us outright, a run stops after FIS_MAX_CONSECUTIVE_BLOCKS (10) blocked
 # lookups in a row instead of crawling on with backoff for hours and making the
 # flock skip the next slots (lost evening/morning sweeps, 2026-09-29/10-01).
+#
+# When the feed is shut (2026-10-30: the timetable page comes without its bot
+# check, and every lookup is refused — nights since August, from 27 Oct whole
+# days), a run no longer spends ~19 min on 21 sessions and stops: after three
+# such sessions it waits FIS_DOOR_WAIT_MIN (above) and tries one more, holding
+# no session, until 3 min before the next line here is due. A run that waited
+# stops reading then too, so it gives way to the next slot instead of making it
+# skip.
 #
 # Far pass by day (2026-10-12): it ran at 03:30 until then, in the hours where
 # lufthansa.com often serves the timetable page without its bot check — and a
