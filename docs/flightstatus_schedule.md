@@ -179,7 +179,7 @@ changed four times and staleness statistics are meaningless across the seams:
 | 2026-10-06 | wide tier (787/A350): sweeps +1 day, far D+4 |
 | 2026-10-12 | far pass moved from 03:30 to 11:20; 03:30 is a pulse, the 11:35 pulse is gone (the far pass asks its slices first) |
 | 2026-10-30 (written 10-13) | the 22:00 pulse also asks the wide tier's unread flight days of D+5..D+8; census at 08:15; an empty answer is stored as one (`raw` = `{}`) |
-| 2026-10-30 | a run waits for the feed when it is shut (`door.py`) and gives way to the next slot |
+| 2026-10-30 | a run waits for the feed when it is shut (`door.py`) and gives way to the next slot; sweeps and the far pass read the 747-8/A380 first; a flight day answered "no such flight" is not asked again |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.
@@ -368,8 +368,28 @@ next was checked within 3–8 min 13% of the time, within 25–60 min ~21%, with
 90–150 min 49% (20 Sep–11 Oct). A 15 min step is a page load every quarter
 hour, where the old retries made 21 in 19 min.
 
+**Most valuable first.** The sweeps and the far pass sort their work by tier
+(747-8/A380, then 787/A350, then the rest), then nearest day, a day ahead
+before the day as far back (`prioritised`). Until now it was nearest day first
+across all tiers: the 18:15 sweep the feed cut at 237 of 670 on 27 Oct had read
+D0, part of D+1 and 38 lookups of D-1 for every tier, and nothing of the 747-8's
+and A380's D+2 and D+3.
+
+**No such flight, asked once.** From 15 to 29 Oct the feed answered "no such
+flight" 3,620 times for 523 flight days — about seven asks each, mostly
+flights that do not run every day (LH510/511 alone: 464), ~500 a day by 26 Oct
+after the timetable change, a fifth of all lookups. None of those answers given
+up to eight days ahead was contradicted by a later look (nine days ahead it
+can be, see "Day 9" above). So a flight day whose latest answer was "no such
+flight", given at most eight days ahead, is no longer asked by the sweeps, the
+far pass or the pulses (`answered_absent`, the same reading as the dashboard's
+`_ABSENT_SQL`); a flight the feed names as a `previousFlight` is still followed.
+This needs the `raw` = `{}` marker for empty answers (2026-10-13 above): rows
+before it count as unknown, so the saving builds up over the first day of runs
+— about 200 lookups a day at the 15–29 Oct rate.
+
 ```
-docker compose exec flightstatus grep "door:" /var/log/lhlogging/flightstatus.log | tail
+docker compose exec flightstatus grep -E "door:|not asked again" /var/log/lhlogging/flightstatus.log | tail
 ```
 
 ## Known gaps

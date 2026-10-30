@@ -200,6 +200,12 @@ DOOR_WAIT_MIN = float(os.environ.get("FIS_DOOR_WAIT_MIN", "0"))
 DOOR_MARGIN_MIN = float(os.environ.get("FIS_DOOR_MARGIN_MIN", "3"))
 CRONTAB = os.environ.get("FIS_CRONTAB", "/etc/cron.d/flightstatus")
 LOCAL_TZ = ZoneInfo(os.environ.get("TZ") or "Europe/Berlin")
+# A flight day the feed has answered "no such flight" for is not asked again
+# (2026-10-30). 15-29 Oct: 3,620 such answers for 523 flight days, ~7 asks each,
+# and none at up to 8 days ahead was ever contradicted by a later look. Nine
+# days ahead it can be (the feed has not reached that day's late departures at
+# 22:00), so only answers given at most this many days ahead count.
+ABSENT_TRUST_DAYS = 8
 # Rotation-chain expansion: many legs (esp. westbound MUC departures) fly under
 # tactical callsigns (DLH3Y, DLH8P, …) so they never enter the ADS-B-derived
 # seed. The FIS `previousFlight` field names them, so after the seed fetch we
@@ -522,6 +528,8 @@ def pulse_candidates(conn: psycopg.Connection, offsets: list) -> list[dict]:
         )
         settled = {(r[0], r[1]) for r in cur.fetchall()
                    if (r[2] or "").upper() in TERMINAL_STATUSES}
+    # a flight that does not run that day: the feed already said so
+    settled |= _absent_or_nothing(conn, targets)
 
     # Nearest offset first, shuffled within it — same rationale as the sweep's
     # priority sort: the ordering that matters is by lead time, and shuffling
@@ -619,6 +627,42 @@ def existing_truth(conn: psycopg.Connection, start: date, end_exclusive: date) -
             (TERMINAL_STATUSES, start, end_exclusive),
         )
         return {(r[0], r[1]) for r in cur.fetchall()}
+
+
+def answered_absent(conn: psycopg.Connection, dates: list) -> set:
+    """(flight_number, flight_date) pairs among `dates` whose latest answer from
+    the feed was "no such flight" (`raw` kept, see parse_flight), given at most
+    ABSENT_TRUST_DAYS ahead. Refused lookups are no answer and do not count; a
+    flight found later outranks the empty answer. The same reading as the
+    dashboard's _ABSENT_SQL."""
+    if not dates:
+        return set()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT flight_number, flight_date FROM (
+                SELECT DISTINCT ON (flight_date, flight_number) flight_number, flight_date, found
+                FROM flight_status_observations
+                WHERE airline = 'LH' AND flight_date = ANY(%s)
+                  AND (found OR (raw IS NOT NULL AND flight_date <= observed_date + %s::int))
+                ORDER BY flight_date, flight_number, observed_at DESC
+            ) latest
+            WHERE NOT found
+            """,
+            (list(dates), ABSENT_TRUST_DAYS),
+        )
+        return {(r[0], r[1]) for r in cur.fetchall()}
+
+
+def _absent_or_nothing(conn: psycopg.Connection, dates: list) -> set:
+    """answered_absent, or nothing if it cannot be read: then every flight day
+    is asked, as before."""
+    try:
+        return answered_absent(conn, dates)
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        log(f"no-such-flight query failed, asking every day: {e}")
+        return set()
 
 
 # --- coverage audit (continuity monitor) ------------------------------------
@@ -1451,8 +1495,8 @@ def fetch_one(gate: door.Door, flight_number: str, target: date):
             # A JSON 404 is FIS answering authoritatively "no such flight"
             # (a flight that does not run that day, or a charter/ferry number
             # like LH9910 that entered the catalog via the ADS-B seed). Not a
-            # block: record a not-found so the catalog lifecycle retires the
-            # number, and don't burn retries/backoffs on it.
+            # block: record it, so the catalog lifecycle retires the number
+            # and the day is not asked again (answered_absent).
             log(f"  {fn} {target}: 404 — not a FIS flight, recording not-found")
             return door.ANSWER, {}, None
         if diag_on():
@@ -1463,6 +1507,21 @@ def fetch_one(gate: door.Door, flight_number: str, target: date):
         return door.REFUSED, None, f"HTTP {status} ({ct[:40]})"
 
     return gate.fetch(f"{fn} {target}", ask)
+
+
+def prioritised(work: list, deep, wide, today: date) -> list:
+    """The sweep's work, most valuable first (2026-10-30): the deep tier
+    (747-8/A380), then the wide tier (787/A350), then the rest; within a tier
+    nearest day first, a day ahead before the day as far back. Shuffled within
+    each band so the request pattern still varies. A run the feed or
+    MAX_LOOKUPS cuts short then loses the least valuable lookups (before, the
+    order was nearest day first across all tiers, so a cut run had read the
+    shuttles' D-1 and not the 747-8's D+2)."""
+    tier = lambda n: 0 if n in deep else 1 if n in wide else 2
+    out = list(work)
+    random.shuffle(out)
+    out.sort(key=lambda w: (tier(w[0]), abs((w[1] - today).days), w[1] < today))
+    return out
 
 
 # --- runners ----------------------------------------------------------------
@@ -1549,6 +1608,8 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
     # won't change, so re-querying them wastes lookups. Always empty in far
     # mode (no past dates there).
     have_truth = existing_truth(conn, min(past), today) if past else set()
+    # Flight days the feed has answered "no such flight" for: not asked again.
+    absent = _absent_or_nothing(conn, targets)
 
     # Far mode never chains — discovery is the near sweeps' job (see above).
     chain_hops = 0 if far else CHAIN_HOPS
@@ -1567,7 +1628,7 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
     # Base entries are hop 0; previousFlight discoveries are enqueued at hop+1.
     queued = set()
     work = []
-    skipped_truth = 0
+    skipped_truth = skipped_absent = 0
     for s in candidates:
         for t in targets_for(s["flight_number"]):
             key = (s["flight_number"], t)
@@ -1576,13 +1637,14 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
             if t < today and key in have_truth:  # already-settled past flight
                 skipped_truth += 1
                 continue
+            if key in absent:  # the feed said it does not run that day
+                skipped_absent += 1
+                continue
             queued.add(key)
             work.append((s["flight_number"], t, s["seed_type"], 0))
-    # Priority: nearest dates first (small |offset|), shuffled within each lead-
-    # time band so the request pattern still varies. If MAX_LOOKUPS bites, the
-    # drops are then the least-valuable far-future lookups.
-    random.shuffle(work)
-    work.sort(key=lambda w: abs((w[1] - today).days))
+    work = prioritised(work, deep, wide, today)
+    if skipped_absent:
+        log(f"{skipped_absent} flight days not asked again: the feed said there is no such flight")
 
     if dry_run:
         n_truth = sum(1 for w in work if w[1] < today)
@@ -1592,7 +1654,8 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
         log(f"dry-run: {len(work)} planned lookups ({n_truth} truth / {len(work) - n_truth} forecast, "
             f"{sum(1 for w in work if w[0] in deep)} deep-tier, "
             f"{sum(1 for w in work if w[0] in wide)} wide-tier); "
-            f"{skipped_truth} past pairs skipped as already-settled")
+            f"{skipped_truth} past pairs skipped as already-settled, "
+            f"{skipped_absent} as no such flight")
         log("dry-run: by lead offset: "
             + ", ".join(f"D{o:+d}={by_offset[o]}" for o in sorted(by_offset)))
         log("dry-run: not launching browser or writing to DB")

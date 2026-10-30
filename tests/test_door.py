@@ -203,6 +203,15 @@ class Collector(unittest.TestCase):
             if v is None:
                 os.environ.pop(k, None)
 
+    def test_the_747_and_a380_first_then_the_787_and_a350_then_the_rest(self):
+        today = date(2026, 10, 30)
+        day = lambda d: today + timedelta(days=d)
+        work = [(n, day(d), None, 0) for n in ("716", "400", "96") for d in (-2, -1, 0, 1, 2, 3)]
+        out = self.fs.prioritised(work, deep={"716"}, wide={"400"}, today=today)
+        self.assertEqual([w[0] for w in out], ["716"] * 6 + ["400"] * 6 + ["96"] * 6)
+        self.assertEqual([(w[1] - today).days for w in out[:6]], [0, 1, -1, 2, -2, 3])
+        self.assertEqual(sorted(out), sorted(work))
+
     def test_a_run_by_hand_does_not_wait(self):
         self.assertEqual(self.fs.DOOR_WAIT_MIN, 0)          # the crontab sets it for the scheduled runs
         self.assertIn("\nFIS_DOOR_WAIT_MIN=15\n", (ROOT / "flightstatus" / "crontab").read_text())

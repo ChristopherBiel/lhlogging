@@ -91,7 +91,9 @@ FIS_DOOR_WAIT_MIN=15
 # such sessions it waits FIS_DOOR_WAIT_MIN (above) and tries one more, holding
 # no session, until 3 min before the next line here is due. A run that waited
 # stops reading then too, so it gives way to the next slot instead of making it
-# skip.
+# skip. Sweeps and the far pass read the 747-8/A380 first, then the 787/A350,
+# then the rest, so what a cut run did read is what matters most; and no run
+# asks again for a flight day the feed has answered "no such flight" for.
 #
 # Far pass by day (2026-10-12): it ran at 03:30 until then, in the hours where
 # lufthansa.com often serves the timetable page without its bot check — and a
