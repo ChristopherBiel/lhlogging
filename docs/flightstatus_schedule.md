@@ -69,7 +69,7 @@ Split the catalog by fleet type and spend the far-lead budget on cadence:
 | tier | types | numbers | coverage |
 |---|---|---|---|
 | **deep** | B748, A388 | ~33 | D-2…D+2 sweeps (+1 day), D+1…D+4 far, **7 pulse passes/day at D+1/D+2**, D+5…D+9 probe |
-| **wide** (since 2026-10-06) | B789, A359 (787/A350) | ~78 | D-2…D+2 sweeps (+1 day), D+3/D+4 far |
+| **wide** (since 2026-10-06) | B789, A359 (787/A350) | ~90 | D-2…D+2 sweeps (+1 day), D+3/D+4 far; one look at each flight day of D+5…D+8, for the timetable (2026-10-13) |
 | **broad** | everything else (chained short-haul legs, strays) | — | D-2…D+2 sweeps, single far look at D+3 |
 
 Tiering is resolved from the *observed* tail — the modal fleet type of each
@@ -178,6 +178,7 @@ changed four times and staleness statistics are meaningless across the seams:
 | 2026-09-24 | 22:00 pulse also probes the deep tier at D+5..D+9 |
 | 2026-10-06 | wide tier (787/A350): sweeps +1 day, far D+4 |
 | 2026-10-12 | far pass moved from 03:30 to 11:20; 03:30 is a pulse, the 11:35 pulse is gone (the far pass asks its slices first) |
+| 2026-10-30 (written 10-13) | the 22:00 pulse also asks the wide tier's unread flight days of D+5..D+8; census at 08:15; an empty answer is stored as one (`raw` = `{}`) |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.
@@ -202,6 +203,9 @@ scp flightstatus/fetch_flightstatus.py $HOST:/tmp/fetch_new.py
 ssh $HOST "cd $DIR && docker compose cp /tmp/fetch_new.py flightstatus:/tmp/fetch_new.py \
   && docker compose exec -T flightstatus python /tmp/fetch_new.py --pulse --dry-run"
 ```
+
+(The script imports `legs` and `census` from its own directory: copy those next
+to it under their own names when they changed too, or it will not start.)
 
 After a week on a new cadence, re-run the measurement and check that the bracket
 median moved and whether hour-of-day now clears the null:
@@ -256,6 +260,73 @@ differently then. `FIS_DIAG_UNTIL` (crontab; see "diagnostics" in
 `fetch_flightstatus.py`) makes every session write what its page load came back
 with and what its first refusal said to `/var/log/lhlogging/fis-diag/`, to tell
 the two apart.
+
+## The feed as the timetable (2026-10-13)
+
+Everything above is about tails. Two smaller additions are about which flights
+exist at all, because the booking planner lists flights well past the days
+their tails are read, and until now took them from the last four weeks
+(`docs/booking_model.md`, "The timetable beyond what the feed lists"). At a
+change of timetable — 25 October 2026 is the next — that is wrong for weeks,
+and a new flight number only entered the catalog once it had flown: from the
+ADS-B log, from its even/odd sibling, or backwards along a known flight's
+`previousFlight`.
+
+**An empty answer is an answer.** A lookup the feed answers with "no such
+flight" (an empty list, or its JSON 404) was stored exactly like one that was
+refused: not found, `raw` NULL. It now keeps `raw` = `{}`. That is what lets a
+reader say "this flight does not run that day" — the planner drops such a
+projection — and what lets the timetable look below ask only once. Rows from
+before the change cannot be told apart and count as unknown.
+
+**Timetable look** (`FIS_TIMETABLE_OFFSETS=5,6,7,8` on the 22:00 pulse). After
+the deep tier's work the pulse asks, for each wide-tier number, for the flight
+days of D+5..D+8 that have no answer yet. Once per flight and day: in the
+steady state that is the day new at D+8, about 90 lookups (one per wide-tier
+number); the first nights, and the night after a refused run,
+catch up nearest day first, capped at 160 (`FIS_TIMETABLE_MAX`). With the
+probe the pass comes to ~315 lookups, ~55 min typical, and still ends before
+the 00:10 pulse at the slowest pace in the log (a catch-up night at that pace
+would cost that one pulse). It rides on the pulse and cannot fail it: if its
+candidate query errors, the pulse runs as before.
+
+Day 9 is left out on purpose. At 22:00 the feed has not reached that day's
+late departures: of the deep tier's day-9 lookups since 09-24, 86% found their
+flight against 97–99.6% for days 5–8, and 32 of the 34 that came back empty
+were there on a later look. An empty answer nine days out says nothing.
+
+The tail such a look brings back is a by-product, seen once and days old by
+the time the flight nears. The pages keep the 787/A350 on D+4 and show no tail
+whose look is older than 36 hours, so it never stands in for the far pass; the
+monitor counts a day ahead as known by the same rule.
+
+**Census** (`--census`, 08:15; `flightstatus/census.py`). Lufthansa's long-haul
+numbers sit in one block: of the 138 widebody flight numbers flown from 21 July
+to 5 October, 128 are LH400–799, with 97% of the legs (the rest are the
+Frankfurt–Munich shuttles LH96–115). The census asks for the numbers of that
+block the catalog does not sweep — 280 on 2026-10-12 — eight days ahead, a
+sixth of them a day (`FIS_CENSUS_CYCLE_DAYS`): ~47 lookups, nearly all answered
+at once with "no such flight". Six days a round, not seven, so the weekday a
+number is asked about moves on by one each time and a flight that runs once a
+week is met within six rounds; a daily one in the first. A widebody found on a
+number is an ordinary observation, and the next sweep's catalog refresh takes
+the number in from there (source A) — a week before the flight operates. From
+then on the nightly far looks keep finding it, which keeps the catalog's
+lifecycle from retiring it before its first departure.
+
+The census logs its own kind of run (`fis_census` in `batch_runs`): the monitor
+judges a `flightstatus` run by how much it found, and a census that finds
+nothing has had a normal day. It starts after the morning sweep and is done by
+about 08:35; if the sweep is still running the slot is skipped, like any other.
+`--census-all` asks for the whole block in one run (by hand; ~280 lookups).
+
+Budget: +~90 a night and +~47 a morning, about 2,240 lookups a day (+6%).
+
+```
+docker compose exec flightstatus python fetch_flightstatus.py --census --dry-run
+docker compose exec -e FIS_PULSE_OFFSETS=1,2,5,6,7,8,9 -e FIS_TIMETABLE_OFFSETS=5,6,7,8 \
+    flightstatus python fetch_flightstatus.py --pulse --dry-run
+```
 
 ## Known gaps
 

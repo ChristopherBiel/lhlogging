@@ -36,6 +36,11 @@ Run modes:
   python fetch_flightstatus.py --watch 4.5     # watch pass: re-check flights departing in the next 4.5h
   python fetch_flightstatus.py --pulse         # pulse pass: deep-tier numbers x D+PULSE_OFFSETS only,
                                                 #   ~7x/day, so deep-tier brackets stay under ~3h
+                                                #   (with FIS_TIMETABLE_OFFSETS: plus the wide tier's
+                                                #   days the feed has not been asked for yet)
+  python fetch_flightstatus.py --census        # census: a slice of the long-haul number block the
+                                                #   catalog does not sweep, eight days ahead — finds
+                                                #   flights new to the timetable before they fly
   python fetch_flightstatus.py --flight LH716 --date 2026-06-25   # ad-hoc single lookup (prints JSON)
   python fetch_flightstatus.py --dry-run       # sweep/watch/far/pulse, print candidate set + plan, no writes
   python fetch_flightstatus.py --rebuild-legs  # rebuild the fis_legs / airframe_cabin layer from all
@@ -58,6 +63,7 @@ import psycopg
 from playwright.sync_api import sync_playwright
 from psycopg.types.json import Jsonb
 
+import census
 import legs
 
 # --- config (env-overridable, mirrors the lhlogging config style) -----------
@@ -126,6 +132,31 @@ DEEP_TIER_DAYS = int(os.environ.get("FIS_DEEP_TIER_DAYS", "6"))
 # observed-type resolution as the deep tier; a number in neither is broad.
 WIDE_TYPES = [t.strip() for t in os.environ.get(
     "FIS_WIDE_TYPES", "B789,B788,B78X,A359,A35K").split(",") if t.strip()]
+# Timetable look (2026-10-13): the wide tier is read to D+4, so what the
+# booking planner shows for its flights from D+5 on is a projection of recent
+# weeks — wrong for weeks around a change of timetable. A pulse that has this
+# set also asks, for each wide-tier number, for the days D+offsets the feed has
+# not answered for yet (found, or "no such flight"): once per flight and day,
+# ~90 lookups a night in the steady state (the day newly at the far end),
+# nearest day first, at most TIMETABLE_MAX (the first nights, and the night
+# after a run that was refused, have more to catch up on than a pulse has
+# time for before the next slot). Not D+9: at 22:00 the feed's window
+# has not reached that day's late departures (14% of the deep tier's day-9
+# lookups came back empty for flights that were there a day later). The tail
+# such a look brings back is a by-product, seen once; the pages keep the wide
+# tier on D+4. Empty = off; the crontab sets it on the 22:00 pulse.
+TIMETABLE_OFFSETS = [int(d) for d in os.environ.get(
+    "FIS_TIMETABLE_OFFSETS", "").split(",") if d.strip()]
+TIMETABLE_MAX = int(os.environ.get("FIS_TIMETABLE_MAX", "160"))
+# Census (--census, see census.py): the block of flight numbers to ask for
+# beyond the catalog, how many days one round over it takes, and how far ahead
+# it asks (eight days: the furthest the feed lists a whole day). It logs its
+# own kind of run: most of its lookups find nothing, by design, and the
+# monitor judges a 'flightstatus' run by how much it found.
+CENSUS_BLOCK = os.environ.get("FIS_CENSUS_BLOCK", "400-799")
+CENSUS_CYCLE_DAYS = int(os.environ.get("FIS_CENSUS_CYCLE_DAYS", "6"))
+CENSUS_OFFSET = int(os.environ.get("FIS_CENSUS_OFFSET", "8"))
+CENSUS_RUN_TYPE = "fis_census"
 # Truth pass: also query the last N days so FIS returns the *actually-operated*
 # tail (overallStatus ARRIVED) as ground truth for calibration. FIS only keeps a
 # rolling few-days window of past flights, so the twice-daily job must catch them
@@ -485,6 +516,39 @@ def pulse_candidates(conn: psycopg.Connection, offsets: list) -> list[dict]:
         random.shuffle(batch)
         work.extend(batch)
     return work
+
+
+def timetable_candidates(conn: psycopg.Connection, offsets: list, limit: int) -> list[dict]:
+    """(flight_number, date) work for the timetable look: wide-tier catalog
+    numbers on the days D+offsets the feed has not answered for yet — a look
+    that found the flight, or one it answered with "no such flight" (`raw` kept,
+    see parse_flight; a blocked lookup leaves no answer and is asked again).
+    Nearest day first, shuffled within a day, at most `limit`."""
+    deep = deep_numbers(conn)
+    wide = {n: t for n, t in wide_numbers(conn).items() if n not in deep}
+    if not wide or not offsets:
+        return []
+    catalogued = {c["flight_number"] for c in catalog_candidates(conn)}
+    today = date.today()
+    targets = [today + timedelta(days=d) for d in sorted(offsets)]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT flight_number, flight_date
+            FROM flight_status_observations
+            WHERE airline = 'LH' AND flight_date = ANY(%s)
+              AND (found OR raw IS NOT NULL)
+            """,
+            (targets,),
+        )
+        answered = {(r[0], r[1]) for r in cur.fetchall()}
+    work = []
+    for target in targets:
+        batch = [{"flight_number": n, "flight_date": target, "seed_type": wide[n]}
+                 for n in wide if n in catalogued and (n, target) not in answered]
+        random.shuffle(batch)
+        work.extend(batch)
+    return work[:limit]
 
 
 def prune_catalog(conn: psycopg.Connection) -> None:
@@ -990,10 +1054,11 @@ def upsert_observation(conn: psycopg.Connection, obs: dict, run_id: int | None =
         )
 
 
-def log_batch_start(conn: psycopg.Connection) -> int:
+def log_batch_start(conn: psycopg.Connection, run_type: str = "flightstatus") -> int:
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO batch_runs (run_type, status) VALUES ('flightstatus', 'running') RETURNING id"
+            "INSERT INTO batch_runs (run_type, status) VALUES (%s, 'running') RETURNING id",
+            (run_type,),
         )
         run_id = cur.fetchone()[0]
     conn.commit()
@@ -1064,8 +1129,16 @@ def _d(s: str | None):
         return None
 
 
-def parse_flight(payload: dict, flight_number: str, target: date, seed_type: str | None) -> dict:
-    """Turn a FIS response into an observation row dict."""
+def parse_flight(payload: dict | None, flight_number: str, target: date,
+                 seed_type: str | None) -> dict:
+    """Turn a FIS response into an observation row dict.
+
+    `payload` None is a lookup that got no answer (blocked): not found, `raw`
+    NULL. An answer without a flight — an empty list, or the JSON 404 that
+    fetch_one hands on as {} — is not found either but keeps `raw` = '{}', so
+    a reader can tell "the feed has no such flight that day" from "we could
+    not ask" (timetable_candidates; the dashboard's _ABSENT_SQL). Rows from
+    before 2026-10-13 have `raw` NULL in both cases."""
     obs = {
         "flight_date": target, "airline": "LH", "flight_number": flight_number,
         "seed_type": seed_type, "found": False, "registration": None,
@@ -1076,6 +1149,10 @@ def parse_flight(payload: dict, flight_number: str, target: date, seed_type: str
     }
     flights = (payload or {}).get("flights") or []
     if not flights:
+        # only what is unmistakably "no flight": an answer of another shape
+        # (an error object) stays unknown
+        if payload == {} or isinstance((payload or {}).get("flights"), list):
+            obs["raw"] = "{}"
         return obs
     fl = flights[0]
     obs["found"] = True
@@ -1500,7 +1577,7 @@ def run_batch(dry_run: bool = False, far: bool = False) -> int:
                 if payload is None:
                     err += 1
                     streak += 1
-                    obs = parse_flight({}, flight_number, target, seed_type)
+                    obs = parse_flight(None, flight_number, target, seed_type)
                     upsert_observation(conn, obs, obs_run_id)
                     conn.commit()
                     if MAX_CONSECUTIVE_BLOCKS and streak >= MAX_CONSECUTIVE_BLOCKS:
@@ -1604,15 +1681,16 @@ def watch_candidates(conn: psycopg.Connection, horizon_hours: float) -> list[dic
     ]
 
 
-def run_light_pass(label: str, work: list, conn: psycopg.Connection) -> int:
+def run_light_pass(label: str, work: list, conn: psycopg.Connection,
+                   run_type: str = "flightstatus") -> int:
     """Fetch a pre-computed (flight_number, flight_date) work list and store it.
 
-    The shared body of the two light passes — watch and pulse. Neither refreshes
-    or prunes the catalog, chains, or runs the coverage audit: those belong to
-    the sweeps. Both stay small enough for a single Distil session, so the only
-    difference between them is how `work` was chosen."""
+    The shared body of the light passes — watch, pulse and census. None of
+    them refreshes or prunes the catalog, chains, or runs the coverage audit:
+    those belong to the sweeps. The only difference between them is how `work`
+    was chosen (and, for the census, the kind of run it is logged as)."""
     per_pass = per_pass_schema(conn)
-    run_id = log_batch_start(conn)
+    run_id = log_batch_start(conn, run_type)
     obs_run_id = run_id if per_pass else None  # None -> legacy daily upsert
     total = ok = err = upserted = resets = 0
     streak = 0  # consecutive blocked lookups (circuit breaker)
@@ -1644,7 +1722,7 @@ def run_light_pass(label: str, work: list, conn: psycopg.Connection) -> int:
                 total += 1
                 payload = fetch_one(sess, w["flight_number"], w["flight_date"], open_session)
                 sess["n"] += 1
-                obs = parse_flight(payload or {}, w["flight_number"], w["flight_date"], w["seed_type"])
+                obs = parse_flight(payload, w["flight_number"], w["flight_date"], w["seed_type"])
                 upsert_observation(conn, obs, obs_run_id)
                 conn.commit()
                 if payload is None:
@@ -1722,7 +1800,16 @@ def run_pulse(dry_run: bool = False) -> int:
         log(f"pulse candidate query failed: {e}")
         conn.close()
         return 1
-    if not work:
+    extra = []
+    if TIMETABLE_OFFSETS:
+        # rides on the pulse, never fails it: without the look the planner
+        # just keeps projecting those days
+        try:
+            extra = timetable_candidates(conn, TIMETABLE_OFFSETS, TIMETABLE_MAX)
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            log(f"timetable candidate query failed, pulse runs without it: {e}")
+    if not work and not extra:
         log("pulse: no deep-tier candidates — nothing to do "
             f"(types={','.join(DEEP_TYPES)}, offsets={PULSE_OFFSETS})")
         conn.close()
@@ -1731,6 +1818,13 @@ def run_pulse(dry_run: bool = False) -> int:
     log(f"pulse: {len(work)} lookups, {len(work) // max(len(offsets), 1)} numbers x "
         f"D{'/D'.join(f'+{o}' for o in offsets)} "
         f"(deep types: {','.join(DEEP_TYPES)})")
+    if extra:
+        by_offset = defaultdict(int)
+        for w in extra:
+            by_offset[(w["flight_date"] - date.today()).days] += 1
+        log(f"pulse: + {len(extra)} timetable looks (wide tier, days not asked for yet): "
+            + ", ".join(f"D+{o}={by_offset[o]}" for o in sorted(by_offset)))
+        work = work + extra
     if dry_run:
         log("dry-run: " + ", ".join(f"LH{w['flight_number']}@{w['flight_date']}"
                                     for w in work[:40])
@@ -1739,6 +1833,40 @@ def run_pulse(dry_run: bool = False) -> int:
         conn.close()
         return 0
     return run_light_pass("pulse", work, conn)
+
+
+def run_census(dry_run: bool = False, everything: bool = False) -> int:
+    """Ask the feed for today's slice of the long-haul number block the catalog
+    does not sweep, CENSUS_OFFSET days ahead (census.py). A widebody found on
+    one of them enters the catalog with the next sweep, days before the flight
+    first operates. `everything` asks for the whole block at once (by hand,
+    e.g. the week a new timetable comes into the feed's window)."""
+    conn = connect()
+    try:
+        known = {c["flight_number"] for c in catalog_candidates(conn)}
+    except Exception as e:  # noqa: BLE001 - no catalog (migration 007), no census
+        log(f"census: catalog query failed: {e}")
+        conn.close()
+        return 1
+    today = date.today()
+    numbers = census.census_slice(census.parse_block(CENSUS_BLOCK), known, today,
+                                  1 if everything else CENSUS_CYCLE_DAYS)
+    target = today + timedelta(days=CENSUS_OFFSET)
+    work = [{"flight_number": str(n), "flight_date": target, "seed_type": None} for n in numbers]
+    random.shuffle(work)
+    log(f"census: {len(work)} numbers of LH{CENSUS_BLOCK} outside the catalog "
+        f"({len(known)} swept) x {target} (D+{CENSUS_OFFSET}), "
+        + ("the whole block" if everything else f"one round in {CENSUS_CYCLE_DAYS} days"))
+    if dry_run:
+        log("dry-run: " + ", ".join(f"LH{w['flight_number']}" for w in work[:60])
+            + (" ..." if len(work) > 60 else ""))
+        log("dry-run: not launching browser or writing to DB")
+        conn.close()
+        return 0
+    if not work:
+        conn.close()
+        return 0
+    return run_light_pass("census", work, conn, run_type=CENSUS_RUN_TYPE)
 
 
 def run_single(flight: str, target: str) -> int:
@@ -1789,8 +1917,14 @@ def main() -> int:
                     help=f"pulse pass: deep tier ({','.join(DEEP_TYPES)}) x "
                          f"D{'/D'.join(f'+{o}' for o in PULSE_OFFSETS)} only, run several "
                          "times a day to keep those brackets under ~3h")
+    ap.add_argument("--census", action="store_true",
+                    help=f"census: today's slice of LH{CENSUS_BLOCK} outside the catalog, "
+                         f"D+{CENSUS_OFFSET} (finds flights new to the timetable)")
+    ap.add_argument("--census-all", action="store_true",
+                    help="census over the whole block at once (by hand; ~270 lookups)")
     ap.add_argument("--dry-run", action="store_true",
-                    help="sweep/watch/far/pulse: print the planned lookups only, no browser/DB writes")
+                    help="sweep/watch/far/pulse/census: print the planned lookups only, "
+                         "no browser/DB writes")
     ap.add_argument("--audit", action="store_true",
                     help="print the coverage audit for the current window and exit (no browser)")
     ap.add_argument("--rebuild-legs", action="store_true",
@@ -1799,6 +1933,11 @@ def main() -> int:
 
     if args.rebuild_legs:
         return rebuild_all_legs()
+
+    if args.census or args.census_all:
+        if args.flight or args.date or args.far or args.pulse or args.watch is not None:
+            ap.error("--census cannot be combined with --flight/--date/--far/--pulse/--watch")
+        return run_census(dry_run=args.dry_run, everything=args.census_all)
 
     if args.watch is not None:
         if args.flight or args.date or args.far or args.pulse:

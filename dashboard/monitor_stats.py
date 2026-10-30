@@ -111,7 +111,10 @@ QUERIES = {
         ) a ON a.registration = btrim(o.registration)
         WHERE o.observed_at >= NOW() - INTERVAL '4 days' AND o.run_id IS NOT NULL
         GROUP BY 1, 2, 3""",
-    # flights with a tail, per fleet type and flight day
+    # flights with a tail, per fleet type and flight day; ahead, only a tail
+    # seen in the last 36 hours (every day the pages show is read daily, and
+    # the one look the 787/A350 get further out for the timetable is no plan
+    # to count on)
     "known": """
         SELECT flight_date, fleet_type AS type, count(*) AS legs,
                max(latest_observed_at) AS newest
@@ -119,6 +122,7 @@ QUERIES = {
         WHERE flight_date BETWEEN CURRENT_DATE - 32 AND CURRENT_DATE + 10
           AND NOT COALESCE(cancelled, FALSE)
           AND COALESCE(NULLIF(truth_tail, ''), NULLIF(latest_tail, '')) IS NOT NULL
+          AND (flight_date < CURRENT_DATE OR latest_observed_at > NOW() - INTERVAL '36 hours')
         GROUP BY 1, 2""",
     "collectors": """
         SELECT DISTINCT ON (run_type) run_type, status, started_at, finished_at,
@@ -605,6 +609,8 @@ def headline(slots, rec, cov, now):
 COLLECTORS = (
     ("flightstatus", "Schedule reader", "Lufthansa flight status: which tail is planned on which flight",
      "15 runs a day", timedelta(hours=4)),
+    ("fis_census", "Timetable census", "asks the feed for long-haul flight numbers not read yet",
+     "every morning", timedelta(hours=30)),
     ("state_poller", "Position poller", "ADS-B positions of the whole fleet", "every 2 min", timedelta(minutes=10)),
     ("flight_detector", "Flight detector", "turns positions into flights", "twice an hour", timedelta(minutes=45)),
     ("fleet_discovery", "Fleet discovery", "finds aircraft new to the fleet", "twice an hour", timedelta(hours=7)),
@@ -630,7 +636,8 @@ def collectors(rows, now):
                 result += ", %d blocked" % r["blocked"]
         else:
             state = "ok" if r["status"] in ("ok", "running") else "bad"
-            result = {"state_poller": "%d seen, %d stored" % (r["found"] or 0, r["stored"] or 0),
+            result = {"fis_census": "%d numbers asked, %d with a flight" % (r["total"] or 0, r["found"] or 0),
+                      "state_poller": "%d seen, %d stored" % (r["found"] or 0, r["stored"] or 0),
                       "flight_detector": "%d flights updated" % (r["stored"] or 0),
                       "fleet_discovery": "%d new" % (r["found"] or 0),
                       "fleet_refresh": "%d of %d updated" % (r["found"] or 0, r["total"] or 0)}[key]

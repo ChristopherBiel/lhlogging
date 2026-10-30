@@ -59,8 +59,8 @@ class Plan(unittest.TestCase):
         slots, jitter, probe = [], {}, None
         for ln in (ROOT / "flightstatus" / "crontab").read_text().splitlines():
             m = re.match(r"^(\d+)\s+(\d+)\s+\* \* \*\s+root\s+(.*run_nightly\.sh.*)$", ln)
-            if not m:
-                continue
+            if not m or "--census" in m.group(3):          # the census is no slot of the plan: it
+                continue                                    # logs its own kind of run (tests/test_census)
             cmd = m.group(3)
             offsets = re.search(r"FIS_PULSE_OFFSETS=([\d,]+)", cmd)
             kind = ("probe" if "--pulse" in cmd and offsets else "pulse" if "--pulse" in cmd
@@ -271,9 +271,12 @@ class Collectors(unittest.TestCase):
                                             "total": 10, "found": 10, "blocked": 0, "stored": 10, "detail": None}, **kw)
         got = {c["id"]: c for c in ms.collectors([
             row("flightstatus", timedelta(minutes=70), total=47, found=47),
+            row("fis_census", timedelta(hours=8), total=45, found=1),           # finding nothing is its normal day
             row("state_poller", timedelta(minutes=30)),                      # every 2 min: half an hour is stale
             row("flight_detector", timedelta(minutes=4), status="error", detail="boom")], NOW)}
         self.assertEqual((got["flightstatus"]["state"], got["flightstatus"]["result"]), ("ok", "47 of 47 found"))
+        self.assertEqual((got["fis_census"]["state"], got["fis_census"]["result"]),
+                         ("ok", "45 numbers asked, 1 with a flight"))
         self.assertEqual(got["state_poller"]["state"], "stale")
         self.assertEqual((got["flight_detector"]["state"], got["flight_detector"]["result"]), ("bad", "boom"))
         self.assertEqual(got["fleet_refresh"]["state"], "bad")               # no run at all
