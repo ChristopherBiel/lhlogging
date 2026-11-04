@@ -245,8 +245,8 @@ TRACK_AIRCRAFT_TYPES=
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 | **Flight-Routes Seed** | Mondays at 02:30 UTC | Rebuilds the `flight_routes` callsign→route reference from a consensus of clean flights (plus curated overrides) |
-| **Flight-Status Fetch** | 15 slots/day, Europe/Berlin ([schedule](docs/flightstatus_schedule.md)) | Pulls the public Lufthansa FIS feed for the catalogued widebody flight numbers (747-8, A380, 787, A350) across D-2…D+4 (747-8/A380 to D+9); records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below). Coverage is tiered: 747-8/A380 are re-checked every ~2.6h at D+1/D+2 so reassignments can be dated to a few hours |
-| **Timetable Census** | Daily at 08:15, Europe/Berlin | Asks the feed for a sixth of the long-haul flight numbers (LH400–799) the catalog does not sweep, eight days ahead, so a flight new to the timetable is found before it flies |
+| **Flight-Status Fetch** | Every hour at :07, Europe/Berlin ([read plan](docs/flightstatus_schedule.md)) | Asks the public Lufthansa FIS feed for what has fallen due in the read plan (`flightstatus/plan.py`): the long-haul fleet pool by pool — 747-8 and A380 to D+9 (every 6 h at D+1…D+3), A350 Allegris to D+9, 787 and the other Munich A350s to D+4, each flight 12 h and 3 h before it leaves a hub, the watched tails every 6 h — the most valuable first, ~800 lookups a day. Records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
+| **Timetable Census** | Daily at 08:40, Europe/Berlin | Asks the feed for a sixth of the long-haul flight numbers (LH400–799) the catalog does not sweep, eight days ahead, so a flight new to the timetable is found before it flies |
 
 ---
 
@@ -260,11 +260,12 @@ ADS-B pipeline can only observe after the fact.
   Unlike the official Lufthansa Open API (which returns only the 3-letter
   aircraft *type*), this feed includes the **registration (tail)** and the
   aircraft's **previous flight** — enough to chain an airframe's rotation.
-- **Bot protection:** the endpoint sits behind Imperva/Distil. `curl` and
-  headless browsers are blocked; only a *real headed* Chromium gets through, so
-  the service runs Playwright headed under Xvfb. Requests are paced gently
-  (5–10 s) with a rate-limit backoff, one run at a time (flock) — a ~450-lookup
-  sweep takes ~90 min, a 66-lookup pulse ~12 min.
+- **Bot protection:** the endpoint sits behind Cloudflare's bot check. `curl`
+  and headless browsers are refused; a *real headed* Chromium gets answers
+  while its session is on the check page (about two minutes), so the service
+  runs Playwright headed under Xvfb, and waits when the page comes without the
+  check (`flightstatus/door.py`). Requests are paced gently (5–10 s), one run at
+  a time (flock) — an hourly run of ~30 lookups takes about five minutes.
 - **Storage:** every pass appends a row per `(run, flight_date, flight_number)`,
   so **reassignments are preserved as a time series** — ordering a flight's rows
   by `observed_at` shows the plan firm up or swap. Full per-flight payload kept
@@ -274,7 +275,8 @@ ADS-B pipeline can only observe after the fact.
 
   | mode | what it does | ~lookups |
   |---|---|---|
-  | *(none)* | near sweep, D-2…D+2 — owns discovery, pairing, catalog lifecycle, `previousFlight` chaining, coverage audit | 400–470 |
+  | `--due` | the read plan, the crontab's run: what has fallen due since the last run, most valuable first; an outbound through its return leg; the catalog's upkeep once a day | ~30 (≤150) |
+  | *(none)* | near sweep, D-2…D+2 — owns discovery, pairing, catalog lifecycle, `previousFlight` chaining, coverage audit (the passes below ran until 2026-10-31; by hand now) | 400–470 |
   | `--far` | far pass, D+3 for every number, D+4 for the deep and wide tiers, the deep tier's D+1/D+2 first; read-only against the catalog | ~310 |
   | `--watch H` | re-check only flights departing within the next H hours | 5–50 |
   | `--pulse` | re-check only the deep tier at D+1/D+2, several times a day (at 22:00 also its D+5…D+9, and the 787/A350 flight days of D+5…D+8 not asked for yet) | ~66 (~315) |
@@ -282,13 +284,20 @@ ADS-B pipeline can only observe after the fact.
   | `--flight LH716 --date …` | ad-hoc single lookup, prints JSON (`tools/fis_lookup.sh`) | 1 |
   | `--audit` | print the fleet-continuity coverage audit, no browser | 0 |
 
-- **Tiering:** the *deep* tier (`FIS_DEEP_TYPES`, default `B748,A388`) is tracked
-  at high cadence because reassignment hazard turns out to be nearly flat in
-  lead time — more frequent looks buy far more than deeper ones. Tier membership
-  comes from the modal *observed* fleet type per flight number, not from the
-  catalog's `seed_type`. See [docs/flightstatus_schedule.md](docs/flightstatus_schedule.md)
-  for the measurements behind the schedule and the request budget.
-- **Config:** `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`),
+- **Pools:** tails swap almost only within their pool (747-8, A380, A350
+  Allegris, 787, A350 Munich, A350 Frankfurt), so the plan reads a pool
+  completely or not at all, at its pool's level; a flight number's pools come
+  from who flew it in the last two weeks (the feed and ADS-B). The flown tail
+  comes from ADS-B (callsign `DLH<number>`; `fis_legs.truth_status` `ADSB`),
+  from the feed where ADS-B did not see it. See
+  [docs/flightstatus_schedule.md](docs/flightstatus_schedule.md) for the
+  measurements behind the plan and its budget, and `tools/plan_preview.py`
+  (Python 3.10+) for what the next run would read, on production rows.
+- **Config:** the read plan: `FIS_POOLS` (empty: levels and days as in
+  `plan.POOLS`; e.g. `a350-fra=near:4`), `FIS_WATCH_TAILS`
+  (`D-AIMH,D-ABYN,D-AIXL,D-ABPU`), `FIS_WATCH_LIVERIES` (1: also every widebody
+  shown in a special livery), `FIS_DUE_MAX` (150 a run). The passes:
+  `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`),
   `FIS_LOOKAHEAD_DAYS` (2), `FIS_BACKFILL_DAYS` (2), `FIS_FAR_MIN_DAYS`/`MAX_DAYS`
   (3/3), `FIS_FAR_DEEP_MAX_DAYS` (4), `FIS_DEEP_TYPES`, `FIS_PULSE_OFFSETS`
   (`1,2`; the 22:00 pulse adds `5..9` as the horizon probe), `FIS_TIMETABLE_OFFSETS`

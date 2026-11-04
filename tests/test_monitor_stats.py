@@ -14,10 +14,10 @@ sys.path.insert(0, str(ROOT / "dashboard"))
 import monitor_stats as ms  # noqa: E402
 
 B = ms.BERLIN
-NOW = datetime(2026, 10, 18, 16, 49, tzinfo=B)          # a Sunday afternoon, six days into the present plan
+NOW = datetime(2026, 10, 18, 16, 49, tzinfo=B)          # a Sunday afternoon, six days into the 12 Oct passes
 TODAY = NOW.date()
 FAMILIES = {"B748": ("B748",), "A388": ("A388",), "B787": ("B788", "B789", "B78X"), "A350": ("A359", "A35K")}
-SLOT = {hhmm: i for i, (hhmm, _k) in enumerate(ms.SLOTS)}
+SLOT = {hhmm: i for i, (hhmm, _k) in enumerate(ms.PASSES)}
 
 
 def at(day, hhmm, plus=0):
@@ -41,11 +41,14 @@ def stopped(day, hhmm):
                detail="stopped after 10 consecutive blocked lookups")
 
 
-def healthy(days=30, but=()):
-    """Every slot of the last `days` days served, except (day, 'HH:MM') in `but`."""
+def healthy(days=30, but=(), hourly=False, since=None):
+    """Every slot of the last `days` days served, except (day, 'HH:MM') in `but`:
+    the passes, or the hourly runs (from `since` on, if given)."""
     out = []
     for d in range(-days, 1):
-        for hhmm, _kind, _wait in ms.plan(TODAY + timedelta(days=d)):      # the slot's time that day
+        for hhmm, _kind, _wait in ms.plan(TODAY + timedelta(days=d), hourly):   # the slot's time that day
+            if since is not None and at(d, hhmm) < since:
+                continue
             if (d, hhmm) in but or at(d, hhmm, 40) > NOW:
                 continue
             out.append(run(d, hhmm))
@@ -56,40 +59,36 @@ class Plan(unittest.TestCase):
     """The plan here is a copy of the collector's; these fail when it drifts."""
 
     def crontab(self):
-        slots, jitter, probe = [], {}, None
+        slots, jitter = [], {}
         for ln in (ROOT / "flightstatus" / "crontab").read_text().splitlines():
-            m = re.match(r"^(\d+)\s+(\d+)\s+\* \* \*\s+root\s+(.*run_nightly\.sh.*)$", ln)
+            m = re.match(r"^(\d+)\s+(\d+|\*)\s+\* \* \*\s+root\s+(.*run_nightly\.sh.*)$", ln)
             if not m or "--census" in m.group(3):          # the census is no slot of the plan: it
                 continue                                    # logs its own kind of run (tests/test_census)
             cmd = m.group(3)
-            offsets = re.search(r"FIS_PULSE_OFFSETS=([\d,]+)", cmd)
-            kind = ("probe" if "--pulse" in cmd and offsets else "pulse" if "--pulse" in cmd
-                    else "watch" if "--watch" in cmd else "far" if "--far" in cmd
-                    else "lite" if "FIS_LOOKAHEAD_DAYS=1" in cmd else "full")
-            if offsets:
-                probe = tuple(int(x) for x in offsets.group(1).split(","))
-            slots.append(("%02d:%02d" % (int(m.group(2)), int(m.group(1))), kind))
-            jitter.setdefault(kind, set()).add(int(re.search(r"NIGHTLY_JITTER_MAX_S=(\d+)", cmd).group(1)) // 60)
-        return sorted(slots), jitter, probe
+            self.assertIn("--due", cmd)                     # one kind of run since 2026-11-01
+            hours = range(24) if m.group(2) == "*" else [int(m.group(2))]
+            slots += [("%02d:%02d" % (h, int(m.group(1))), "due") for h in hours]
+            jitter.setdefault("due", set()).add(int(re.search(r"NIGHTLY_JITTER_MAX_S=(\d+)", cmd).group(1)) // 60)
+        return sorted(slots), jitter
 
     def setting(self, name):
         src = (ROOT / "flightstatus" / "fetch_flightstatus.py").read_text()
         return re.search(r'"%s",\s*"([^"]*)"' % name, src).group(1)
 
     def test_the_slots_are_the_crontabs(self):
-        slots, jitter, _probe = self.crontab()
+        slots, jitter = self.crontab()
         self.assertEqual(list(ms.SLOTS), slots)
-        self.assertEqual({k: {v} for k, v in ms.JITTER_MIN.items()}, jitter)
+        self.assertEqual({"due": {ms.JITTER_MIN["due"]}}, jitter)
 
-    def test_the_reads_follow_the_collectors_settings(self):
-        _slots, _jitter, probe = self.crontab()
+    def test_the_passes_follow_the_collectors_settings(self):
+        # the plan until 2026-10-31: its modes are still the collector's, for runs by hand
         num = lambda name: int(self.setting(name))
         pulse = tuple(int(x) for x in self.setting("FIS_PULSE_OFFSETS").split(","))
         back, bonus = num("FIS_BACKFILL_DAYS"), num("FIS_DEEP_LOOKAHEAD_BONUS")
         far = tuple(range(num("FIS_FAR_MIN_DAYS"), num("FIS_FAR_DEEP_MAX_DAYS") + 1))
         sweep = lambda ahead: tuple(range(-back, ahead + bonus + 1))
-        self.assertEqual(ms.READS, {
-            "pulse": {"deep": pulse}, "probe": {"deep": probe},
+        self.assertEqual({k: v for k, v in ms.READS.items() if k != "due"}, {
+            "pulse": {"deep": pulse}, "probe": {"deep": (1, 2, 5, 6, 7, 8, 9)},
             "watch": {"deep": (0,), "wide": (0,)},
             "far": {"deep": tuple(sorted(set(pulse) | set(far))), "wide": far},
             "lite": {"deep": sweep(1), "wide": sweep(1)},
@@ -98,21 +97,36 @@ class Plan(unittest.TestCase):
                          {"deep": set(self.setting("FIS_DEEP_TYPES").split(",")),
                           "wide": set(self.setting("FIS_WIDE_TYPES").split(","))})
 
+    def test_the_hourly_plan_reads_what_its_pools_read(self):
+        sys.path.insert(0, str(ROOT / "flightstatus"))
+        import plan                                           # noqa: E402 - stdlib only, as here
+        P = plan.POOLS
+        self.assertEqual(ms.horizon("deep"), P["b748"].days)
+        self.assertEqual(ms.horizon("deep"), P["a388"].days)
+        self.assertEqual(ms.horizon("wide"), max(P["b787"].days, P["a350-muc"].days))
+        self.assertEqual(ms.SHOWN, {"deep": 9, "wide": 4})
+        self.assertEqual(ms.DUE_READS["deep"][2], plan.DAY // plan.CLOSE_EVERY)        # every 6 h
+
     def test_how_often_a_day_is_read(self):
         per = ms.reads_per_day()
-        self.assertEqual((per["deep"][1], per["deep"][2], per["deep"][4], per["deep"][9]), (10, 10, 1, 1))
-        self.assertEqual((per["wide"][1], per["wide"][3], per["wide"][4]), (2, 2, 1))
+        self.assertEqual((per["deep"][1], per["deep"][2], per["deep"][4], per["deep"][9]), (4, 4, 1, 1))
+        self.assertEqual((per["wide"][1], per["wide"][4]), (1, 1))
         self.assertNotIn(5, per["wide"])
-        self.assertEqual((ms.horizon("deep"), ms.horizon("wide")), (9, 4))
-        self.assertEqual(ms.readers("wide", 4), [SLOT["11:20"]])           # one run reads their day 4
+        old = ms.reads_per_day(hourly=False)                  # the passes
+        self.assertEqual((old["deep"][1], old["deep"][2], old["deep"][4], old["deep"][9]), (10, 10, 1, 1))
+        self.assertEqual((old["wide"][1], old["wide"][3], old["wide"][4]), (2, 2, 1))
+        self.assertEqual((ms.horizon("deep", False), ms.horizon("wide", False)), (9, 4))
+        self.assertEqual(ms.readers("wide", 4, hourly=False), [SLOT["11:20"]])   # one pass read their day 4
+        self.assertEqual(len(ms.readers("wide", 4)), 24)                       # every hourly run may
 
     def test_a_day_is_judged_by_the_plan_it_ran_under(self):
         # the far pass and a pulse swapped places on 12 Oct 2026
         swap = date(2026, 10, 12)
-        self.assertEqual((ms.plan(swap - timedelta(days=1))[3], ms.plan(swap - timedelta(days=1))[7]),
-                         (("03:30", "far", 30), ("11:35", "pulse", 10)))
-        self.assertEqual((ms.plan(swap)[3], ms.plan(swap)[7]), (("03:30", "pulse", 10), ("11:20", "far", 10)))
-        self.assertEqual([len(ms.plan(swap - timedelta(days=d))) for d in (1, 0)], [15, 15])
+        was = ms.plan(swap - timedelta(days=1), hourly=False)
+        self.assertEqual((was[3], was[7]), (("03:30", "far", 30), ("11:35", "pulse", 10)))
+        now = ms.plan(swap, hourly=False)
+        self.assertEqual((now[3], now[7]), (("03:30", "pulse", 10), ("11:20", "far", 10)))
+        self.assertEqual([len(ms.plan(swap - timedelta(days=d), hourly=False)) for d in (1, 0)], [15, 15])
         on = lambda day, h, m: datetime(day.year, day.month, day.day, h, m, tzinfo=B)
         mk = lambda start: {"id": next(_ids), "status": "ok", "started_at": start, "finished_at": start + timedelta(minutes=11),
                             "total": 64, "found": 64, "blocked": 0, "detail": None}
@@ -265,6 +279,73 @@ class Coverage(unittest.TestCase):
         lines = ms.headline(slots, ms.record(slots, extra, NOW), ms.coverage(self.rows(wide_to=4), NOW, FAMILIES), NOW)
         self.assertEqual({h["level"] for h in lines}, {"ok"})
         self.assertIn("runs in the last 24 hours went through", lines[-1]["parts"][0])
+
+
+class Hourly(unittest.TestCase):
+    """The plan since 2026-11-01: a run every hour (fetch_flightstatus.run_due),
+    which says so as it starts (batch_runs.coverage, plan 'due')."""
+    SINCE = at(-2, "14:07", 3)                              # the first hourly run, two days back
+
+    def runs(self, but=()):
+        old = [r for r in healthy() if r["started_at"] < self.SINCE]
+        new = [dict(r, plan="due") for r in healthy(days=3, but=but, hourly=True, since=self.SINCE - timedelta(minutes=3))]
+        return old + new + [dict(stopped(d, h), plan="due") for d, h in but]
+
+    def matched(self, runs):
+        since = ms.hourly_since(runs)
+        return (since,) + ms.match(runs, NOW - timedelta(days=29), NOW + ms.READS_AHEAD, NOW, since)
+
+    def test_the_first_run_that_says_so_begins_it(self):
+        self.assertEqual(ms.hourly_since(self.runs()), at(-2, "14:07"))           # its slot, not its start
+        self.assertIsNone(ms.hourly_since(healthy()))
+
+    def test_before_it_the_passes_from_it_the_hours(self):
+        since, slots, extra = self.matched(self.runs())
+        self.assertEqual({s["kind"] for s in slots if s["at"] >= since}, {"due"})
+        self.assertNotIn("due", {s["kind"] for s in slots if s["at"] < since})
+        self.assertEqual(extra, [])
+        self.assertEqual({s["state"] for s in slots if s["at"] < NOW - timedelta(hours=1)}, {"ok"})
+        self.assertEqual(len([s for s in slots if s["at"] > NOW]), 24)          # the day ahead, every hour
+
+    def test_the_record_counts_the_hours_of_the_plan_in_force(self):
+        since, slots, extra = self.matched(self.runs(but={(-1, "03:07"), (0, "03:07")}))
+        rec = ms.record(slots, extra, NOW, since=since)
+        self.assertEqual((len(rec["slots"]), rec["hourly"]), (24, True))
+        three = rec["slots"][3]
+        self.assertEqual((three["at"], three["kind"], three["n"], three["bad"], three["streak"]), ("03:07", "due", 2, 2, 2))
+        self.assertTrue(any(r.get("kind") == "far" for r in rec["runs"]))         # the passes before are drawn still
+        lines = ms.headline(slots, rec, [], NOW)
+        self.assertEqual("".join(p if isinstance(p, str) else p[0] for p in lines[-1]["parts"]),
+                         "The 03:07 run has failed 2 days running.")
+        self.assertIn("ago: the 16:10 run, ", "".join(p if isinstance(p, str) else p[0] for p in lines[0]["parts"]))
+
+    def test_a_run_draws_what_it_asked_for_and_nothing_is_planned(self):
+        runs = self.runs()
+        since, slots, _ = self.matched(runs)
+        r = next(x for x in runs if x.get("plan") == "due" and x["started_at"].hour == 15
+                 and x["started_at"].date() == TODAY)
+        rows = [{"run_id": r["id"], "flight_date": TODAY + timedelta(days=1), "type": "B748", "asked": 3, "found": 3,
+                 "first_at": r["started_at"], "last_at": r["started_at"] + timedelta(minutes=2)}]
+        out = ms.reads(slots, rows, NOW, since=since)
+        mine = next(s for s in out["slots"] if s["run"] and s["run"]["start"] == ms._iso(r["started_at"]))
+        self.assertEqual([(c["tier"], c["lead"], c["state"]) for c in mine["cells"]], [("deep", 1, "read")])
+        self.assertEqual({len(s["cells"]) for s in out["slots"] if s["state"] == "planned"}, {0})
+        self.assertEqual({t["id"]: (t["horizon"], t["shown"], t["per_day"]["1"]) for t in out["tiers"]},
+                         {"deep": (9, 9, 4), "wide": (4, 4, 1)})
+
+    def test_every_day_it_reads_is_due(self):
+        rows = [{"flight_date": TODAY + timedelta(days=d), "type": t, "legs": n, "newest": NOW}
+                for t, n in (("B748", 22), ("A359", 46)) for d in range(-30, 3)]
+        due = lambda now: {c["id"]: c["due_through"] for c in ms.coverage(rows, now, FAMILIES, self.SINCE)}
+        self.assertEqual(due(NOW)["B748"], (TODAY + timedelta(days=9)).isoformat())
+        self.assertEqual(due(NOW)["A350"], (TODAY + timedelta(days=4)).isoformat())
+        self.assertEqual(due(at(0, "08:00"))["A350"], (TODAY + timedelta(days=3)).isoformat())   # night: not day 4 yet
+        self.assertEqual(due(at(0, "15:00"))["B748"], (TODAY + timedelta(days=8)).isoformat())   # day 9 fills by day
+
+    def test_answers_without_a_flight_are_answers(self):
+        r = dict(run(0, "14:07", total=3, found=0), answered=3)                   # three "no such flight"
+        self.assertEqual(ms.outcome(r, NOW), "ok")
+        self.assertEqual(ms.outcome(dict(r, answered=0), NOW), "failed")
 
 
 class Collectors(unittest.TestCase):

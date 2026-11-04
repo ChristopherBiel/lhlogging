@@ -29,7 +29,15 @@ lead time (~1-1.7 changes per 100 leg-hours from D0 out to D+5), so what limits
 us is not how far ahead we look but how often — with two looks a day, changes
 land in ~23h-wide brackets and the time of day they happen is unrecoverable.
 
+Since 2026-11-01 the crontab runs one mode, every hour: the read plan (`--due`,
+plan.py). It reads the fleet pool by pool, each flight day once a day out to the
+day its pool is read to (747-8, A380, A350 Allegris D+9; 787, A350 Munich D+4;
+A350 Frankfurt not at all), the near and 6-hourly reads on top, an outbound
+through its return leg, and the most valuable first — ~800 lookups a day where
+the passes below made ~2,270. Those stay for runs by hand.
+
 Run modes:
+  python fetch_flightstatus.py --due           # the read plan: what has fallen due since the last run
   python fetch_flightstatus.py                 # near sweep (catalog x -BACKFILL..+LOOKAHEAD days,
                                                 #   incl. D0; owns discovery/pairing/catalog lifecycle)
   python fetch_flightstatus.py --far           # far pass: catalog x D+FAR_MIN..D+FAR_MAX only,
@@ -58,7 +66,7 @@ import random
 import re
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -69,6 +77,7 @@ from psycopg.types.json import Jsonb
 import census
 import door
 import legs
+import plan
 
 # --- config (env-overridable, mirrors the lhlogging config style) -----------
 DB_HOST = os.environ.get("DB_HOST", "db")
@@ -231,6 +240,33 @@ CATALOG_RETIRE_MISSES = int(os.environ.get("FIS_CATALOG_RETIRE_MISSES", "8"))
 # Leg layer: after every run, rebuild fis_legs for flight dates from D-N on.
 # N covers the truth pass (D-1/D-2 settle to ARRIVED) plus a day of slack.
 LEGS_REFRESH_DAYS = int(os.environ.get("FIS_LEGS_REFRESH_DAYS", "3"))
+
+# --- the read plan (--due, plan.py; the crontab's only schedule since 2026-11-01)
+# The pools' levels and how far each is read, over plan.POOLS: e.g.
+# "a350-fra=near:4" reads the A350 Frankfurt again, "b787=near:9" the 787 to D+9.
+POOLS = plan.configure(os.environ.get("FIS_POOLS", ""))
+# Tails read every 6 h to D+3 in any pool: these, and (FIS_WATCH_LIVERIES=1)
+# every widebody the feed has shown in a special livery in the last 30 days.
+WATCH_TAILS = [t.strip().upper() for t in os.environ.get(
+    "FIS_WATCH_TAILS", "D-AIMH,D-ABYN,D-AIXL,D-ABPU").split(",") if t.strip()]
+WATCH_LIVERIES = os.environ.get("FIS_WATCH_LIVERIES", "1") == "1"
+# A tail ADS-B has not seen fly for this long is likely to lose its flights;
+# when this share of the fleet looks that idle, the ADS-B log is behind (the
+# poller stopped), not the fleet, and nobody counts as idle.
+IDLE_HOURS = 36
+IDLE_MAX_SHARE = 0.4
+# A run reads at most this many (~30 min); what is left the next run plans
+# again, with fresher looks.
+DUE_MAX = int(os.environ.get("FIS_DUE_MAX", "150"))
+# Who flew a number lately: the feed's looks and ADS-B's callsigns, this far back.
+POOL_DAYS = 14
+# The plan's window: the feed keeps a few days of the past (the flown tail)
+# and lists nine days ahead.
+DUE_BACK_DAYS, DUE_AHEAD_DAYS = 3, 9
+# the catalog's upkeep (discovery, pairing, lifecycle) once a day
+MAINTAIN_EVERY = timedelta(hours=20)
+# a run follows a chain or a watched tail's swap this many times at most
+CHAIN_MAX, FOLLOW_UP_MAX = 20, 10
 
 # Session diagnostics: off unless FIS_DIAG_UNTIL names a day (YYYY-MM-DD, the
 # last one still logged; the crontab sets it). While on, every session writes
@@ -576,12 +612,17 @@ def timetable_candidates(conn: psycopg.Connection, offsets: list, limit: int) ->
     return work[:limit]
 
 
-def prune_catalog(conn: psycopg.Connection) -> None:
+def prune_catalog(conn: psycopg.Connection, asked_only: bool = False) -> None:
     """Lifecycle pass, run after each sweep. A number with recent widebody
     evidence (this run or the last, incl. via chaining) resets to active; one
     without accrues a miss and steps active→probation→retired. Retired numbers
     stop being swept, so speculative pairing/seed additions can't bloat the
-    sweep forever. Skips gracefully if the catalog table is absent."""
+    sweep forever. Skips gracefully if the catalog table is absent.
+
+    `asked_only` (the read plan's daily upkeep, see maintain): a miss only for
+    a number the feed was asked about in the last day — the plan does not ask
+    for every number every day, and a number of a pool it does not read (the
+    A350 Frankfurt) must not drift out for that."""
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -592,6 +633,10 @@ def prune_catalog(conn: psycopg.Connection) -> None:
                     JOIN aircraft a ON a.registration = o.registration
                     WHERE o.found AND a.aircraft_type = ANY(%(types)s)
                       AND o.observed_date >= CURRENT_DATE - 1
+                ), asked AS (
+                    SELECT DISTINCT flight_number FROM flight_status_observations
+                    WHERE airline = 'LH' AND observed_at > NOW() - INTERVAL '24 hours'
+                      AND (found OR raw IS NOT NULL)
                 )
                 UPDATE fis_flight_catalog c SET
                     consecutive_misses = CASE WHEN c.flight_number IN (SELECT flight_number FROM recent_hits)
@@ -602,10 +647,12 @@ def prune_catalog(conn: psycopg.Connection) -> None:
                         WHEN c.consecutive_misses + 1 >= %(probation)s THEN 'probation'
                         ELSE c.status END,
                     updated_at = NOW()
-                WHERE c.status <> 'retired' OR c.flight_number IN (SELECT flight_number FROM recent_hits)
+                WHERE c.flight_number IN (SELECT flight_number FROM recent_hits)
+                   OR (c.status <> 'retired'
+                       AND (NOT %(asked_only)s OR c.flight_number IN (SELECT flight_number FROM asked)))
                 """,
                 {"types": SEED_TYPES, "retire": CATALOG_RETIRE_MISSES,
-                 "probation": CATALOG_PROBATION_MISSES},
+                 "probation": CATALOG_PROBATION_MISSES, "asked_only": asked_only},
             )
             cur.execute("SELECT status, count(*) FROM fis_flight_catalog GROUP BY status ORDER BY status")
             dist = {r[0]: r[1] for r in cur.fetchall()}
@@ -1473,9 +1520,11 @@ def run_deadline(now: datetime) -> datetime | None:
     return nxt - timedelta(minutes=DOOR_MARGIN_MIN) if nxt else None
 
 
-def _door(browser, conn: psycopg.Connection | None = None, run_id: int | None = None) -> door.Door:
+def _door(browser, conn: psycopg.Connection | None = None, run_id: int | None = None,
+          shut_since: datetime | None = None) -> door.Door:
     """The door of one run (door.py): fresh sessions on `browser`; while it
-    waits, the run's batch_runs row says so, for the monitor."""
+    waits, the run's batch_runs row says so, for the monitor. `shut_since`:
+    the run before stopped because the feed was shut (see _shut_before)."""
     held = {}
 
     def close_session():
@@ -1508,7 +1557,7 @@ def _door(browser, conn: psycopg.Connection | None = None, run_id: int | None = 
                      deadline=run_deadline(now()) if DOOR_WAIT_MIN > 0 else None,
                      wait=timedelta(minutes=DOOR_WAIT_MIN), tries=DOOR_TRIES,
                      retries=MAX_FETCH_RETRIES, backoff_s=BLOCK_BACKOFF_S, now=now,
-                     log=log, on_wait=on_wait)
+                     log=log, on_wait=on_wait, shut_since=shut_since)
 
 
 def fetch_one(gate: door.Door, flight_number: str, target: date):
@@ -2025,6 +2074,378 @@ def run_census(dry_run: bool = False, everything: bool = False) -> int:
     return run_light_pass("census", work, conn, run_type=CENSUS_RUN_TYPE)
 
 
+# --- the read plan (--due) ---------------------------------------------------
+# What plan.plan needs, from the database. Parameter names: lo/hi/today the
+# plan's window (Berlin days), back the start of the POOL_DAYS look back,
+# trust ABSENT_TRUST_DAYS, types the widebody types. Run as they are by
+# tools/plan_preview.py too, read-only on production.
+DUE_SQL = {
+    # per flight day: the newest answer, and the newest look that found it
+    "days": """
+        WITH answered AS (
+            SELECT DISTINCT ON (flight_date, flight_number)
+                   flight_date, flight_number, observed_at AS answered_at,
+                   NOT found AND flight_date <= observed_date + %(trust)s AS absent
+            FROM flight_status_observations
+            WHERE airline = 'LH' AND flight_date BETWEEN %(lo)s AND %(hi)s AND (found OR raw IS NOT NULL)
+            ORDER BY flight_date, flight_number, observed_at DESC
+        ), latest AS (
+            SELECT DISTINCT ON (flight_date, flight_number)
+                   flight_date, flight_number, observed_at AS found_at, btrim(registration) AS tail,
+                   dep_airport_iata AS dep, arr_airport_iata AS arr, dep_scheduled, arr_scheduled,
+                   overall_status AS status, prev_airline, prev_flight_number, prev_flight_date,
+                   raw->'legs'->0->>'flightDuration' AS duration
+            FROM flight_status_observations
+            WHERE airline = 'LH' AND flight_date BETWEEN %(lo)s AND %(hi)s AND found
+            ORDER BY flight_date, flight_number, observed_at DESC
+        )
+        SELECT flight_date, flight_number, answered_at, COALESCE(absent, FALSE) AS absent, found_at,
+               tail, dep, arr, dep_scheduled, arr_scheduled, status, prev_airline,
+               prev_flight_number, prev_flight_date, duration
+        FROM answered FULL JOIN latest USING (flight_date, flight_number)""",
+    # the tail that flew it: the feed's, or ADS-B's (refresh_legs)
+    "truth": """
+        SELECT flight_date, flight_number, NULLIF(truth_tail, '') AS truth, cancelled
+        FROM fis_legs WHERE airline = 'LH' AND flight_date BETWEEN %(lo)s AND %(today)s""",
+    # every widebody, the hub ADS-B saw it at most and when it last flew
+    "tails": """
+        WITH reg AS (
+            SELECT DISTINCT ON (btrim(registration)) btrim(registration) AS tail, icao24, aircraft_type
+            FROM aircraft ORDER BY btrim(registration), is_active DESC, last_seen_date DESC NULLS LAST
+        ), flown AS (
+            SELECT icao24,
+                   count(*) FILTER (WHERE 'EDDF' IN (departure_airport_icao, arrival_airport_icao)) AS fra,
+                   count(*) FILTER (WHERE 'EDDM' IN (departure_airport_icao, arrival_airport_icao)) AS muc,
+                   max(last_seen) AS last_flown
+            FROM flights WHERE flight_date >= %(back)s GROUP BY icao24
+        )
+        SELECT reg.tail, reg.aircraft_type, flown.fra, flown.muc, flown.last_flown
+        FROM reg LEFT JOIN flown USING (icao24)
+        WHERE reg.aircraft_type = ANY(%(types)s)""",
+    # an Allegris cabin, as the pages count it (published so in 45 days)
+    "allegris": """
+        SELECT DISTINCT registration FROM airframe_cabin
+        WHERE allegris AND last_seen > NOW() - INTERVAL '45 days'""",
+    # who flew each number lately: the feed's tail per flight day, and the
+    # aircraft ADS-B saw under its callsign
+    "numbers": """
+        SELECT flight_number, tail, count(*) AS legs FROM (
+            SELECT DISTINCT ON (flight_date, flight_number) flight_number, btrim(registration) AS tail
+            FROM flight_status_observations
+            WHERE airline = 'LH' AND found AND registration IS NOT NULL
+              AND flight_date BETWEEN %(back)s AND %(hi)s
+            ORDER BY flight_date, flight_number, observed_at DESC
+        ) fis GROUP BY 1, 2
+        UNION ALL
+        SELECT (substr(f.callsign, 4))::int::text, btrim(a.registration), count(*)
+        FROM flights f
+        JOIN (SELECT DISTINCT ON (icao24) icao24, registration FROM aircraft
+              ORDER BY icao24, is_active DESC, last_seen_date DESC NULLS LAST) a ON a.icao24 = f.icao24
+        WHERE f.flight_date >= %(back)s AND f.callsign ~ '^DLH[0-9]{1,4}$'
+        GROUP BY 1, 2""",
+    "catalog": """
+        SELECT flight_number FROM fis_flight_catalog WHERE airline = 'LH' AND status <> 'retired'""",
+    # tails the feed showed in a special livery (Retro, LH 100 years, ...)
+    "liveries": """
+        SELECT DISTINCT btrim(registration) FROM flight_status_observations
+        WHERE found AND registration IS NOT NULL AND observed_at > NOW() - INTERVAL '30 days'
+          AND COALESCE(raw->'aircraftInfo'->>'specialLivery', '') <> ''""",
+}
+
+
+def due_params(now: datetime) -> dict:
+    today = plan.berlin_day(now)
+    return {"lo": today - timedelta(days=DUE_BACK_DAYS), "hi": today + timedelta(days=DUE_AHEAD_DAYS),
+            "today": today, "back": today - timedelta(days=POOL_DAYS), "trust": ABSENT_TRUST_DAYS,
+            "types": list(legs.WIDEBODY)}
+
+
+def due_rows(conn: psycopg.Connection, now: datetime) -> dict:
+    """DUE_SQL's rows. A query whose table is missing (a migration not applied)
+    gives none: the plan then reads without that part (no Allegris pool, no
+    flown tails from fis_legs, no catalog numbers to place)."""
+    params, rows = due_params(now), {}
+    for name, sql in DUE_SQL.items():
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows[name] = cur.fetchall()
+        except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn) as e:
+            conn.rollback()
+            if name in ("days", "tails", "numbers"):
+                raise
+            log(f"due: no {name} ({_brief(e)})")
+            rows[name] = []
+    conn.commit()
+    return rows
+
+
+def _flight_day(row) -> tuple:
+    """A DUE_SQL['days'] row -> ((number, date), plan's flight day)."""
+    (fdate, num, answered_at, absent, found_at, tail, dep, arr, dsch, asch, status,
+     pa, pn, pd, dur) = row
+    minutes = legs.iso_duration_min(dur)
+    dep_t = legs.dep_utc(dsch, asch, dep, arr, minutes) if dsch else None
+    return (norm_flight_number(num), fdate), {
+        "answered_at": answered_at, "absent": bool(absent), "found_at": found_at,
+        "tail": norm_registration(tail), "dep": dep, "arr": arr, "dep_utc": dep_t,
+        "arr_utc": dep_t + timedelta(minutes=minutes) if dep_t and minutes else None,
+        "status": status,
+        "prev": ((norm_flight_number(pn), pd)
+                 if (pa or "").strip() == "LH" and pn and pd and pn.isdigit() else None)}
+
+
+def due_inputs(rows: dict, now: datetime, watch=None, liveries=None) -> dict:
+    """plan.plan's keyword arguments (bar now and pools) from due_rows."""
+    watch = WATCH_TAILS if watch is None else watch
+    liveries = WATCH_LIVERIES if liveries is None else liveries
+    allegris = {norm_registration(r[0]) for r in rows.get("allegris", ())}
+    tails, types, flown = {}, {}, {}
+    for tail, ftype, fra, muc, last in rows["tails"]:
+        tail = norm_registration(tail)
+        fra, muc = fra or 0, muc or 0
+        pool = plan.pool_of(ftype, tail in allegris, "FRA" if fra > muc else "MUC" if muc > fra else None)
+        if tail and pool:
+            tails[tail], types[tail], flown[tail] = pool, ftype, last
+    days = dict(_flight_day(r) for r in rows["days"])
+    for fdate, num, truth, cancelled in rows.get("truth", ()):
+        fd = days.get((norm_flight_number(num), fdate))
+        if fd is not None:
+            fd["truth"], fd["cancelled"] = norm_registration(truth), bool(cancelled)
+    numbers = defaultdict(Counter)
+    for num, tail, n in rows["numbers"]:
+        numbers[norm_flight_number(num)][tails.get(norm_registration(tail))] += n
+    watched = {t for t in watch if t}
+    if liveries:
+        watched |= {norm_registration(r[0]) for r in rows.get("liveries", ())} & set(tails)
+    idle = {t for t, last in flown.items() if last is None or now - last > timedelta(hours=IDLE_HOURS)}
+    if len(idle) > IDLE_MAX_SHARE * max(len(tails), 1):
+        log(f"due: {len(idle)} of {len(tails)} tails not seen flying for {IDLE_HOURS} h — "
+            "the ADS-B log is behind, no tail counts as idle")
+        idle = set()
+    return {"days": days, "tails": tails, "types": types, "numbers": dict(numbers),
+            "catalog": {norm_flight_number(r[0]) for r in rows.get("catalog", ())},
+            "watched": watched, "idle": idle}
+
+
+def _due_summary(work: list, due: dict, state: dict) -> str:
+    by_cls = Counter(it["cls"] for it in work)
+    pools = ", ".join("%s %d" % (POOLS[p].name if p in POOLS else p, sum(c.values()))
+                      for p, c in sorted(due.items()))
+    return (f"due: {len(work)} lookups ("
+            + (", ".join(f"{plan.CLASS_NAME[c]} {n}" for c, n in sorted(by_cls.items())) or "none")
+            + f"), {sum(len(it['covers']) for it in work)} outbound days through their return legs; "
+            f"flight days due by pool: {pools or 'none'}; watched {','.join(sorted(state['watched']))}; "
+            f"idle {','.join(sorted(state['idle'] & set(state['tails']))) or 'none'}")
+
+
+def maintain(conn: psycopg.Connection, now: datetime) -> None:
+    """The catalog's upkeep the sweeps did twice a day, once a day here (in the
+    first run 20 h after the last): discovery and pairing (refresh_catalog),
+    then the lifecycle (prune_catalog, counting only the numbers the feed was
+    asked about). Never fatal."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT max(updated_at) FROM fis_flight_catalog")
+            last = cur.fetchone()[0]
+        conn.commit()
+        if last is not None and now - last < MAINTAIN_EVERY:
+            return
+        if refresh_catalog(conn, seed_flight_numbers(conn)):
+            prune_catalog(conn, asked_only=True)
+    except Exception as e:  # noqa: BLE001 - upkeep, never the run's problem
+        conn.rollback()
+        log(f"catalog upkeep failed (non-fatal): {e}")
+
+
+def _shut_before(conn: psycopg.Connection, run_id: int, now: datetime) -> datetime | None:
+    """When the run before this one stopped because the feed was shut, less
+    than half an hour ago: when it stopped (door.Door's shut_since)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT status, error_detail, finished_at FROM batch_runs
+                WHERE run_type = 'flightstatus' AND id < %s ORDER BY id DESC LIMIT 1""", (run_id,))
+            r = cur.fetchone()
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        return None
+    if (r and r[0] == BLOCKED_STATUS and (r[1] or "").startswith("feed shut") and r[2]
+            and now - r[2] < timedelta(minutes=30)):
+        return r[2].astimezone(LOCAL_TZ)
+    return None
+
+
+def _note(days: dict, key: tuple, obs: dict, at: datetime, today: date) -> None:
+    """What a read told the plan's flight days (for the rest of the run)."""
+    fd = days.setdefault(key, {})
+    if obs["found"]:
+        fd.update(answered_at=at, found_at=at, absent=False, tail=obs["registration"],
+                  dep=obs["dep_airport_iata"], arr=obs["arr_airport_iata"], status=obs["overall_status"],
+                  prev=((obs["prev_flight_number"], obs["prev_flight_date"])
+                        if obs["prev_airline"] == "LH" and obs["prev_flight_number"]
+                        and obs["prev_flight_date"] else None))
+    elif obs["raw"] is not None:
+        fd.update(answered_at=at, absent=(key[1] - today).days <= ABSENT_TRUST_DAYS)
+
+
+def _enqueue(queue: list, item: dict) -> None:
+    """Into the run's queue at the end of its class."""
+    i = next((i for i, q in enumerate(queue) if q["cls"] > item["cls"]), len(queue))
+    queue.insert(i, item)
+
+
+def run_due(dry_run: bool = False) -> int:
+    """A run of the read plan (plan.py): ask the feed for what has fallen due
+    since the last run, the most valuable first, at most DUE_MAX."""
+    conn = connect()
+    now = datetime.now(timezone.utc)
+    if not dry_run:
+        maintain(conn, now)
+    try:
+        state = due_inputs(due_rows(conn, now), now)
+    except Exception as e:  # noqa: BLE001
+        log(f"due: the plan's queries failed: {e}")
+        conn.rollback()
+        if not dry_run:  # the monitor shows a failed run, not a skipped slot
+            log_batch_finish(conn, log_batch_start(conn), 0, 0, 0, 0, "error",
+                             f"the plan's queries failed: {_brief(e)}")
+        conn.close()
+        return 1
+    work, due = plan.plan(now, pools=POOLS, **state)
+    log(_due_summary(work, due, state))
+    if dry_run:
+        for it in work[:100]:
+            log("  %s LH%s %s D%+d %s%s" % (it["cls"], it["flight_number"], it["flight_date"], it["lead"],
+                                           it["why"], " for " + ",".join("LH%s/%s" % c for c in it["covers"])
+                                           if it["covers"] else ""))
+        log("dry-run: not launching browser or writing to DB" + (" (first 100 shown)" if len(work) > 100 else ""))
+        conn.close()
+        return 0
+    return _read_due(conn, work, due, state, now)
+
+
+def _read_due(conn: psycopg.Connection, work: list, due: dict, state: dict, started: datetime) -> int:
+    days, watched = state["days"], state["watched"]
+    today = plan.berlin_day(started)
+    per_pass = per_pass_schema(conn)
+    run_id = log_batch_start(conn)
+    # says what kind of run it is from the start (the monitor tells the hourly
+    # runs from the passes by it, a running one too)
+    store_coverage(conn, run_id, {"plan": "due", "due": due})
+    obs_run_id = run_id if per_pass else None  # None -> legacy daily upsert
+    total = ok = err = upserted = resets = chained = follow = stood_in = 0
+    streak = 0
+    status, detail, summary = "ok", None, None
+    queue, done = list(work), set()
+    read = defaultdict(Counter)  # pool -> why -> lookups answered
+    try:
+        if queue:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
+                    headless=False,
+                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                )
+                gate = _door(browser, conn, run_id, shut_since=_shut_before(conn, run_id, started))
+                while queue and total < DUE_MAX:
+                    it = queue[0]
+                    key = (it["flight_number"], it["flight_date"])
+                    if key in done:
+                        queue.pop(0)
+                        continue
+                    if gate.asked >= SESSION_LOOKUPS:
+                        log(f"  recycling session after {gate.asked} lookups")
+                        resets += 1
+                        gate.open()
+                    try:
+                        payload = fetch_one(gate, *key)
+                    except door.Stop as e:
+                        status = BLOCKED_STATUS
+                        detail = f"{e} ({total} done, {len(queue)} left)"
+                        log(f"due door: {detail}")
+                        break
+                    queue.pop(0)
+                    total += 1
+                    done.add(key)
+                    obs = parse_flight(payload, key[0], key[1], it["seed_type"])
+                    upsert_observation(conn, obs, obs_run_id)
+                    conn.commit()
+                    if payload is None:
+                        err += 1
+                        streak += 1
+                        if MAX_CONSECUTIVE_BLOCKS and streak >= MAX_CONSECUTIVE_BLOCKS:
+                            status = BLOCKED_STATUS
+                            detail = (f"stopped after {streak} consecutive blocked lookups "
+                                      f"({total} done, {len(queue)} left)")
+                            log(f"due circuit breaker: {detail}")
+                            break
+                        time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
+                        continue
+                    streak = 0
+                    upserted += 1
+                    read[it["pool"] or "-"][it["why"]] += 1
+                    before = (days.get(key) or {}).get("tail")
+                    _note(days, key, obs, datetime.now(timezone.utc), today)
+                    fd = days[key]
+                    if obs["found"]:
+                        ok += 1
+                        log(f"  LH{key[0]} {key[1]} [{it['why']}]: {obs['registration']} "
+                            f"{obs['dep_airport_iata']}->{obs['arr_airport_iata']} {obs['overall_status']}"
+                            + (f" (for LH{', LH'.join(c[0] for c in it['covers'])})" if it["covers"] else ""))
+                    # the outbounds its read stands in for: is it still their return leg?
+                    for c in it["covers"]:
+                        if obs["found"] and fd.get("prev") == c:
+                            stood_in += 1
+                        elif c not in done:
+                            _enqueue(queue, dict(it, flight_number=c[0], flight_date=c[1], why="day",
+                                                 lead=(c[1] - today).days, covers=[]))
+                    # a flight it names that the feed was never asked about (not
+                    # the outbound it has just stood in for)
+                    prev = fd.get("prev") if obs["found"] else None
+                    if (prev and prev not in done and prev not in it["covers"] and chained < CHAIN_MAX
+                            and not (days.get(prev) or {}).get("answered_at")
+                            and 0 <= (prev[1] - today).days <= DUE_AHEAD_DAYS):
+                        chained += 1
+                        _enqueue(queue, dict(it, flight_number=prev[0], flight_date=prev[1], why="chain",
+                                             lead=(prev[1] - today).days, covers=[]))
+                    # a watched tail left or took the flight: the other side of the swap
+                    after = obs["registration"] if obs["found"] else None
+                    if (before and after and before != after and (before in watched or after in watched)
+                            and follow < FOLLOW_UP_MAX):
+                        for k in plan.follow_ups(days, after, done | {key}, today):
+                            follow += 1
+                            _enqueue(queue, dict(it, flight_number=k[0], flight_date=k[1], why="swap",
+                                                 cls=plan.CLOSE_TOP, lead=(k[1] - today).days, covers=[]))
+                    time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
+
+                if status == "ok" and gate.waits:
+                    detail = f"waited for the feed {gate.waited()}"
+                gate.close()
+                browser.close()
+        left = Counter(i["pool"] or "-" for i in queue if (i["flight_number"], i["flight_date"]) not in done)
+        if status == "ok" and left and not detail:
+            detail = f"{sum(left.values())} due left for the next run"
+        elif status == "ok" and not total:
+            detail = "nothing due"
+        summary = {"plan": "due", "due": due, "read": {p: dict(c) for p, c in read.items()},
+                   "left": dict(left), "stood_in": stood_in, "chained": chained, "follow_ups": follow,
+                   "watched": sorted(watched), "idle": sorted(state["idle"] & set(state["tails"]))}
+    except Exception as e:  # noqa: BLE001
+        status, detail = "error", str(e)
+        log(f"due error: {e}")
+    finally:
+        log_batch_finish(conn, run_id, total, ok, err, upserted, status, detail)
+        if summary is not None:
+            store_coverage(conn, run_id, summary)
+        refresh_recent_legs(conn)
+        conn.close()
+    log(f"due done: {total} lookups ({resets} session recycles, {stood_in} outbound days through "
+        f"their return legs, {chained} chained, {follow} after a watched tail moved), {ok} found, "
+        f"{err} blocked/missing")
+    return 0 if status == "ok" else 1
+
+
 def run_single(flight: str, target: str) -> int:
     """Ad-hoc single lookup; prints the parsed observation + raw payload as JSON."""
     fn = re.sub(r"^LH", "", flight.strip().upper())
@@ -2073,8 +2494,11 @@ def main() -> int:
                          f"D+{CENSUS_OFFSET} (finds flights new to the timetable)")
     ap.add_argument("--census-all", action="store_true",
                     help="census over the whole block at once (by hand; ~270 lookups)")
+    ap.add_argument("--due", action="store_true",
+                    help="the read plan (plan.py): what has fallen due since the last run, the "
+                         f"most valuable first, at most {DUE_MAX} (the crontab runs it hourly)")
     ap.add_argument("--dry-run", action="store_true",
-                    help="sweep/watch/far/pulse/census: print the planned lookups only, "
+                    help="due/sweep/watch/far/pulse/census: print the planned lookups only, "
                          "no browser/DB writes")
     ap.add_argument("--audit", action="store_true",
                     help="print the coverage audit for the current window and exit (no browser)")
@@ -2084,6 +2508,12 @@ def main() -> int:
 
     if args.rebuild_legs:
         return rebuild_all_legs()
+
+    if args.due:
+        if args.flight or args.date or args.far or args.pulse or args.watch is not None \
+                or args.census or args.census_all:
+            ap.error("--due cannot be combined with another run mode")
+        return run_due(dry_run=args.dry_run)
 
     if args.census or args.census_all:
         if args.flight or args.date or args.far or args.pulse or args.watch is not None:

@@ -141,6 +141,22 @@ class Shut(unittest.TestCase):
         self.assertLess(f.t, START + timedelta(minutes=21))
         self.assertTrue(str(stop.exception).startswith("gave way to the next run at "))
 
+    def test_after_a_run_that_found_it_shut_the_first_shut_session_waits(self):
+        before = START - timedelta(minutes=8)                          # the run before stopped then
+        f = Feed((200, [R]), (403, [A]))
+        d = f.door(wait=timedelta(minutes=15), deadline=START + timedelta(hours=1), shut_since=before)
+        self.assertEqual(d.fetch("LH716", f.ask), {"flights": []})
+        self.assertEqual((f.opened, len(d.waits)), (2, 1))            # one page load, not three, then the wait
+        self.assertEqual(d.waited(), "14:13-14:28")
+        self.assertIn("shut since 14:05", " ".join(f.lines))           # the spell the run before saw
+
+    def test_after_a_run_that_found_it_shut_an_open_feed_reads_at_once(self):
+        f = Feed((403, [A]))
+        d = f.door(wait=timedelta(minutes=15), deadline=START + timedelta(hours=1),
+                   shut_since=START - timedelta(minutes=8))
+        self.assertEqual(d.fetch("LH716", f.ask), {"flights": []})
+        self.assertEqual((f.opened, d.waits, d.shut), (1, [], 0))
+
     def test_a_run_that_did_not_wait_is_not_cut_at_the_deadline(self):
         f = Feed((403, [A]))
         d = f.door(wait=timedelta(minutes=15), deadline=START + timedelta(minutes=1))
@@ -154,15 +170,22 @@ class NextSlot(unittest.TestCase):
     def nxt(self, *args):
         return door.next_slot(self.CRONTAB, datetime(*args, tzinfo=B))
 
-    def test_the_next_run_of_the_day(self):
-        self.assertEqual(self.nxt(2026, 10, 29, 14, 13), datetime(2026, 10, 29, 15, 30, tzinfo=B))
-        self.assertEqual(self.nxt(2026, 10, 29, 6, 1), datetime(2026, 10, 29, 8, 15, tzinfo=B))   # the census
-        self.assertEqual(self.nxt(2026, 10, 29, 14, 10), datetime(2026, 10, 29, 15, 30, tzinfo=B))
+    def test_the_next_run_of_the_hour(self):
+        self.assertEqual(self.nxt(2026, 11, 2, 14, 13), datetime(2026, 11, 2, 15, 7, tzinfo=B))
+        self.assertEqual(self.nxt(2026, 11, 2, 14, 7), datetime(2026, 11, 2, 15, 7, tzinfo=B))
+        self.assertEqual(self.nxt(2026, 11, 2, 14, 6), datetime(2026, 11, 2, 14, 7, tzinfo=B))
+        self.assertEqual(self.nxt(2026, 11, 2, 8, 20), datetime(2026, 11, 2, 8, 40, tzinfo=B))   # the census
 
-    def test_after_the_last_run_the_first_of_tomorrow(self):
-        self.assertEqual(self.nxt(2026, 10, 29, 22, 5), datetime(2026, 10, 30, 0, 10, tzinfo=B))
-        nxt = self.nxt(2026, 10, 24, 23, 0)                    # the night the clocks go back
-        self.assertEqual(nxt - datetime(2026, 10, 24, 23, 0, tzinfo=B), timedelta(minutes=70))
+    def test_after_the_last_run_of_the_day_the_first_of_tomorrow(self):
+        self.assertEqual(self.nxt(2026, 11, 2, 23, 30), datetime(2026, 11, 3, 0, 7, tzinfo=B))
+
+    def test_the_passes_of_a_daily_crontab(self):
+        daily = "10 0 * * * root run_nightly.sh --pulse\n30 15 * * * root run_nightly.sh --watch 4\n"
+        nxt = lambda *a: door.next_slot(daily, datetime(*a, tzinfo=B))
+        self.assertEqual(nxt(2026, 10, 29, 14, 13), datetime(2026, 10, 29, 15, 30, tzinfo=B))
+        self.assertEqual(nxt(2026, 10, 29, 22, 5), datetime(2026, 10, 30, 0, 10, tzinfo=B))
+        later = nxt(2026, 10, 24, 23, 0)                       # the night the clocks go back
+        self.assertEqual(later - datetime(2026, 10, 24, 23, 0, tzinfo=B), timedelta(minutes=70))
 
     def test_no_runs_no_slot(self):
         self.assertIsNone(door.next_slot("SHELL=/bin/bash\n# 10 0 * * * root run_nightly.sh\n", START))

@@ -46,17 +46,22 @@ READS = {
     "full": {"deep": (-2, -1, 0, 1, 2, 3), "wide": (-2, -1, 0, 1, 2, 3)},
 }
 KIND_NAME = {"pulse": "pulse", "probe": "pulse and probe", "watch": "watch",
-             "far": "far pass", "lite": "morning sweep", "full": "evening sweep"}
-# the 15 slots of a day, Berlin time
-SLOTS = (
+             "far": "far pass", "lite": "morning sweep", "full": "evening sweep", "due": "run"}
+# The plan: since 2026-11-01 a run every hour, each asking for what has fallen
+# due (flightstatus/plan.py), Berlin time. Its days are not fixed; READS["due"]
+# is every day it may ask for.
+SLOTS = tuple(("%02d:07" % h, "due") for h in range(24))
+READS["due"] = {"deep": tuple(range(-3, 10)), "wide": tuple(range(-3, 10))}
+# The plan before: 15 passes a day, each with its own days (READS).
+PASSES = (
     ("00:10", "pulse"), ("02:00", "pulse"), ("02:45", "watch"), ("03:30", "pulse"),
     ("05:45", "lite"), ("09:00", "pulse"), ("10:30", "watch"), ("11:20", "far"),
     ("13:00", "watch"), ("14:10", "pulse"), ("15:30", "watch"), ("16:45", "pulse"),
     ("18:15", "full"), ("21:15", "watch"), ("22:00", "probe"),
 )
 # each start is delayed by a random wait of up to this many minutes
-JITTER_MIN = {"pulse": 10, "probe": 10, "watch": 15, "far": 10, "lite": 30, "full": 30}
-# What the plan was before it changed: {first day of the new plan: {slot:
+JITTER_MIN = {"pulse": 10, "probe": 10, "watch": 15, "far": 10, "lite": 30, "full": 30, "due": 10}
+# What the passes were before they changed: {first day of the new plan: {slot:
 # (start, kind, longest wait)}}. A day is judged by the plan it ran under. A
 # slot keeps its number through a change, so its record runs on: it is a place
 # in the day, whatever pass has it.
@@ -65,8 +70,18 @@ EARLIER = {
     # noon, and swapped places with a pulse
     date(2026, 10, 12): {3: ("03:30", "far", 30), 7: ("11:35", "pulse", 10)},
 }
-# how long a pass of each kind takes when nothing is known yet (minutes)
-TYPICAL_MIN = {"pulse": 11, "probe": 45, "watch": 6, "far": 60, "lite": 85, "full": 100}
+# How long a run of each kind takes when nothing is known yet (minutes).
+TYPICAL_MIN = {"pulse": 11, "probe": 45, "watch": 6, "far": 60, "lite": 85, "full": 100, "due": 6}
+# What the hourly plan reads a day, per tier and day ahead: a daily read of
+# every day out to the last its pools are read to, the near reads of a hub
+# departure (12 h and 3 h out), the 747-8/A380's 6-hourly ones at D+1..D+3.
+# The A350 Allegris is read to day 9 too, the A350 Frankfurt not at all.
+DUE_READS = {"deep": {0: 3, 1: 4, 2: 4, 3: 4, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1},
+             "wide": {0: 2, 1: 1, 2: 1, 3: 1, 4: 1}}
+# from this hour (Berlin) the tier's last day counts as due: day 9 fills as the
+# feed lists each flight, nine days before it leaves; the 787/A350's day 4 is
+# asked for as the day begins, but the feed is often shut at night
+DUE_LAST_FROM = {"deep": 16, "wide": 9}
 FIRST_LEAD, LAST_LEAD = -2, 9
 
 # a run that has not started this long after its latest possible start was skipped
@@ -92,9 +107,11 @@ LONG_HAUL = ("A332", "A333", "A343", "A346", "A359", "A35K", "A388",
 # No parameters, so tools/preview_monitor.py can send the same text to psql.
 # Column names are what the functions below read.
 QUERIES = {
+    # `plan` is 'due' for a run of the hourly plan (it says so as it starts)
     "runs": """
         SELECT id, status, started_at, finished_at, aircraft_total AS total,
-               aircraft_ok AS found, aircraft_error AS blocked, error_detail AS detail
+               aircraft_ok AS found, aircraft_error AS blocked, flights_upserted AS answered,
+               error_detail AS detail, coverage->>'plan' AS plan
         FROM batch_runs
         WHERE run_type = 'flightstatus' AND started_at >= NOW() - INTERVAL '30 days'
         ORDER BY started_at""",
@@ -202,9 +219,25 @@ def _at(day, hhmm):
     return datetime.combine(day, time(int(h), int(m)), tzinfo=BERLIN)
 
 
-def plan(day):
-    """The slots in force on `day`: [(start, kind, longest wait in minutes)]."""
-    out = [(hhmm, kind, JITTER_MIN[kind]) for hhmm, kind in SLOTS]
+def hourly_since(runs):
+    """When the hourly plan began: the slot of the first run that says it is
+    one of it (fetch_flightstatus.run_due), the hour's start time before it
+    (the run started after its random wait). None while there is none."""
+    starts = [r["started_at"] for r in runs if r.get("plan") == "due" and r.get("started_at")]
+    if not starts:
+        return None
+    first = min(starts).astimezone(BERLIN)
+    minute = int(SLOTS[0][0][3:])
+    slot = first.replace(minute=minute, second=0, microsecond=0)
+    return slot if slot <= first else slot - timedelta(hours=1)
+
+
+def plan(day, hourly=True):
+    """The slots in force on `day`: [(start, kind, longest wait in minutes)] —
+    the hourly runs, or (hourly=False) the passes as they were that day."""
+    if hourly:
+        return [(hhmm, kind, JITTER_MIN[kind]) for hhmm, kind in SLOTS]
+    out = [(hhmm, kind, JITTER_MIN[kind]) for hhmm, kind in PASSES]
     for since in sorted(EARLIER, reverse=True):          # undo the changes made after that day
         if day < since:
             for i, was in EARLIER[since].items():
@@ -218,43 +251,52 @@ def changes(first, last):
     out = []
     for since in sorted(EARLIER):
         if first <= since <= last:
-            new = plan(since)
+            new = plan(since, hourly=False)
             out.append({"day": since.isoformat(), "slots": [
                 {"slot": i, "was": {"at": was[0], "kind": was[1]}, "now": {"at": new[i][0], "kind": new[i][1]}}
                 for i, was in sorted(EARLIER[since].items())]})
     return out
 
 
-def slots_between(start, end):
-    """Every planned slot whose nominal start lies in [start, end)."""
+def slots_between(start, end, since=None):
+    """Every planned slot whose nominal start lies in [start, end): the passes
+    before `since`, when the hourly plan began (None: not yet), its runs from
+    then on. `slot` numbers a slot within its plan."""
     out = []
     day = start.astimezone(BERLIN).date()
     while day <= end.astimezone(BERLIN).date():
-        for i, (hhmm, kind, wait) in enumerate(plan(day)):
-            at = _at(day, hhmm)
-            if start <= at < end:
-                out.append({"at": at, "kind": kind, "slot": i, "wait": wait})
+        for hourly in (False, True):
+            for i, (hhmm, kind, wait) in enumerate(plan(day, hourly)):
+                at = _at(day, hhmm)
+                if start <= at < end and (since is not None and at >= since) == hourly:
+                    out.append({"at": at, "kind": kind, "slot": i, "wait": wait, "hourly": hourly})
         day += timedelta(days=1)
-    return out
+    return sorted(out, key=lambda s: s["at"])
 
 
-def reads_per_day():
+def reads_per_day(hourly=True):
     """{tier: {lead day: planned reads a day}}."""
+    if hourly:
+        return {tid: dict(DUE_READS.get(tid, {})) for tid, _n, _t in TIERS}
     out = {tid: defaultdict(int) for tid, _n, _t in TIERS}
-    for _hhmm, kind in SLOTS:
+    for _hhmm, kind in PASSES:
         for tid, leads in READS[kind].items():
             for lead in leads:
                 out[tid][lead] += 1
     return {tid: dict(v) for tid, v in out.items()}
 
 
-def readers(tier, lead):
-    """The slots (indices into SLOTS) that read this tier's day `lead`."""
-    return [i for i, (_h, kind) in enumerate(SLOTS) if lead in READS[kind].get(tier, ())]
+def readers(tier, lead, hourly=True):
+    """The slots (indices into the plan) that read this tier's day `lead`."""
+    return [i for i, (_h, kind) in enumerate(SLOTS if hourly else PASSES)
+            if lead in READS[kind].get(tier, ())]
 
 
-def horizon(tier):
-    return max(lead for _h, kind in SLOTS for lead in READS[kind].get(tier, (0,)))
+def horizon(tier, hourly=True):
+    """The last day the plan reads for the tier."""
+    if hourly:
+        return max(DUE_READS.get(tier, {0: 0}))
+    return max(lead for _h, kind in PASSES for lead in READS[kind].get(tier, (0,)))
 
 
 # ── runs against the plan ──────────────────────────────────────────────────
@@ -266,8 +308,11 @@ def outcome(run, now):
     if run["status"] == "running":
         return "running" if now - run["started_at"] < RUNNING_MAX else "lost"
     total, found, blocked = run["total"] or 0, run["found"] or 0, run["blocked"] or 0
+    # answered: a flight, or the feed's "no such flight" (an hourly run may ask
+    # only for days that turn out to have none)
+    answered = found if run.get("answered") is None else run["answered"]
     # a run the door stopped before its first lookup has done none (2026-10-30)
-    if run["status"] == "error" or (total and not found) or (run["status"] == "blocked" and not found):
+    if run["status"] == "error" or (total and not answered) or (run["status"] == "blocked" and not answered):
         return "failed"
     if run["status"] == "blocked" or (blocked >= 5 and blocked >= 0.1 * total):
         return "cut"
@@ -277,16 +322,17 @@ def outcome(run, now):
 BAD = ("failed", "cut", "lost", "skipped")
 
 
-def match(runs, start, end, now):
+def match(runs, start, end, now, since=None):
     """The planned slots in [start, end) with the run that served each, and
-    the runs no slot accounts for (started by hand).
+    the runs no slot accounts for (started by hand). `since`: when the hourly
+    plan began.
 
     A slot starts after a random wait, so its run is the first one beginning
     between the nominal time and the longest wait. A slot still inside that
     window, or in the future, is `planned`."""
     runs = sorted((r for r in runs if r.get("started_at")), key=lambda r: r["started_at"])
     used, out = set(), []
-    for s in slots_between(start, end):
+    for s in slots_between(start, end, since):
         latest = s["at"] + timedelta(minutes=s["wait"])
         run = next((r for r in runs if r["id"] not in used
                     and s["at"] - timedelta(minutes=1) <= r["started_at"] <= latest + timedelta(minutes=5)), None)
@@ -325,13 +371,19 @@ def _run_view(run):
 
 
 # ── Fig. 1: which flight days were read, and when ──────────────────────────
-def reads(slots, lookups, now, typical=None):
+# the last day the pages show, per tier (dashboard/app.py, BOOK_HORIZON_BY_TYPE)
+SHOWN = {"deep": 9, "wide": 4}
+
+
+def reads(slots, lookups, now, typical=None, since=None):
     """The slots of the last two days and the next, each with the flight days
     it read per tier: `read`, `failed` (a run that went wrong asked and under
     half came back), `missed` (planned, never asked: the run stopped or did not
     start) or `planned`. A run that went through and asked nothing for a day
     had nothing left to ask (the sweeps skip flights that have landed), so
-    that day is not drawn."""
+    that day is not drawn. An hourly run has no days of its own (it asks for
+    what has fallen due): only what it asked for is drawn. `since`: when the
+    hourly plan began."""
     typical = typical or TYPICAL_MIN
     today = now.astimezone(BERLIN).date()
     got = defaultdict(lambda: {"asked": 0, "found": 0, "first": None, "last": None})
@@ -352,8 +404,8 @@ def reads(slots, lookups, now, typical=None):
         run, day0 = s["run"], s["at"].date()
         begin = run["started_at"] if run else s["at"]
         end = (run.get("finished_at") if run else None) or begin + timedelta(minutes=typical[s["kind"]])
-        planned = {(tid, day0 + timedelta(days=lead))
-                   for tid, leads in READS[s["kind"]].items() for lead in leads}
+        planned = set() if s["kind"] == "due" else {
+            (tid, day0 + timedelta(days=lead)) for tid, leads in READS[s["kind"]].items() for lead in leads}
         mine = {(tid, d): dict(g) for (rid, tid, d), g in got.items() if run and rid == run["id"]}
         # A lookup that found nothing has no aircraft, so its tier is a guess
         # from the flight number's seed type. Where that guess falls outside
@@ -383,19 +435,30 @@ def reads(slots, lookups, now, typical=None):
                           "from": _iso(x0), "to": _iso(x1)})
         out.append({"at": _iso(s["at"]), "kind": s["kind"], "slot": s["slot"], "state": s["state"],
                     "run": _run_view(run), "cells": cells})
-    per_day = reads_per_day()
+    hourly = since is not None
+    per_day = reads_per_day(hourly)
     return {"from": _iso(lo), "to": _iso(hi), "now": _iso(now), "today": today.isoformat(),
+            "hourly": hourly, "hourly_since": _iso(since),
             "days": [(today + timedelta(days=i)).isoformat() for i in range(FIRST_LEAD - 1, LAST_LEAD + 1)],
-            "tiers": [{"id": tid, "name": name, "horizon": horizon(tid),
+            "tiers": [{"id": tid, "name": name, "horizon": horizon(tid, hourly), "shown": SHOWN[tid],
                        "per_day": {str(k): v for k, v in sorted(per_day[tid].items())}}
                       for tid, name, _t in TIERS],
             "slots": out}
 
 
 # ── what is known about each day ahead ─────────────────────────────────────
-def _due(tier, now, back=11):
+def _due(tier, now, back=11, since=None):
     """The flight days this tier's plan should have read by now: a day is due
-    once a slot that reads it lies behind us (start, longest wait, typical run)."""
+    once a slot that reads it lies behind us (start, longest wait, typical run).
+    The hourly plan reads every day out to its last each day: from two days
+    back, the last one from DUE_LAST_FROM on."""
+    if since is not None and now >= since:
+        local = now.astimezone(BERLIN)
+        last = horizon(tier)
+        due = {local.date() + timedelta(days=i) for i in range(-2, last)}
+        if local.hour >= DUE_LAST_FROM.get(tier, 0):
+            due.add(local.date() + timedelta(days=last))
+        return due
     due = set()
     for s in slots_between(now - timedelta(days=back), now):
         done = s["at"] + timedelta(minutes=s["wait"] + TYPICAL_MIN[s["kind"]])
@@ -405,10 +468,11 @@ def _due(tier, now, back=11):
     return due
 
 
-def coverage(known, now, families):
+def coverage(known, now, families, since=None):
     """Per fleet family and flight day (two back, nine ahead): flights with a
     tail against the fleet's usual day, the newest look, and whether the plan
-    says the day should have been read by now."""
+    says the day should have been read by now (`since`: when the hourly plan
+    began)."""
     today = now.astimezone(BERLIN).date()
     legs, newest = defaultdict(int), {}
     fam_of = {t: fam for fam, members in families.items() for t in members}
@@ -424,7 +488,7 @@ def coverage(known, now, families):
     out = []
     for fam, members in families.items():
         tid = tier_of(members[0])
-        due = _due(tid, now) if tid else set()
+        due = _due(tid, now, since=since) if tid else set()
         past = [legs[(fam, today - timedelta(days=i))] for i in range(3, 31)]
         past = [n for n in past if n]
         usual = median(past) if past else 0
@@ -449,17 +513,20 @@ def coverage(known, now, families):
 
 
 # ── Fig. 2: the collector's record ─────────────────────────────────────────
-def record(slots, extra, now, days=RECORD_DAYS):
+def record(slots, extra, now, days=RECORD_DAYS, since=None):
     """Every run of the last `days` days on the clock: when it started, how
-    long it took and how it ended — and per slot, how often it went wrong."""
+    long it took and how it ended — and per slot of the plan in force now
+    (`since`: when the hourly plan began), how often it went wrong."""
     today = now.astimezone(BERLIN).date()
     first = today - timedelta(days=days - 1)
     idx = lambda d: (d - first).days
     minute = lambda dt: dt.astimezone(BERLIN).hour * 60 + dt.astimezone(BERLIN).minute
     runs, skipped = [], []
+    hourly = since is not None
+    current = plan(today, hourly)
     stats = [{"at": hhmm, "kind": kind, "n": 0, "bad": 0, "streak": 0, "last_ok": None}
-             for hhmm, kind in SLOTS]
-    open_streak = [True] * len(SLOTS)
+             for hhmm, kind, _wait in current]
+    open_streak = [True] * len(current)
 
     def bar(run, state, s=None):
         start = run["started_at"].astimezone(BERLIN)
@@ -480,16 +547,17 @@ def record(slots, extra, now, days=RECORD_DAYS):
             if s["state"] == "running" and s["run"]:
                 runs.append(bar(s["run"], "running", s))
             continue
-        st = stats[s["slot"]]
-        st["n"] += 1
-        if s["state"] in BAD:
-            st["bad"] += 1
-            if open_streak[s["slot"]]:
-                st["streak"] += 1
-        else:
-            open_streak[s["slot"]] = False
-            if st["last_ok"] is None:
-                st["last_ok"] = s["at"].date().isoformat()
+        if s.get("hourly", False) == hourly:            # a slot of the plan in force now
+            st = stats[s["slot"]]
+            st["n"] += 1
+            if s["state"] in BAD:
+                st["bad"] += 1
+                if open_streak[s["slot"]]:
+                    st["streak"] += 1
+            else:
+                open_streak[s["slot"]] = False
+                if st["last_ok"] is None:
+                    st["last_ok"] = s["at"].date().isoformat()
         if s["run"]:
             runs.append(bar(s["run"], s["state"], s))
         else:
@@ -504,7 +572,8 @@ def record(slots, extra, now, days=RECORD_DAYS):
         for k in per_day[r["day"]]:
             per_day[r["day"]][k] += r[k]
     return {"first": first.isoformat(), "days": days, "slots": stats, "runs": runs,
-            "skipped": skipped, "per_day": per_day, "now": minute(now), "changes": changes(first, today)}
+            "skipped": skipped, "per_day": per_day, "now": minute(now), "changes": changes(first, today),
+            "hourly": hourly, "hourly_since": _iso(since)}
 
 
 # ── the status, in sentences ───────────────────────────────────────────────
@@ -581,17 +650,19 @@ def headline(slots, rec, cov, now):
 
     # slots that keep failing, and the days nothing else reads
     failing = [i for i, st in enumerate(rec["slots"]) if st["streak"] >= 2]
+    hourly = rec.get("hourly", False)
     if failing:
         streaks = {rec["slots"][i]["streak"] for i in failing}
-        label = lambda i: "%s %s" % (SLOTS[i][0], KIND_NAME[SLOTS[i][1]])
+        at = lambda i: rec["slots"][i]["at"]
+        label = lambda i: "%s %s" % (at(i), KIND_NAME[rec["slots"][i]["kind"]])
         # by its time only: a slot may have changed its pass inside the streak
-        parts = ["The ", ["%s run%s" % (_join(SLOTS[i][0] for i in failing), "" if len(failing) == 1 else "s")],
+        parts = ["The ", ["%s run%s" % (_join(at(i) for i in failing), "" if len(failing) == 1 else "s")],
                  " %s failed %s%d days running." % ("has" if len(failing) == 1 else "have",
                                                     "" if len(streaks) == 1 else "up to ", max(streaks))]
         # a lost day only matters where the plan reads nothing further out
         for tid, _name, _t in TIERS:
-            lead = horizon(tid)
-            who = readers(tid, lead)
+            lead = horizon(tid, hourly)
+            who = readers(tid, lead, hourly)
             if who and set(who) <= set(failing):
                 fleets = _join(TIER_NAME[tid].split(" · "))
                 parts.append(" %s day %d for the %s." % (
@@ -610,7 +681,7 @@ def headline(slots, rec, cov, now):
 # what the other collectors do, and how stale each may get before it is flagged
 COLLECTORS = (
     ("flightstatus", "Schedule reader", "Lufthansa flight status: which tail is planned on which flight",
-     "15 runs a day", timedelta(hours=4)),
+     "every hour", timedelta(hours=4)),
     ("fis_census", "Timetable census", "asks the feed for long-haul flight numbers not read yet",
      "every morning", timedelta(hours=30)),
     ("state_poller", "Position poller", "ADS-B positions of the whole fleet", "every 2 min", timedelta(minutes=10)),
@@ -756,12 +827,13 @@ def use(rows, families, days=USE_DAYS, min_type=4):
 def collector(rows, now, families):
     """The status and the two collector figures (refreshed every five minutes)."""
     start = now - timedelta(days=RECORD_DAYS + 1)
-    slots, extra = match(rows["runs"], start, now + READS_AHEAD, now)
-    rec = record(slots, extra, now)
-    cov = coverage(rows["known"], now, families)
+    since = hourly_since(rows["runs"])
+    slots, extra = match(rows["runs"], start, now + READS_AHEAD, now, since)
+    rec = record(slots, extra, now, since=since)
+    cov = coverage(rows["known"], now, families, since)
     return {"headline": headline(slots, rec, cov, now),
             "collectors": collectors(rows["collectors"], now),
-            "reads": reads(slots, rows["lookups"], now, _typical(slots)),
+            "reads": reads(slots, rows["lookups"], now, _typical(slots), since),
             "coverage": cov, "record": rec}
 
 

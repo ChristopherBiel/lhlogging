@@ -16,8 +16,8 @@ const {$, targets, el, svg, text, line, textW, boxed, rect, crisp, clamp, pct, p
 const MINE = targets();
 const FLEET = {B748: '747-8', A388: 'A380', B787: '787', A350: 'A350'};
 const KIND = {pulse: 'pulse', probe: 'pulse and probe', watch: 'watch', far: 'far pass',
-              lite: 'morning sweep', full: 'evening sweep', manual: 'run by hand'};
-const CODE = {pulse: 'P', probe: 'P+', watch: 'W', far: 'F', lite: 'S', full: 'S'};
+              lite: 'morning sweep', full: 'evening sweep', due: 'run', manual: 'run by hand'};
+const CODE = {pulse: 'P', probe: 'P+', watch: 'W', far: 'F', lite: 'S', full: 'S', due: ''};
 const pad2 = n => String(n).padStart(2, '0');
 const num = n => Number(n).toLocaleString('en-GB');
 const hhmm = min => pad2(Math.floor(min / 60) % 24) + ':' + pad2(Math.round(min) % 60);
@@ -107,12 +107,22 @@ function readsFig(D) {
   const done = R.slots.filter(s => s.state !== 'planned' && s.state !== 'running');
   const cells = done.flatMap(s => s.cells), lost = cells.filter(c => c.state === 'failed' || c.state === 'missed');
   const parts = [];
-  if (deep) parts.push('The ' + tierWords(deep) + ' are read ', [deep.per_day['1'] + ' times a day'],
-                       ' one and two days ahead and once a day out to ', ['day ' + deep.horizon], '. ');
-  if (wide) parts.push('The ' + tierWords(wide) + ' get ', [wide.per_day['1'] + ' reads a day'],
-                       ' to day 3 and ', ['a single one on day ' + wide.horizon], ', their last. ');
-  parts.push('In the last 48 hours ', lost.length ? [lost.length + ' of ' + cells.length] : ['all ' + cells.length],
-             lost.length ? ' planned reads of a flight day did not happen.' : ' planned reads of a flight day happened.');
+  if (R.hourly) {
+    // the hourly plan (flightstatus/plan.py): a run asks for what has fallen due
+    if (deep) parts.push('The ' + tierWords(deep) + ' are read ', ['every 6 hours'], ' one to three days ahead and once a day out to ',
+                         ['day ' + deep.horizon], '. ');
+    if (wide) parts.push('The ' + tierWords(wide) + ' once a day to ', ['day ' + wide.horizon],
+                         ' (the A350 Allegris to day 9, the Frankfurt A350 not at all); every long-haul flight 12 and 3 hours before it leaves a hub. ');
+    parts.push('In the last 48 hours ', lost.length ? [lost.length + ' of ' + cells.length] : ['all ' + cells.length],
+               lost.length ? ' reads of a flight day came back with nothing.' : ' reads of a flight day came back.');
+  } else {
+    if (deep) parts.push('The ' + tierWords(deep) + ' are read ', [deep.per_day['1'] + ' times a day'],
+                         ' one and two days ahead and once a day out to ', ['day ' + deep.horizon], '. ');
+    if (wide) parts.push('The ' + tierWords(wide) + ' get ', [wide.per_day['1'] + ' reads a day'],
+                         ' to day 3 and ', ['a single one on day ' + wide.horizon], ', their last. ');
+    parts.push('In the last 48 hours ', lost.length ? [lost.length + ' of ' + cells.length] : ['all ' + cells.length],
+               lost.length ? ' planned reads of a flight day did not happen.' : ' planned reads of a flight day happened.');
+  }
   say(f.find, ...parts);
 
   const sq = cls => s => rect(s, 6, 3, 14, 7, cls);
@@ -158,10 +168,10 @@ function readsFig(D) {
         if (h.t <= a0 || h.t >= a1 || h.hour % 6) return;
         line(s, crisp(x(h.t)), y0, crisp(x(h.t)), y1, h.hour ? 'grid' : 'month');
       });
-      // the last day the pages show (day 4), climbing a row every midnight
+      // the last day the pages show (day 4, the 747-8 and A380 day 9), climbing a row every midnight
       const stair = [];
       Object.keys(midnight).sort().forEach(d => {
-        const a = midnight[d], b = midnight[addDays(d, 1)], i = row[addDays(d, 4)];
+        const a = midnight[d], b = midnight[addDays(d, 1)], i = row[addDays(d, tier.shown == null ? 4 : tier.shown)];
         if (b == null || i == null || b <= a0 || a >= a1) return;
         stair.push([x(a), rowY(i)], [x(b), rowY(i)]);
       });
@@ -255,10 +265,16 @@ function readsFig(D) {
                         .map(c => leadName(c.lead) + (c.state === 'failed' ? ' failed' : c.state === 'missed' ? ' missed' : '')).join(', ') || null)]));
   f.note.textContent = 'Each mark is one flight day read by one run of the schedule reader: across, when the run asked ' +
     '(Berlin time); up, the flight day it asked about. The shaded diagonal is the day of departure, so a mark’s height ' +
-    'above it is how far ahead the read was. A run asks the nearest days first, which is why a sweep’s marks step to the right. ' +
-    '“Reads a day” is the plan for a day at that distance from today. On the right, the flights of each fleet that have a tail ' +
-    'now, against the fleet’s median day of the last four weeks. The pages show the plan up to day 4; what is read further ' +
-    'out is kept until it has been scored. Short-haul legs that only connect two long-haul flights are read too and not drawn.';
+    'above it is how far ahead the read was. ' +
+    (R.hourly
+      ? 'A run every hour asks for what has fallen due since the last, the most valuable first: the 747-8 and A380 before the ' +
+        '787 and A350, near days before far ones. An outbound is mostly read through its return leg, which names it as the ' +
+        'flight before; those reads are drawn on the return leg’s day. “Reads a day” is the plan for a day at that distance from ' +
+        'today. The line is the last day the pages show. '
+      : 'A run asks the nearest days first, which is why a sweep’s marks step to the right. “Reads a day” is the plan for a ' +
+        'day at that distance from today. The line is the last day the pages show. ') +
+    'On the right, the flights of each fleet that have a tail now, against the fleet’s median day of the last four weeks. ' +
+    'Short-haul legs that only connect two long-haul flights are read too and not drawn.';
   return f;
 }
 
@@ -376,13 +392,19 @@ function recordFig(D) {
 
   const reads = k => ({pulse: '747-8 · A380, days 1–2', probe: '747-8 · A380, days 1–2 and 5–9', watch: 'today’s next departures',
                        far: 'days 3–4 (747-8 · A380 also 1–2)', lite: 'days −2 to 1 (long-haul fleets to 2)',
-                       full: 'days −2 to 2 (long-haul fleets to 3)'})[k];
+                       full: 'days −2 to 2 (long-haul fleets to 3)', due: 'what has fallen due'})[k];
   f.table = host => table(host, ['Slot', 'Pass', 'Reads', ['Runs', 'r'], ['Went wrong', 'r'], ['In a row now', 'r'], 'Last good'],
     C.slots.map(st => [st.at, KIND[st.kind], reads(st.kind), st.n, st.bad, st.streak || null, st.last_ok ? isoDay(st.last_ok) : null]));
-  f.note.textContent = 'One bar per run, as long as the run took; a day runs across, the days go down to today. The reader has ' +
-    '15 slots a day and starts each after a random wait of up to half an hour. P is a pulse (747-8 and A380, one and two days ' +
-    'ahead; the 22:00 one, P+, also probes days 5 to 9), W a watch (the next hours’ departures), F the far pass (days 3 and 4), ' +
-    'S a sweep (two days back to two or three ahead, every fleet). A run “went wrong” when nothing came back, when it was ' +
+  f.note.textContent = 'One bar per run, as long as the run took; a day runs across, the days go down to today. ' +
+    (C.hourly
+      ? 'Since ' + longDay(C.hourly_since) + ' the reader runs every hour, at seven past after a random wait of up to ten ' +
+        'minutes, and asks for what has fallen due; a run with nothing due asks nothing. Before, it had 15 slots a day: ' +
+        'P a pulse (747-8 and A380, one and two days ahead; P+ also days 5 to 9), W a watch (the next hours’ departures), ' +
+        'F the far pass (days 3 and 4), S a sweep (two days back to two or three ahead). '
+      : 'The reader has 15 slots a day and starts each after a random wait of up to half an hour. P is a pulse (747-8 and ' +
+        'A380, one and two days ahead; the 22:00 one, P+, also probes days 5 to 9), W a watch (the next hours’ departures), ' +
+        'F the far pass (days 3 and 4), S a sweep (two days back to two or three ahead, every fleet). ') +
+    'A run “went wrong” when nothing came back, when it was ' +
     'stopped after ten blocked lookups in a row, when a tenth of it was blocked, or when it did not start. ' +
     'Lufthansa’s site decides what gets blocked; nothing here says why.' +
     (C.changes || []).map(ch => ' The plan changed on ' + isoDay(ch.day) + ': ' +

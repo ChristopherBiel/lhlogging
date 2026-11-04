@@ -48,27 +48,26 @@ class Schedule(unittest.TestCase):
 
     def lines(self):
         return [ln for ln in (ROOT / "flightstatus" / "crontab").read_text().splitlines()
-                if re.match(r"^\d+\s+\d+\s+\* \* \*\s+root\s+.*run_nightly\.sh", ln)]
+                if re.match(r"^\d+\s+(\d+|\*)\s+\* \* \*\s+root\s+.*run_nightly\.sh", ln)]
 
-    def test_the_census_has_its_slot_before_the_morning_pulse(self):
+    def test_the_census_has_its_slot_between_two_runs_of_the_plan(self):
         slot = [ln for ln in self.lines() if "--census" in ln]
         self.assertEqual(len(slot), 1)
         minute, hour = (int(x) for x in slot[0].split()[:2])
         wait = int(re.search(r"NIGHTLY_JITTER_MAX_S=(\d+)", slot[0]).group(1)) // 60
-        self.assertLessEqual(hour * 60 + minute + wait + 20, 9 * 60)         # done before 09:00
+        due = int(next(ln for ln in self.lines() if "--due" in ln).split()[0])
+        self.assertEqual(hour, 8)                                             # after the morning's first open hours
+        self.assertLessEqual(minute + wait + 15, 60 + due - 3)                # done before the next run's deadline
 
-    def test_the_timetable_look_stops_a_day_short_of_the_feeds_window(self):
-        probe = [ln for ln in self.lines() if "FIS_TIMETABLE_OFFSETS" in ln]
-        self.assertEqual(len(probe), 1)
-        self.assertIn("--pulse", probe[0])
-        offsets = [int(x) for x in re.search(r"FIS_TIMETABLE_OFFSETS=([\d,]+)", probe[0]).group(1).split(",")]
-        self.assertEqual((min(offsets), max(offsets)), (5, 8))                # day 9 is not whole at 22:00
+    def test_no_timetable_look_rides_on_a_run(self):
+        # the plan reads every day it shows (plan.py); the look stays for runs by hand
+        self.assertFalse([ln for ln in self.lines() if "FIS_TIMETABLE_OFFSETS" in ln])
 
     def test_the_image_copies_every_module_the_collector_imports(self):
         src = (ROOT / "flightstatus" / "fetch_flightstatus.py").read_text()
         local = {m for m in re.findall(r"^import (\w+)$", src, re.M) if (ROOT / "flightstatus" / (m + ".py")).exists()}
         copied = re.search(r"^COPY (.*) \./$", (ROOT / "flightstatus" / "Dockerfile").read_text(), re.M).group(1).split()
-        self.assertEqual(local, {"legs", "census", "door"})
+        self.assertEqual(local, {"legs", "census", "door", "plan"})
         self.assertTrue({m + ".py" for m in local} <= set(copied), copied)
 
 

@@ -1,161 +1,43 @@
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 TZ=Europe/Berlin
-# Session diagnostics (fetch_flightstatus.py, "diagnostics"): on through this
-# day, then off by themselves. Two nights and the days between, to see what the
-# page that comes without a bot check is — and what a checked one looks like.
-FIS_DIAG_UNTIL=2026-10-13
 # The door (flightstatus/door.py, 2026-10-30): when three sessions in a row open
 # without the bot check and are refused, a run waits this many minutes and tries
 # one more, until the next line below is due; then it stops. A run by hand
 # (docker compose exec ...) does not have this and stops at once.
 FIS_DOOR_WAIT_MIN=15
 
-# Lufthansa flight-status fetch — 15 slots/day, tiered by fleet type.
+# Lufthansa flight-status reader: the read plan, every hour (2026-11-01).
 #
-# Two measurements drive this layout (2026-07-26, see docs/flightstatus_schedule.md):
+# Each run asks the feed for what has fallen due since the last one, the most
+# valuable first (flightstatus/plan.py, docs/flightstatus_schedule.md "The read
+# plan"): the fleet pool by pool, every flight day of a pool once a day out to
+# the day the pool is read to, and on top
 #
-#   1. The reassignment hazard barely varies with lead time — roughly 1-1.7
-#      changes per 100 leg-hours everywhere from D0 out to D+5 — so there is no
-#      "decision moment" to catch. What a lookup buys is not depth but
-#      resolution: how tightly we can bracket a change we already know happened.
-#   2. A change first seen at D+4/D+5 is the tail that actually flies 0-5% of
-#      the time. Those lookups bought almost no label value, so they were cut
-#      and now fund high-cadence tracking closer in.
+#   747-8, A380        D+9   every 6 h at D+1..D+3, within 12 h and 3 h of departure
+#   A350 Allegris      D+9   within 12 h and 3 h of a hub departure
+#   787, A350 Munich   D+4   within 12 h and 3 h of a hub departure
+#   A350 Frankfurt      -    not read (ADS-B still logs its flights)
+#   watched tails     D+3   every 6 h (FIS_WATCH_TAILS, and special liveries)
 #
-# So coverage is split into a DEEP tier (B748 + A388, ~33 numbers) tracked every
-# ~2.6h at D+1/D+2, a WIDE tier (787/A350, ~78 numbers) that gets the deep
-# tier's cheap extras (D+2 on sweep-lite, D+3 on sweep-full, D+4 on the far
-# pass; since 2026-10-06) but no pulses and no D+5..D+9 probe — only one look at
-# each flight day further out, for the timetable (see "Timetable" below) — and a
-# BROAD rest (chained short-haul legs, strays) with the near window and one far
-# look at D+3.
+# an outbound through its return leg, which names it as its previousFlight; the
+# flown tail from ADS-B, and from the feed where ADS-B did not see it. About 800
+# lookups a day, ~30 a run; a run reads at most FIS_DUE_MAX (150). Nothing due:
+# no browser, a run of 0 lookups. When the feed is shut (door.py) a run waits
+# for it until the next line here, and the next run, finding the run before it
+# stopped for that, waits at its first shut session instead of its third.
 #
-#   00:10 pulse        deep tier x D+1/D+2                            ~66
-#   02:00 pulse                                                       ~66
-#   02:45 watch 4h     red-eyes (the 03:45/05:00 departures)           ~5
-#   03:30 pulse        nothing else runs 03:00-05:00, so the pulse     ~66
-#                      cadence would gap here (the far pass's place
-#                      until 2026-10-12, see "Far pass by day" below)
-#   05:45 sweep-lite   truth D-1/D-2 + forecast D0/D1                 ~480
-#                      (FIS_LOOKAHEAD_DAYS=1), + deep/wide D+2 —
-#                      overnight re-plans, done before the first bank
-#   08:15 census       a sixth of the long-haul numbers the catalog    ~47
-#                      does not sweep, at D+8 (not one of the 15
-#                      slots: it logs its own kind of run)
-#   09:00 pulse                                                       ~66
-#   10:30 watch 4.5h   midday bank        (deps ~11:00-15:00)         ~32
-#   11:20 far pass     D+3 all; deep + wide D+4; deep D+1/D+2 — it    ~311
-#                      asks the nearest days first, so it is the
-#                      midday pulse with ~245 more lookups behind it
-#   13:00 watch 4.5h   afternoon bank     (deps ~13:30-17:30)         ~40
-#   14:10 pulse                                                       ~66
-#   15:30 watch 4.5h   late-afternoon bank(deps ~16:00-20:00)         ~47
-#   16:45 pulse                                                       ~66
-#   18:15 sweep-full   truth + D0..D2, + deep/wide D+3 (closes the    ~620
-#                      39h far->sweep seam) — D0 is queried first
-#                      (priority sort), so the evening bank departs on
-#                      fresh data; also sets tomorrow's plan
-#   21:15 watch 4.5h   evening bank + just-after-midnight departures  ~30
-#   22:00 pulse + horizon probe: deep x D+1/D+2, then D+5..D+9,      ~315
-#                      then the wide tier's flight days of D+5..D+8
-#                      not asked for yet (~90: the day new at D+8)
-#                                                          total    ~2240/day
+# Until 2026-10-31 there were fifteen passes a day, each reading a fixed set of
+# days (sweeps at 05:45 and 18:15, the far pass at 11:20, pulses for the
+# 747-8/A380 seven times a day, watches before the departure banks): ~2,270
+# lookups a day, which the feed shut since 27 October no longer let through.
+# Their modes stay in fetch_flightstatus.py, for runs by hand.
 #
-# The wide tier's extras (+~234/day) were chosen by thinning the deep tier's own
-# history to the broad schedule and scoring the booking model on the same legs:
-# sweep D+2/D+3 + far D+4 recover ~80% of what the full deep schedule buys
-# 24-96h out; the pulses (~14 lookups per number a day) only the last ~20%
-# (docs/flightstatus_schedule.md, 2026-10-06).
-#
-# Combined with the three sweeps, a deep-tier leg gets 10 looks/day at D+1/D+2
-# with a maximum gap of ~3h — tight enough to date a reassignment to a few
-# hours instead of the ~23h brackets the old two-sweep cadence produced.
-#
-# Sweeps refresh the whole catalog window (near: D-2..D+2, plus discovery/
-# pairing/lifecycle); the far pass extends read-only to D+3 (D+4 deep); watch
-# passes re-check only flights departing in the next few hours; pulse passes
-# re-check only the deep tier at D+1/D+2. run_nightly.sh jitters each start
-# (10 min for pulses and the far pass so the cadence holds, 15 for watches so
-# the bank timing holds, 30 for the sweeps, which are not time-critical) and
-# skips the slot if a previous run is still active (flock), so slots never
-# overlap into doubled request rates. Every slot has >=23 min of margin to the next at worst-case
-# jitter + duration; a skipped pulse just widens one bracket. When the feed
-# blocks us outright, a run stops after FIS_MAX_CONSECUTIVE_BLOCKS (10) blocked
-# lookups in a row instead of crawling on with backoff for hours and making the
-# flock skip the next slots (lost evening/morning sweeps, 2026-09-29/10-01).
-#
-# When the feed is shut (2026-10-30: the timetable page comes without its bot
-# check, and every lookup is refused — nights since August, from 27 Oct whole
-# days), a run no longer spends ~19 min on 21 sessions and stops: after three
-# such sessions it waits FIS_DOOR_WAIT_MIN (above) and tries one more, holding
-# no session, until 3 min before the next line here is due. A run that waited
-# stops reading then too, so it gives way to the next slot instead of making it
-# skip. Sweeps and the far pass read the 747-8/A380 first, then the 787/A350,
-# then the rest, so what a cut run did read is what matters most; and no run
-# asks again for a flight day the feed has answered "no such flight" for.
-#
-# Far pass by day (2026-10-12): it ran at 03:30 until then, in the hours where
-# lufthansa.com often serves the timetable page without its bot check — and a
-# session that was not checked has every lookup refused (02:00-06:30 Berlin;
-# the retry cannot help, a fresh session loads the same page). 37 of the 53 runs
-# that went wrong in four weeks were in the four night slots, and from 8 Oct the
-# far pass failed every night. It is the only read of D+4 for the 787/A350 and
-# one of two of their D+3, so those days went missing on the pages. It now has
-# the 11:35 pulse's place, and 03:30 a plain pulse in exchange: the hours around
-# noon are the cleanest in the log (11h and 13h: not one day in 22 with a fifth
-# of the lookups refused; 09h is clean too but leaves no room before the watch).
-# It starts at 11:20 rather than 11:35, with the pulses' 10 min of jitter, to be
-# done before the 13:00 watch: ~311 lookups take 55-65 min by day, so it ends
-# by ~12:35 at the latest. The deep tier's afternoon bracket widens from 2.6h to
-# 2.8h (3.0h at worst-case jitter); lookups per day are unchanged.
-#
-# Horizon probe (2026-09-24): FIS publishes a tail up to D+9 (D+10 returns no
-# flight at all), and awards are booked ~1-2 weeks out, so what a D+5..D+9
-# assignment is worth decides whether the booking planner can use it. The 22:00
-# pulse carries those offsets for the deep tier only (~33 numbers x 5 more
-# dates); nearest offsets go first, so its D+1/D+2 cadence is unchanged. It sits
-# in the quietest gap of the day (next slot 00:10). Scored 2026-10-13
-# (tools/benchmark_ranking.py, docs/booking_model.md): the pages now show both
-# fleets' tails as far as this reads them (BOOK_HORIZON_BY_TYPE in
-# dashboard/app.py), marked "pencilled" beyond D+4.
-#
-# Timetable (2026-10-13): what the booking planner lists beyond the days it has
-# read is a projection of the last four weeks, which a change of timetable (the
-# last Sunday of October and of March) makes wrong for weeks: flights that
-# ended stay on the list, new ones are missing, and a new flight number only
-# entered the catalog once it had flown. Two additions let the feed itself be
-# the timetable as far as it reaches:
-#   - the 22:00 pulse also asks for each wide-tier number on the days of
-#     D+5..D+8 the feed has not answered for yet (FIS_TIMETABLE_OFFSETS; once
-#     per flight and day, so ~90 a night, the day new at D+8; up to 160 while
-#     there is catching up to do). ~55 min typical with the probe, ~110 min at
-#     the slowest pace seen: done before the 00:10 pulse (a catch-up night at
-#     that pace would cost that one pulse). Not D+9: at 22:00 the feed does
-#     not have that day's late departures yet.
-#   - the census (08:15, --census): of the long-haul block LH400-799 — 128 of
-#     the 138 widebody numbers — the numbers the catalog does not sweep, a
-#     sixth a day, asked for at D+8. A widebody found on one enters the catalog
-#     with the next sweep, a week before the flight operates instead of after
-#     it. ~47 lookups, nearly all answered "no such flight" at once; it starts
-#     after the morning sweep (which ends by ~08:00) and is done by ~08:35.
-#     Six days a round so the weekday asked about moves on by one each time.
-# A lookup answered "no such flight" now keeps that answer (raw = '{}'), so it
-# can be told from one that was refused: the timetable look does not ask twice,
-# and the planner drops a projected flight the feed says is not there.
-10  0 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
-0   2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
-45  2 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4 >> /var/log/lhlogging/flightstatus.log 2>&1
-30  3 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
-45  5 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 FIS_LOOKAHEAD_DAYS=1 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
-15  8 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --census >> /var/log/lhlogging/flightstatus.log 2>&1
-0   9 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
-30 10 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
-20 11 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --far >> /var/log/lhlogging/flightstatus.log 2>&1
-0  13 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
-10 14 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
-30 15 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
-45 16 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
-15 18 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=1800 /app/run_nightly.sh >> /var/log/lhlogging/flightstatus.log 2>&1
-15 21 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=900 /app/run_nightly.sh --watch 4.5 >> /var/log/lhlogging/flightstatus.log 2>&1
-0  22 * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 FIS_PULSE_OFFSETS=1,2,5,6,7,8,9 FIS_TIMETABLE_OFFSETS=5,6,7,8 /app/run_nightly.sh --pulse >> /var/log/lhlogging/flightstatus.log 2>&1
+# Census (08:40, --census, flightstatus/census.py): of the long-haul block
+# LH400-799, the numbers the catalog does not sweep, a sixth a day, asked for at
+# D+8. A widebody found on one enters the catalog with the next day's upkeep, a
+# week before the flight operates. ~47 lookups, nearly all answered "no such
+# flight" at once; between the 08:07 and the 09:07 run (if the 08:07 run is
+# still reading, the slot is skipped, like any other).
+7  *  * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --due >> /var/log/lhlogging/flightstatus.log 2>&1
+40 8  * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=300 /app/run_nightly.sh --census >> /var/log/lhlogging/flightstatus.log 2>&1

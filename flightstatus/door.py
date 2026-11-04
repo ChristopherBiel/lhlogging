@@ -39,18 +39,22 @@ ANSWER, REFUSED, BAD = "answer", "refused", "bad"
 # how a session's page load was answered
 CHECKED, UNCHECKED = 403, 200
 
-_RUN_LINE = re.compile(r"^(\d+)\s+(\d+)\s+\*\s+\*\s+\*\s+\S+\s+.*run_nightly\.sh")
+_RUN_LINE = re.compile(r"^(\d+)\s+(\d+|\*)\s+\*\s+\*\s+\*\s+\S+\s+.*run_nightly\.sh")
 
 
 def next_slot(crontab, now):
     """The first start of a run in `crontab` (the text of the collector's
-    crontab, whose runs are daily lines 'M H * * * user ... run_nightly.sh ...')
-    after `now`, an aware datetime in the crontab's time zone. None if there is
-    no such line."""
+    crontab, whose runs are daily lines 'M H * * * user ... run_nightly.sh ...'
+    or hourly ones, 'M * * * * ...') after `now`, an aware datetime in the
+    crontab's time zone. None if there is no such line."""
     starts = []
     for line in (crontab or "").splitlines():
         m = _RUN_LINE.match(line.strip())
         if not m:
+            continue
+        if m.group(2) == "*":
+            at = now.replace(minute=int(m.group(1)), second=0, microsecond=0)
+            starts.append(at if at > now else at + timedelta(hours=1))
             continue
         at = now.replace(hour=int(m.group(2)), minute=int(m.group(1)), second=0, microsecond=0)
         starts.append(at if at > now else at + timedelta(days=1))
@@ -75,11 +79,17 @@ class Door:
     feed is shut, none = stop at once. `tries` sessions in a row that are shut
     make the run wait; `retries` refusals of one lookup in sessions that were
     not shut give it up. `on_wait(wake)` is told when the run starts waiting
-    (wake: the next try) and when the feed lets it in again (None)."""
+    (wake: the next try) and when the feed lets it in again (None).
+
+    `shut_since` (aware datetime): the run before this one stopped because the
+    feed was shut then. The run then counts as one shut session short of
+    waiting: if its first session is shut too, it waits at once instead of
+    loading the page `tries` more times (with a run every hour, 2 page loads
+    an hour fewer while the feed stays shut)."""
 
     def __init__(self, open_session, close_session=None, *, deadline=None, wait=None,
                  tries=3, retries=3, backoff_s=45.0, now=None, sleep=time.sleep,
-                 log=print, on_wait=None):
+                 log=print, on_wait=None, shut_since=None):
         self._open, self._close = open_session, close_session
         self.deadline = deadline
         self.wait = wait or timedelta(0)
@@ -92,6 +102,8 @@ class Door:
         self.unchecked = 0              # sessions of the run that were shut
         self.shut_from = None           # when the current (or last) shut spell began
         self.waits = []                 # [(from, to)], one per wait
+        if shut_since is not None:
+            self.shut, self.shut_from = self.tries - 1, shut_since
 
     def open(self):
         self.page, self.nav = self._open()

@@ -1,8 +1,172 @@
 # Flight-status collection schedule
 
-Why the FIS fetcher runs 15 times a day, why coverage is split into two tiers,
-and what the numbers behind that are. Companion to `flightstatus/crontab` (the
-schedule itself) and `flightstatus/fetch_flightstatus.py` (the run modes).
+How the FIS reader decides what to ask Lufthansa's feed for, and the numbers
+behind it. Companion to `flightstatus/crontab` (the schedule),
+`flightstatus/plan.py` (the read plan) and `flightstatus/fetch_flightstatus.py`
+(the run modes). Since 2026-11-01 the reader follows the read plan below; the
+fifteen passes a day after it were the schedule until then, and their
+measurements are what the plan was built from.
+
+## The read plan (2026-11-01)
+
+From 27 October the feed was shut most of the day (see "When the feed is shut"
+below): a page load without the bot check, every lookup refused. The fifteen
+passes could not finish, and the pages ran days behind. Their ~2,270 lookups a
+day were also more than the data needs: only 2.5–10% of the reads brought a
+change. The read plan asks for about a third of that, and for what matters
+most first, so that what the feed lets through is spent well.
+
+**One kind of run, every hour** (`--due`, at seven past, with up to ten minutes
+of random wait). Each run asks for what has fallen due since the last one, at
+most `FIS_DUE_MAX` (150) lookups; a run with nothing due opens no browser. When
+the feed is shut it waits for it as before (`door.py`), and the next run,
+finding that the run before stopped for that, waits at its first shut session
+instead of its third.
+
+**Pools.** Tails swap almost only within their pool: of the changes on flights
+departing 12–26 Oct, 93–100% brought a tail of the same pool. A pool is
+therefore read completely or not at all — what the fleet simulation and the
+hold rates need:
+
+| pool | tails | legs a day | numbers | swaps within | level | read to |
+|---|---|---|---|---|---|---|
+| 747-8 | 17 | 21 | 29 | 100% | close | D+9 |
+| A380 | 8 | 10 | 14 | 100% | close | D+9 |
+| A350 Allegris (Munich) | 10 | 14 | 29 | 93% | near | D+9 |
+| 787 (Frankfurt) | 20 | 31 | 54 | 100% | near | D+4 |
+| A350 Munich, without Allegris | 16 | 24 | 46 | 99% | near | D+4 |
+| A350 Frankfurt | 5 | 6 | 13 | 98% | off | – |
+
+A tail's pool comes from its type, its cabin (`airframe_cabin`: Allegris
+published in the last 45 days) and the hub ADS-B saw it at most in two weeks
+(`plan.pool_of`). A flight number belongs to every pool that flew a third of
+its legs or more in two weeks (the feed's looks and ADS-B's callsigns
+together, three legs at least: a charter flown once is no flight of a pool),
+and a flight day is read at the highest level of its number's pools and its
+tail's pool: a 747-8 swapped onto an A350 number is read as a 747-8. The
+A350 Frankfurt is left out because nothing there is wanted; ADS-B still logs
+its flights. `FIS_POOLS` changes a pool's level and days
+(`a350-fra=near:4` reads it again).
+
+**Levels.** Every flight day of a pool that reads is read once a day, out to
+the pool's last day ("day"): the data stays whole, and the pages can trust a
+look for 36 hours. On top:
+
+- *near*: a read within 12 h and one within 3 h of a hub departure. Replayed
+  on the October looks (legs departing 1–26 Oct), the tail shown at departure
+  is the one that flies 99.3–100% of the time instead of 95–98.5%.
+- *close*: near, and a read every 6 h one to three days out. A change then
+  shows within hours: for the 747-8 it is dated to a 5.4 h window at 1–2 days
+  instead of 24 h, and 90% are seen within 3.3 h instead of 18.3 h (A380: 7.8 h
+  instead of 26 h). This is the sampling grid the timing analyses learn from,
+  and it covers the whole of both fleets, so it is not biased toward any tail.
+
+The far days hold well enough to show: a published A380 tail flies it 78% of
+the time five days out and 58% at eight; the 747-8 26% and 16% — three times a
+random pick — and an Allegris cabin, once published, is Allegris on the day
+99–100% of the time (its tail 54% four days out).
+
+**Return legs.** A flight's `previousFlight` is the airframe's flight before.
+At an outstation that is the outbound that brought it there, and the two carry
+the same tail: 99.8% of the return legs' looks agreed with their outbound's
+own. So an outbound's daily and 6-hourly reads are its return leg's (the work
+item `covers` it); the outbound is asked for itself only for its first read,
+its near reads and its flown tail. A run checks that the return leg still
+names it, and reads the outbound itself if not. The leg layer takes such a
+look as the outbound's where its own newest look is more than 6 h older
+(`legs.stand_ins`; schedule, status and cabin stay its own). On the looks of
+29 Oct–1 Nov this filled 252 of 747 widebody legs and changed no published
+tail; it caught LH772's change to D-AIMM 10.7 h before departure, where the
+outbound's own looks only showed it after it had left.
+
+**Watched tails** (`FIS_WATCH_TAILS`, default D-AIMH, D-ABYN, D-AIXL, D-ABPU,
+and with `FIS_WATCH_LIVERIES=1` every widebody the feed has shown in a special
+livery in 30 days: D-ABPU "LH 100 years", D-ABYP "1500th 747", D-ABYT "Retro")
+are read every 6 h from today to D+3 in any pool, and near their hub
+departures. When a read shows a watched tail leave a flight or take one, the
+run reads the flights the other tail is shown on: in a swap, that is where the
+watched tail went (a single such read found it 47% of the time).
+
+**Idle tails.** A tail ADS-B has not seen fly for 36 h is likely to lose its
+flights: 12–72 h out, a 747-8 or A380 tail idle that long changed within 24 h
+36% of the time, an active one 18% (15% of all changes came after such an
+idle spell). Its flights from today to D+3 get the 6-hourly reads. When more
+than 40% of the fleet looks idle, the ADS-B log is behind, not the fleet, and
+nobody counts as idle.
+
+**Flown tails from ADS-B.** The truth pass read every flight after it flew.
+Now the tail that flew it comes from ADS-B: an aircraft logged under the
+callsign `DLH<number>` leaving within 3 h of the scheduled departure, if it is
+the only one (`legs.flown_tails`). On the legs of 1–26 Oct that found the tail
+of 91% of the 747-8/A380 legs and 83% of the others, and never a wrong one;
+the rest fly under tactical callsigns or out of the receivers' reach. A flight
+ADS-B did not see is asked for 3 h after it landed, again 12 h later, up to
+three days after departure ("flown"). The leg layer stores such a truth with
+`truth_status` `ADSB` (the feed's own word, `ARRIVED`/`DIVERTED`, wins where
+there is one). In the week to 1 Nov, while the feed was shut, 183 widebody legs
+had no flown tail; ADS-B gives one for 165 of them.
+
+**The order** when the feed lets a run read only part of what is due:
+
+| class | what |
+|---|---|
+| 0 | near reads of the 747-8, the A380 and the watched tails |
+| 1 | the 747-8 and A380 daily reads (D0..D+9), and their flights not read yet |
+| 2 | their 6-hourly reads, the watched and the idle tails' |
+| 3 | A350 Allegris to D+4 |
+| 4 | 787 and A350 Munich to D+2 |
+| 5 | flown tails ADS-B did not see (the feed keeps a few days of the past) |
+| 6 | the far days: Allegris D+5..D+9, 787 and A350 Munich D+3..D+4 |
+| 7 | numbers no pool has flown lately (one read a day each, so a new flight finds its pool) |
+
+Inside a class the nearest day first, then the earliest flight. About 350
+lookups a day keep the 747-8 and the A380 complete.
+
+**Day nine.** The feed lists a flight from about nine days before it leaves;
+asked earlier, it says "no such flight" for a flight it lists later that day
+(14% of the day-9 lookups at 22:00). A day nine out is asked for once its
+number's usual departure is that close.
+
+**Budget.** `tools/plan_preview.py --days 4` replays the plan hour by hour on
+the production rows, as if the feed answered every read. On the rows of
+1 Nov 2026 (17:25 UTC): about 810 lookups a day once the backlog is read —
+747-8 ~280, 787 ~165, A380 ~160, A350 Allegris ~155, A350 Munich ~50 — where
+the fifteen passes made ~2,270. The 6-hourly reads of the 747-8/A380 are the
+largest part (~255); the replay of 1 Nov had put the plan at ~700, but it
+could count D+3 only as often as the passes had read it (about twice a day).
+The first runs after a shut spell read the backlog, 150 a run; at night,
+when the feed is often shut, what falls due waits for the morning, so the
+real count is somewhat lower.
+
+**What a run records.** `batch_runs.coverage` of a run of the plan holds
+`plan: "due"` (written as it starts: the monitor tells the hourly runs from the
+passes by it), what fell due per pool and reason, what was read, what was left
+for the next run, how many outbound days a return leg stood in for, the chains
+followed, the watched tails' follow-ups, and the watched and idle tails. A
+flight day not read because the feed was shut is due again in the next run,
+and one read counts for it however late: a day the feed was shut shows as
+reads that did not happen, never as days without a change.
+
+**Upkeep.** The catalog's discovery, pairing and lifecycle (the sweeps did
+them twice a day) run once a day, in the first run 20 h after the last;
+a number accrues a miss only on a day it was asked about, so the numbers of
+a pool that is not read keep their place.
+
+**Dropped:** the timetable look (`FIS_TIMETABLE_OFFSETS`): the plan reads the
+days the pages show; the booking planner's projection covers the 787/A350
+beyond D+4 again, as before 2026-10-30. The modes of the passes stay for runs
+by hand.
+
+```
+python3.12 tools/plan_preview.py               # what the next run would read (read-only, on production rows)
+python3.12 tools/plan_preview.py --days 3      # and three days of hourly runs: lookups a day by pool
+docker compose exec flightstatus python fetch_flightstatus.py --due --dry-run    # the same, in the container
+```
+
+---
+
+The rest of this document is the schedule until 2026-10-31 and what was
+measured on it.
 
 ## The question the schedule is designed around
 
@@ -180,6 +344,7 @@ changed four times and staleness statistics are meaningless across the seams:
 | 2026-10-12 | far pass moved from 03:30 to 11:20; 03:30 is a pulse, the 11:35 pulse is gone (the far pass asks its slices first) |
 | 2026-10-30 (written 10-13) | the 22:00 pulse also asks the wide tier's unread flight days of D+5..D+8; census at 08:15; an empty answer is stored as one (`raw` = `{}`) |
 | 2026-10-30 | a run waits for the feed when it is shut (`door.py`) and gives way to the next slot; sweeps and the far pass read the 747-8/A380 first; a flight day answered "no such flight" is not asked again |
+| first hourly run (`batch_runs.coverage->>'plan' = 'due'`) | the read plan: pools, a run every hour, outbounds through their return legs, flown tails from ADS-B, the A350 Frankfurt not read; 747-8/A380 every 6 h at D+1..D+3 and daily to D+9, A350 Allegris daily to D+9, 787/A350 Munich daily to D+4 |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.

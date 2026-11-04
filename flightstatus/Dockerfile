@@ -19,7 +19,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY fetch_flightstatus.py legs.py census.py door.py run_nightly.sh ./
+COPY fetch_flightstatus.py legs.py census.py door.py plan.py run_nightly.sh ./
 RUN chmod +x run_nightly.sh
 
 COPY crontab /etc/cron.d/flightstatus
