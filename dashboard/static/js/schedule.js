@@ -2,6 +2,9 @@
 // day as ADS-B recorded it and the days ahead as published, from
 // /api/schedule. The gantt is built as positioned boxes (a bar is a leg, its
 // length the flight's duration); a leg opens the flight dialog (flight.js).
+// The days to day 4 fill the width as they always have; the fleets read
+// further (747-8, A380, A350 Allegris: to day 9, "pencilled") go on to the
+// right, and the chart scrolls sideways with the tails pinned.
 (() => {
 'use strict';
 
@@ -30,7 +33,7 @@ const legByKey={};                              // num|fdate -> leg, so the moda
 
 async function init(){
   let d;
-  try { d = await (await fetch('/api/schedule')).json(); }
+  try { d = await (await fetch('/api/schedule?days=9')).json(); }
   catch(e){ d = {error: 'The schedule could not be loaded'}; }
   if(d.error){ $('state').replaceChildren(state('bad', d.error)); return; }
   if(!d.airframes || !d.airframes.length){
@@ -44,6 +47,11 @@ async function init(){
 
   const t0=new Date(d.window.start).getTime(), t1=new Date(d.window.end).getTime();
   const range=t1-t0, dayMs=86400000;
+  // how much wider than the screen: the span to day 4 keeps its width (window.firm)
+  const tf=d.window.firm ? new Date(d.window.firm).getTime() : t1;
+  const wide=Math.max(1, range/Math.max(tf-t0, dayMs));
+  $('gantt').style.setProperty('--k', wide.toFixed(3));
+  const pencilAt=d.window.pencil ? new Date(d.window.pencil).getTime() : null;
   const frac = ms => (ms - t0)/range;                        // 0..1 across the time area
   const oLeft = f => 'calc(var(--label) + (100% - var(--label)) * '+f+')'; // overlay coord (rows incl. label)
   const dayName = ms => new Date(ms).toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'});
@@ -67,6 +75,9 @@ async function init(){
   ticks.forEach(m=>{ overlay+='<div class="grid-line" style="left:'+oLeft(frac(m))+'"></div>'; });
   if(d.now!=null){ const nf=frac(new Date(d.now).getTime());
     if(nf>=0&&nf<=1) overlay+='<div class="now-line" style="left:'+oLeft(nf)+'"></div>'; }
+  // the end of day 4: to its right, the pencilled days
+  const pf=pencilAt!=null ? frac(pencilAt) : null;
+  if(wide>1 && pf>0 && pf<1) overlay+='<div class="pencil-line" style="left:'+oLeft(pf)+'"></div>';
   overlay+='</div>';
   html+='<div class="gantt-rows">'+overlay;
 
@@ -103,6 +114,8 @@ async function init(){
       const width=Math.max(0.5,right-left);
       const dur=l.dur?(Math.floor(l.dur/60)+'h'+String(l.dur%60).padStart(2,'0')):'';
       const st=l.status||'planned';
+      // an early plan (past day 4) or a look too old to trust: framed dashed
+      const pen=st==='planned' && (l.pencilled || l.stale);
       // hue = aircraft type; status = a presentation class (cap / texture / tint), never a text-colour swap
       const stCls = st==='tracked'?'st-tracked' : st==='missing'?'st-missing'
         : st==='deviation'?'st-ghost' : st==='extra'?'st-extra' : 'st-planned';
@@ -115,7 +128,9 @@ async function init(){
         title=l.fl+'  '+l.dep+' \u2192 '+l.arr+(l.nseg>1?'  (leg '+l.seg+' of '+l.route.join('\u2013')+')':'')
           +'\nDep '+fmt(l.dep_t)+' ('+l.dep+')'+(l.arr_t?'\nArr '+fmt(l.arr_t)+' ('+l.arr+')':'')
           +(dur?'\nFlight '+dur:'')+'  \u00b7  '+a.type
-          +(l.prev?'\nprev: '+l.prev:'')+(l.lead!=null?'\nlead: +'+l.lead+'d':'')+(l.swap?'  \u00b7  \u26a0 reassigned':'');
+          +(l.prev?'\nprev: '+l.prev:'')+(l.lead!=null?'\nlead: +'+l.lead+'d':'')+(l.swap?'  \u00b7  \u26a0 reassigned':'')
+          +(st==='planned' && l.pencilled?'\npencilled: past day 4, an early plan':'')
+          +(st==='planned' && l.stale?'\nnot read for over 36 h':'');
         if(st==='deviation' && l.act){
           title+='\n\u26a0 planned slot \u2014 tail actually flew '+l.act.dep+'\u2192'+l.act.arr;
         } else if(st==='tracked' && l.act){
@@ -128,7 +143,7 @@ async function init(){
       const actAttrs = st==='extra'
         ? ' data-cs="'+(l.fl||'')+'" data-dep="'+l.dep+'" data-arr="'+l.arr+'" data-start="'+l.start+'" data-end="'+l.end+'"'
         : '';
-      html+='<div class="gantt-flight '+tc+' '+stCls+(l.swap?' is-swap':'')+' clk" style="left:'+left+'%;width:'+width+'%"'
+      html+='<div class="gantt-flight '+tc+' '+stCls+(l.swap?' is-swap':'')+(pen?' is-pencil':'')+' clk" style="left:'+left+'%;width:'+width+'%"'
         +' data-dest="'+l.dep+' '+l.arr+'" data-fl="'+(l.fl||'')+'" data-num="'+(l.num||'')+'" data-fdate="'+(l.fdate||'')+'" data-seg="'+(l.seg||1)+'"'+actAttrs
         +' title="'+title.replace(/"/g,'&quot;')+'">'
         +(l.swap?'<span class="swapchip"></span>':'')
@@ -202,6 +217,19 @@ async function init(){
   $('allegchk').addEventListener('click', toggleAlleg);
   $('allegchk').addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleAlleg(); } });
   applyTypes();
+
+  // From now | Days 5-9: scroll the chart to either end of the pencil line
+  if(wide>1 && pf>0 && pf<1){
+    const sc=document.querySelector('.gantt-scroll'), btns=[...$('span').querySelectorAll('button')];
+    const farX=()=>{ const lab=$('gantt').querySelector('.gantt-row .gantt-label');
+      const lw=lab ? lab.offsetWidth : 0, tw=$('gantt').offsetWidth-lw;
+      return Math.max(0, tw*pf-tw/(wide*8)); };
+    const mark=()=>{ const far=sc.scrollLeft > farX()/2;
+      btns.forEach(b=>{ const on=(b.dataset.to==='far')===far; b.classList.toggle('is-on', on); b.setAttribute('aria-pressed', on?'true':'false'); }); };
+    btns.forEach(b=>b.addEventListener('click', ()=>sc.scrollTo({left: b.dataset.to==='far' ? farX() : 0, behavior: 'smooth'})));
+    sc.addEventListener('scroll', mark, {passive: true});
+    $('span').hidden=false;
+  }
 }
 
 $('filter').addEventListener('input', e=>{

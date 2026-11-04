@@ -312,8 +312,11 @@ ADS-B pipeline can only observe after the fact.
   sessions in a row open without the bot check and are refused, a scheduled run waits and tries
   again until shortly before the next slot, `flightstatus/door.py`), `FIS_LEGS_REFRESH_DAYS`
   (3: every run rebuilds `fis_legs` from D-3 on). Dashboard: `BOOK_HORIZON_DAYS`
-  (4: furthest day the pages show published tails for) and `BOOK_HORIZON_BY_TYPE`
-  (`B748=9,A388=9`: the fleets shown further, as far as they are read). Ad-hoc single lookup:
+  (4: furthest day the pages show published tails for), `BOOK_HORIZON_BY_TYPE`
+  (`B748=9,A388=9`: the fleets shown further, as far as they are read) and
+  `BOOK_HORIZON_ALLEGRIS` (9: an A350 sold with the Allegris cabin); the
+  Schedule's gantt keeps `BOOK_HORIZON_DAYS` unless asked for more
+  (`/api/schedule?days=9`). Ad-hoc single lookup:
   `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`
   (set `NIGHTLY_JITTER=0` to skip the start jitter).
 

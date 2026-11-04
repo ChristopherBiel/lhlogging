@@ -1178,8 +1178,12 @@ _SCHEDULE_TYPES = ("B748", "A388", "B788", "B789", "B78X", "A359", "A35K")
 # there, the flight ranked first for a tail in D+5..D+9 is one it flies 65% of
 # the time against 27% without (A380), 25% against 9% (747-8) — so those two
 # are shown as far as they are read, and a tail beyond BOOK_HORIZON_DAYS is
-# labelled "pencilled". The Schedule's gantt keeps BOOK_HORIZON_DAYS for every
-# fleet: nine days on its axis would halve its scale.
+# labelled "pencilled". Since 2026-11-01 the collector reads by pool
+# (flightstatus/plan.py): the A350 Allegris to D+9 as well
+# (BOOK_HORIZON_ALLEGRIS: an A350 flight sold with the Allegris cabin), the
+# 787 and the other A350 to D+4, the A350 Frankfurt not at all. The Schedule's
+# gantt keeps BOOK_HORIZON_DAYS for every fleet unless asked for more
+# (/api/schedule?days=9): nine days on its axis would halve its scale.
 BOOK_HORIZON_DAYS = int(os.environ.get("BOOK_HORIZON_DAYS", "4"))
 
 
@@ -1194,11 +1198,16 @@ def _horizons(spec):
 
 
 BOOK_HORIZON_BY_TYPE = _horizons(os.environ.get("BOOK_HORIZON_BY_TYPE", "B748=9,A388=9"))
-_HORIZON_MAX_DAYS = max([BOOK_HORIZON_DAYS, *BOOK_HORIZON_BY_TYPE.values()])
+BOOK_HORIZON_ALLEGRIS = int(os.environ.get("BOOK_HORIZON_ALLEGRIS", "9"))
+_HORIZON_MAX_DAYS = max([BOOK_HORIZON_DAYS, BOOK_HORIZON_ALLEGRIS, *BOOK_HORIZON_BY_TYPE.values()])
+_A350 = ("A359", "A35K")
 
 
-def _horizon_days(ftype):
-    return BOOK_HORIZON_BY_TYPE.get(ftype, BOOK_HORIZON_DAYS)
+def _horizon_days(ftype, allegris=False):
+    """The last day ahead a fleet's tails are shown for; an A350 with the
+    Allegris cabin (`allegris`) is read as far as the 747-8 and the A380."""
+    days = BOOK_HORIZON_BY_TYPE.get(ftype, BOOK_HORIZON_DAYS)
+    return max(days, BOOK_HORIZON_ALLEGRIS) if allegris and ftype in _A350 else days
 
 
 # A look older than this is no publication any more. Every day a page shows is
@@ -1215,7 +1224,8 @@ def _shown(leg, today=None):
     """Whether the pages show the tail published on `leg`: its flight day lies
     within its fleet's horizon and the look behind it is recent."""
     seen = leg.get("latest_observed_at")
-    return (leg["flight_date"] <= (today or date.today()) + timedelta(days=_horizon_days(leg["fleet_type"]))
+    reach = _horizon_days(leg["fleet_type"], leg.get("allegris"))
+    return (leg["flight_date"] <= (today or date.today()) + timedelta(days=reach)
             and seen is not None and datetime.now(timezone.utc) - seen <= _LOOK_MAX_AGE)
 
 
@@ -1856,33 +1866,64 @@ def _target_view(res):
             "hold": res["hold"], "hold_n": res["hold_n"], "band": res["band"]}
 
 
-def _build_schedule(conn):
-    """Per-airframe upcoming schedule from the latest FIS snapshot of each
-    (flight_date, flight_number), grouped by tail for a Gantt timeline.
-
-    Only B748/A388 airframes (canonical type from the aircraft table) are
-    returned. Bars are laid out on a single Frankfurt-local clock: each leg is
-    anchored to its German-hub endpoint and sized by true flight duration, so
-    both east- and westbound legs show their real length (no tz compression).
-    """
-    today = date.today()
-    now_fake = datetime.now(_BERLIN).replace(tzinfo=timezone.utc)  # Berlin wall as fake-UTC
-    win_start = now_fake - timedelta(hours=24)  # rolling last 24h of history
-    rows = _q(conn, """
+# The newest look of each flight day for the Schedule. The tail is the leg
+# layer's where that is newer: a return leg's look stands in for its outbound
+# (flightstatus/legs.py), which the collector mostly reads that way since
+# 2026-11-01. The type filter comes after the newest look, so a flight that
+# went to another type leaves the rows of this one.
+_SCHEDULE_SQL = """
+    WITH latest AS (
         SELECT DISTINCT ON (o.flight_date, o.flight_number)
-            o.flight_date, o.airline, o.flight_number, o.registration,
-            a.aircraft_type, a.icao24, o.seed_type, o.dep_airport_iata, o.arr_airport_iata,
-            o.dep_scheduled, o.arr_scheduled, o.overall_status,
-            o.prev_airline, o.prev_flight_number,
-            o.raw->'legs'->0->>'flightDuration', """ + _SEGMENTS_SQL + """
+            o.flight_date, o.airline, o.flight_number, o.registration, o.observed_at, o.seed_type,
+            o.dep_airport_iata, o.arr_airport_iata, o.dep_scheduled, o.arr_scheduled, o.overall_status,
+            o.prev_airline, o.prev_flight_number, o.raw->'legs'->0->>'flightDuration' AS duration,
+            {segments} AS segments
         FROM flight_status_observations o
-        JOIN aircraft a ON a.registration = o.registration
         WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
           AND o.flight_date >= CURRENT_DATE - 1
           AND o.flight_date <= CURRENT_DATE + %s
-          AND a.aircraft_type = ANY(%s)
         ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
-    """, (BOOK_HORIZON_DAYS, list(_SCHEDULE_TYPES)))
+    ), shown AS (
+        SELECT x.*, {tail} AS tail, {seen} AS seen
+        FROM latest x {legs}
+    )
+    SELECT x.flight_date, x.airline, x.flight_number, x.tail, a.aircraft_type, a.icao24, x.seed_type,
+           x.dep_airport_iata, x.arr_airport_iata, x.dep_scheduled, x.arr_scheduled, x.overall_status,
+           x.prev_airline, x.prev_flight_number, x.duration, x.segments, x.seen
+    FROM shown x
+    JOIN aircraft a ON a.registration = x.tail
+    WHERE a.aircraft_type = ANY(%s)
+"""
+
+
+def _schedule_sql(conn):
+    with_legs = _q1(conn, "SELECT to_regclass('fis_legs') IS NOT NULL")
+    return _SCHEDULE_SQL.format(
+        segments=_SEGMENTS_SQL.strip().rstrip(","),
+        tail=("COALESCE(CASE WHEN l.latest_observed_at > x.observed_at THEN NULLIF(l.latest_tail, '') END,"
+              " x.registration)" if with_legs else "x.registration"),
+        seen="GREATEST(x.observed_at, l.latest_observed_at)" if with_legs else "x.observed_at",
+        legs=("LEFT JOIN fis_legs l ON l.flight_date = x.flight_date AND l.airline = x.airline"
+              " AND l.flight_number = x.flight_number" if with_legs else ""))
+
+
+def _build_schedule(conn):
+    """Per-airframe upcoming schedule from the latest FIS snapshot of each
+    (flight_date, flight_number), grouped by tail for a Gantt timeline: every
+    fleet as far as it is shown (_horizon_days); _schedule_view cuts it to the
+    days a page asks for.
+
+    Only the long-haul airframes (canonical type from the aircraft table) are
+    returned. Bars are laid out on a single Frankfurt-local clock: each leg is
+    anchored to its German-hub endpoint and sized by true flight duration, so
+    both east- and westbound legs show their real length (no tz compression).
+    A leg ahead whose newest look is older than _LOOK_MAX_AGE is `stale`.
+    """
+    today = date.today()
+    now_fake = datetime.now(_BERLIN).replace(tzinfo=timezone.utc)  # Berlin wall as fake-UTC
+    now_utc = datetime.now(timezone.utc)
+    win_start = now_fake - timedelta(hours=24)  # rolling last 24h of history
+    rows = _q(conn, _schedule_sql(conn), (_HORIZON_MAX_DAYS, list(_SCHEDULE_TYPES)))
     swap_rows = _q(conn, """
         SELECT flight_date, flight_number
         FROM flight_status_observations
@@ -1929,7 +1970,9 @@ def _build_schedule(conn):
     icao24_by_reg = {}
     starts, ends = [], []
     for (fdate, airline, fnum, reg, atype, icao24, seed, dep0, arr0,
-         dep_t0, arr_t0, fis_status, pa, pn, dur_iso, segs) in rows:
+         dep_t0, arr_t0, fis_status, pa, pn, dur_iso, segs, seen) in rows:
+        if (fdate - today).days > _horizon_days(atype, (reg or "").strip() in alleg):
+            continue  # read further out than this fleet is shown
         # a flight of several legs (LH568 FRA-LOS-SSG) draws each of them
         bars = _segment_bars(segs) if segs and len(segs) > 1 else None
         if bars is None:
@@ -1960,6 +2003,9 @@ def _build_schedule(conn):
                 "lead": (fdate - today).days, "prev": f"{pa}{pn}" if pn else None,
                 "status": "planned", "act": None,
                 "seg": seg, "nseg": len(bars), "route": route,
+                # beyond the day every fleet is read to; a look too old to trust
+                "pencilled": (fdate - today).days > BOOK_HORIZON_DAYS,
+                "stale": seen is not None and now_utc - seen > _LOOK_MAX_AGE and start >= now_fake,
             }
             # Plan-vs-actual overlay for legs whose planned departure is in the past.
             if start < now_fake:
@@ -2023,13 +2069,48 @@ def _build_schedule(conn):
     ]
     # the visitor's own tails (browser storage) are pinned client-side
     airframes.sort(key=lambda a: (type_order.get(a["type"], 9), a["reg"]))
+    # where the pencilled days begin: the midnight after day BOOK_HORIZON_DAYS
+    pencil = datetime.combine(today + timedelta(days=BOOK_HORIZON_DAYS + 1), datetime.min.time(),
+                              tzinfo=timezone.utc)
     return {
         "airframes": airframes,
-        "window": {"start": win_start.isoformat(), "end": win_end.isoformat()},
+        "window": {"start": win_start.isoformat(), "end": win_end.isoformat(),
+                   "pencil": pencil.isoformat()},
         "now": now_fake.isoformat(),
         "generated": datetime.now(timezone.utc).isoformat(),
         "swaps": len(swapped),
+        "days": _HORIZON_MAX_DAYS,
     }
+
+
+def _view_end(airframes, days):
+    """The midnight after the last leg of flight day `days` or before (the
+    past and ADS-B's own legs count too); None without one."""
+    ends = [datetime.fromisoformat(l["end"]) for a in airframes for l in a["legs"]
+            if l["lead"] is None or l["lead"] <= days]
+    return max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1) if ends else None
+
+
+def _schedule_view(data, days):
+    """The Schedule to day `days` ahead: the legs further out dropped (the
+    past and ADS-B's own legs stay), the window ending after the last one.
+    `window.firm` is where the window of BOOK_HORIZON_DAYS ends: the page keeps
+    that span at its width and scrolls to the rest."""
+    if not data.get("airframes"):
+        return data
+    firm = _view_end(data["airframes"], BOOK_HORIZON_DAYS)
+    window = dict(data["window"], firm=firm.isoformat() if firm else data["window"]["end"])
+    if days >= data.get("days", days):
+        return dict(data, window=window)
+    afs = []
+    for a in data["airframes"]:
+        legs = [l for l in a["legs"] if l["lead"] is None or l["lead"] <= days]
+        if legs:
+            afs.append(dict(a, legs=legs))
+    end = _view_end(afs, days)
+    if end is None:
+        return dict(data, airframes=[], days=days, window=window)
+    return dict(data, airframes=afs, days=days, window=dict(window, end=end.isoformat()))
 
 
 # Kept warm (warm.py), rebuilt every five minutes: the ADS-B flights behind the
@@ -2040,9 +2121,14 @@ _SCHEDULE_DATA = warm.Payload(300, _build_schedule, _db)
 
 @app.route("/api/schedule")
 def api_schedule():
-    """The Schedule page's Gantt (_build_schedule), from the kept copy."""
+    """The Schedule page's Gantt (_build_schedule), from the kept copy: to
+    BOOK_HORIZON_DAYS, or ?days=N (at most as far as any fleet is shown)."""
     try:
-        return jsonify(_SCHEDULE_DATA.get())
+        days = int(request.args.get("days") or BOOK_HORIZON_DAYS)
+    except ValueError:
+        return jsonify({"error": "days must be a number"}), 400
+    try:
+        return jsonify(_schedule_view(_SCHEDULE_DATA.get(), max(0, days)))
     except Exception as e:
         return jsonify({"error": str(e)}), 503
 
@@ -2301,7 +2387,8 @@ def api_book_plan():
                   "ORDER BY is_active DESC LIMIT 1", (target,))
         if not ttype:
             return jsonify({"error": f"unknown tail {target}"}), 404
-        horizon = today + timedelta(days=_horizon_days(ttype))
+        alleg = _allegris_tails(conn)
+        horizon = today + timedelta(days=_horizon_days(ttype, target in alleg))
         firm = today + timedelta(days=BOOK_HORIZON_DAYS)
         # every row FIS has in the range: inside its fleet's horizon a row
         # carries the published tail, beyond it it only confirms the timetable
@@ -2309,7 +2396,6 @@ def api_book_plan():
                                 types=None)
         own = [l for l in _upcoming_legs(conn, reg=target, date_from=today, date_to=horizon,
                                          types=None) if _published(l) == target]
-        alleg = _allegris_tails(conn)
         cabins = _cabin_configs(conn)
         subs = _tail_subtypes(conn)
     finally:
@@ -3786,6 +3872,10 @@ _SCHEDULE = {
             <span id="typechk"></span>
             <span class="tchk off" id="allegchk" role="checkbox" aria-checked="false" tabindex="0" title="Show only airframes with the Allegris cabin"><span class="abadge">A</span>Allegris only</span>
           </div>
+          <div class="fp-seg" id="span" role="group" aria-label="Days shown" hidden>
+            <button type="button" data-to="now" class="is-on" aria-pressed="true">From now</button>
+            <button type="button" data-to="far" aria-pressed="false">Days 5&ndash;9</button>
+          </div>
         </div>
       </div>
     </section>
@@ -3797,6 +3887,7 @@ _SCHEDULE = {
             <span><i class="k-flown"></i>flew as planned</span>
             <span><i class="k-extra"></i>unplanned</span>
             <span><i class="k-plan"></i>planned</span>
+            <span><i class="k-pencil"></i>pencilled</span>
             <span><i class="k-slot"></i>planned slot</span>
           </div>
           <div><b>Marks</b>
@@ -3806,7 +3897,7 @@ _SCHEDULE = {
         </div>
         <details class="fold">
           <summary class="fold__sum">How to read this</summary>
-          <p class="aside">Times in Frankfurt local; a bar is as long as the flight. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. A grey strip at the end of a bar marks a leg whose tail was <b>swapped</b>. Your tails (the ones you planned on <a class="tail-link" href="/book">Catch a Tail</a>, remembered in this browser) are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out and back legs across the time it is <b>parked away from base</b>. Click a leg for details; click a tail for its airframe page.</p>
+          <p class="aside">Times in Frankfurt local; a bar is as long as the flight. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. A grey strip at the end of a bar marks a leg whose tail was <b>swapped</b>. The 747-8, A380 and A350 Allegris are shown to <b>day 9</b>: past the dashed line at the end of day 4 the chart goes on to the right (scroll sideways, or <b>Days 5&ndash;9</b> above), and their bars there are framed dashed &mdash; <b>pencilled</b>, an early plan that changes more often (five days out, a published A380 tail flies it about three times in four, a 747-8 tail one time in four). The 787 and the other A350s are read to day 4, the Frankfurt A350s not at all. A dashed bar nearer in has not been read for 36 hours. Your tails (the ones you planned on <a class="tail-link" href="/book">Catch a Tail</a>, remembered in this browser) are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out and back legs across the time it is <b>parked away from base</b>. Click a leg for details; click a tail for its airframe page.</p>
         </details>
       </div>
     </section>""",

@@ -8,7 +8,9 @@
 .gantt{ --label:7.625rem; margin-inline:calc(50% - 50vw + var(--fp-page-margin)); padding:var(--fp-space-3); }
 @media (max-width:760px){ .gantt{ margin-inline:0; padding-inline:0; } }
 .gantt-scroll{ overflow-x:auto; }
-.gantt-inner{ min-width:51.25rem; }
+/* --k (schedule.js): how much longer the whole window is than the span to day
+   4, which keeps the width it always had; the rest scrolls in from the right */
+.gantt-inner{ --k:1; min-width:calc(51.25rem * var(--k)); width:calc(100% * var(--k)); }
 .gantt-axis-row{ display:flex; align-items:center; margin-bottom:var(--fp-space-2); }
 .gantt-axis{ flex:1; position:relative; height:var(--fp-space-3); }
 .gantt-axis .gantt-day{ position:absolute; font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); color:var(--fp-ctx-body);
@@ -23,7 +25,8 @@
 .gantt-row.watch:has(+ .gantt-row:not(.watch)){ border-bottom:var(--fp-keyline) dashed var(--fp-ctx-ink); }
 .gantt-label .star{ color:var(--fp-ctx-ink); font-size:var(--fp-text-xxs); margin-right:var(--fp-space-1); }
 .gantt-label{ width:var(--label); flex-shrink:0; font-family:var(--fp-font-mono); font-size:var(--fp-text-xs); font-weight:var(--fp-heading-h2-weight);
-  color:var(--fp-ctx-ink); padding-right:var(--fp-space-2); display:flex; align-items:center; gap:var(--fp-space-1); text-decoration:none; }
+  color:var(--fp-ctx-ink); padding-right:var(--fp-space-2); display:flex; align-items:center; gap:var(--fp-space-1); text-decoration:none;
+  position:sticky; left:0; z-index:7; background:var(--fp-ctx-bg); align-self:stretch; }   /* pinned while the chart scrolls */
 a.gantt-label:hover{ text-decoration:underline; text-decoration-color:var(--fp-ctx-accent); text-underline-offset:var(--fp-space-1); }
 .tbadge{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:var(--fp-heading-h2-weight); padding:var(--fp-space-1); color:var(--fp-text-inverse); }
 .abadge{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:var(--fp-heading-h2-weight); padding:var(--fp-space-1);
@@ -78,6 +81,8 @@ a.gantt-label:hover{ text-decoration:underline; text-decoration-color:var(--fp-c
 /* FUTURE — white bar framed in the type hue on all four sides */
 .gantt-flight.st-planned{ background:var(--fp-bg); border:var(--fp-keyline) solid var(--_s); }
 .gantt-flight.st-planned .lbl{ color:var(--_d); }
+/* PENCILLED — past day 4 (an early plan), or not read for 36 h: the frame dashed */
+.gantt-flight.st-planned.is-pencil{ border-style:dashed; }
 
 /* PLANNED SLOT — a scheduled slot not yet tracked, or one vacated by a deviation. Dashed neutral */
 .gantt-flight.st-missing, .gantt-flight.st-ghost{ background:var(--fp-bg); border:var(--fp-hairline) dashed var(--fp-gray); }
@@ -100,11 +105,17 @@ a.gantt-label:hover{ text-decoration:underline; text-decoration-color:var(--fp-c
 .now-line{ position:absolute; top:0; bottom:0; width:var(--fp-keyline); background:var(--fp-ink); z-index:6; pointer-events:none; }
 .now-line::after{ content:'NOW'; position:absolute; top:calc(-1 * var(--fp-space-3)); left:50%; transform:translateX(-50%); background:var(--fp-ink); color:var(--fp-text-inverse);
   font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:var(--fp-heading-h2-weight); letter-spacing:var(--fp-track-label); line-height:1; padding:var(--fp-space-1); white-space:nowrap; }
-/* phone: don't compact — keep the timeline wide & scroll sideways; pin the reg column */
+/* the end of day 4: a dashed rule down the chart, its tag above like NOW's,
+   ending at the rule (the next day's name starts there) */
+.pencil-line{ position:absolute; top:0; bottom:0; border-left:var(--fp-keyline) dashed var(--fp-ink); z-index:5; pointer-events:none; }
+.pencil-line::after{ content:'PENCILLED \2192'; position:absolute; top:calc(-1 * var(--fp-space-3)); right:0; background:var(--fp-bg); color:var(--fp-ink);
+  border:var(--fp-hairline) solid var(--fp-ink); font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); font-weight:var(--fp-heading-h2-weight);
+  letter-spacing:var(--fp-track-label); line-height:1; padding:var(--fp-space-1); white-space:nowrap; }
+/* phone: don't compact — keep the timeline wide & scroll sideways; the reg column is pinned */
 @media (max-width:640px){
-  .gantt-inner{ min-width:65rem; }
+  .gantt-inner{ min-width:calc(65rem * var(--k)); }
   .gantt-row{ height:2.5rem; align-items:flex-start; padding-top:var(--fp-space-1); }
-  .gantt-label{ position:sticky; left:0; z-index:7; background:var(--fp-ctx-bg); align-self:stretch; align-items:center; }
+  .gantt-label{ align-items:center; }
   .gantt-flight .lbl .fl{ display:none; }     /* drop flight numbers on phone */
   .tie{ top:1.5625rem; }                       /* connecting line moved below the bars */
   .tielab{ top:var(--fp-hairline); }
@@ -138,5 +149,6 @@ a.gantt-label:hover{ text-decoration:underline; text-decoration-color:var(--fp-c
 .key .k-flown{ background:var(--fp-sage); }
 .key .k-extra{ background:repeating-linear-gradient(45deg,var(--fp-sage) 0 4px,var(--fp-surface) 4px 7px); }
 .key .k-plan{ background:var(--fp-bg); border:var(--fp-keyline) solid var(--fp-sage); }
+.key .k-pencil{ background:var(--fp-bg); border:var(--fp-keyline) dashed var(--fp-sage); }
 .key .k-slot{ background:var(--fp-bg); border:var(--fp-hairline) dashed var(--fp-gray); }
 .key .k-swap{ background:linear-gradient(90deg,var(--fp-bg) 0 66%,var(--fp-dv-6) 66% 100%); border:var(--fp-keyline) solid var(--fp-sage); }
