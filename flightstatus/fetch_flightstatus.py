@@ -760,6 +760,7 @@ _LEG_OBS_SQL = """
            btrim(o.registration) AS registration, fl.aircraft_type AS fleet_type,
            o.aircraft_type AS fis_type, o.dep_airport_iata, o.arr_airport_iata,
            o.dep_scheduled, o.arr_scheduled, o.overall_status,
+           o.prev_airline, o.prev_flight_number, o.prev_flight_date,
            o.raw->'legs'->0->>'flightDuration' AS flight_duration,
            o.raw->'aircraftInfo'->>'seatConfig' AS seat_config,
            (o.raw->'aircraftInfo'->>'allegris')::boolean AS allegris,
@@ -878,22 +879,68 @@ def _leg_row(row: dict) -> dict:
     }
 
 
+# The ADS-B log under Lufthansa callsigns, for the flown tail (legs.flown_tails).
+# flight_date (the UTC day of first_seen) is indexed; first_seen is not.
+_FLOWN_SQL = """
+    SELECT f.callsign, btrim(a.registration), a.aircraft_type, f.first_seen
+    FROM flights f
+    JOIN (SELECT DISTINCT ON (icao24) icao24, registration, aircraft_type
+          FROM aircraft ORDER BY icao24, is_active DESC, last_seen_date DESC NULLS LAST) a
+      ON a.icao24 = f.icao24
+    WHERE f.flight_date BETWEEN %s AND %s AND f.first_seen BETWEEN %s AND %s
+      AND f.callsign LIKE 'DLH%%'
+"""
+# a flight this long gone is looked for in the ADS-B log
+FLOWN_AFTER = timedelta(minutes=30)
+
+
+def flown_tails(conn: psycopg.Connection, built: dict, now: datetime) -> dict:
+    """ADS-B's flown tail for the legs in `built` ({key: legs.build_leg row})
+    that have left without a look of the feed saying which tail flew them
+    (legs.flown_tails). Never fatal: without it they wait for the feed."""
+    due = [(key, key[2], datetime.fromisoformat(row["dep_scheduled_utc"]))
+           for key, row in built.items()
+           if row is not None and not row["truth_tail"] and not row["cancelled"]]
+    due = [d for d in due if d[2] < now - FLOWN_AFTER]
+    if not due:
+        return {}
+    lo = min(d[2] for d in due) - legs.FLOWN_WINDOW
+    hi = max(d[2] for d in due) + legs.FLOWN_WINDOW
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_FLOWN_SQL, (lo.date(), hi.date(), lo, hi))
+            return legs.flown_tails(due, cur.fetchall())
+    except Exception as e:  # noqa: BLE001 - derived data, never fatal
+        conn.rollback()
+        log(f"flown tails from ADS-B failed (non-fatal): {e}")
+        return {}
+
+
 def refresh_legs(conn: psycopg.Connection, since: date, until: date) -> int:
     """Rebuild fis_legs for flight dates in [since, until) from the observations,
-    and fold those looks into airframe_cabin. Returns the number of legs written."""
+    and fold those looks into airframe_cabin. Returns the number of legs written.
+
+    A return leg's look also stands in for its outbound's (legs.stand_ins: the
+    looks of the two days after `until` are read for that), and where no look
+    of the feed's own says which tail flew a leg, ADS-B's does (flown_tails)."""
     with conn.cursor() as cur:
-        cur.execute(_LEG_OBS_SQL, (since, until))
+        cur.execute(_LEG_OBS_SQL, (since, until + timedelta(days=2)))
         names = [d.name for d in cur.description]
         groups = defaultdict(list)
+        looks = []
         for rec in cur.fetchall():
             r = dict(zip(names, rec))
             r["registration"] = (r["registration"] or "").upper()
-            groups[(r["flight_date"], r["airline"], r["flight_number"])].append(r)
-    rows = []
-    for key in sorted(groups):
-        row, _changes = legs.build_leg(key, groups[key])
-        if row is not None:
-            rows.append(_leg_row(row))
+            looks.append(r)
+            if r["flight_date"] < until:
+                groups[(r["flight_date"], r["airline"], r["flight_number"])].append(r)
+    for key, extra in legs.stand_ins(looks).items():
+        if key in groups:
+            groups[key].extend(extra)
+    built = {key: legs.build_leg(key, groups[key])[0] for key in sorted(groups)}
+    for key, flown in flown_tails(conn, built, datetime.now(timezone.utc)).items():
+        built[key] = legs.build_leg(key, groups[key], flown=flown)[0]
+    rows = [_leg_row(row) for row in built.values() if row is not None]
     cols = (_LEG_COLS + (_LEG_CABIN_COLS if legs_cabin_schema(conn) else ())
             + (_LEG_SEGMENT_COLS if legs_segments_schema(conn) else ()))
     with conn.cursor() as cur:

@@ -32,6 +32,13 @@ the itinerary's (LH568 = FRA -> SSG, via LOS), its duration gate to gate
 including the stops, and the stops' detail is kept in `segments`. The tail
 flies the whole itinerary, so that is what the fleet's chains need, and what
 the schedule draws.
+
+A look can also stand in for another flight's (`derived`, see stand_ins): a
+flight leaving an outstation names, as its previousFlight, the outbound that
+brought its airframe there, and the two carry the same tail (99.8%). Since
+2026-11-01 the collector reads an outbound mostly through its return leg
+(flightstatus/plan.py), so such looks fill the outbound's published-tail
+history; its schedule, status and cabin come from its own looks only.
 """
 from __future__ import annotations
 
@@ -196,32 +203,115 @@ def tail_at(timeline, first_lead_h, lead_h):
     return tail
 
 
-def build_leg(key, obs):
+# A stand-in look counts only where the outbound has no look of its own from
+# the hours before: it fills the gaps between the outbound's own reads, and
+# the rare look where the two disagree (0.2%) cannot flip its history back and
+# forth while it is read itself.
+STAND_IN_GAP = timedelta(hours=6)
+
+
+def _flight_number(n):
+    n = str(n or "").strip()
+    return str(int(n)) if n.isdigit() else n
+
+
+def stand_ins(rows):
+    """{(flight_date, 'LH', flight_number): [look]}: what the looks among
+    `rows` (observation dicts with prev_airline / prev_flight_number /
+    prev_flight_date) say about the outbound each one names — the flight that
+    brought the airframe to the outstation it leaves from. A stand-in look is
+    `derived`, found, and carries the tail and the time of the look it comes
+    from; nothing else about the outbound."""
+    out = collections.defaultdict(list)
+    for r in rows:
+        if (not r.get("found") or r.get("derived") or not r.get("registration")
+                or (r.get("prev_airline") or "").strip() != "LH" or not r.get("prev_flight_number")
+                or not r.get("prev_flight_date") or (r.get("dep_airport_iata") or "") in DE_HUBS):
+            continue
+        out[(r["prev_flight_date"], "LH", _flight_number(r["prev_flight_number"]))].append({
+            "observed_at": r["observed_at"], "found": True, "derived": True,
+            "registration": r["registration"], "fleet_type": r.get("fleet_type"),
+            "fis_type": r.get("fis_type"), "seed_type": r.get("seed_type"), "overall_status": None})
+    return out
+
+
+def _gap_fillers(own, derived, gap=STAND_IN_GAP):
+    """The stand-in looks taken when the leg's own newest look was older than
+    `gap` (or there was none yet)."""
+    times = [r["observed_at"] for r in own]
+    out, i = [], 0
+    for r in derived:
+        while i < len(times) and times[i] <= r["observed_at"]:
+            i += 1
+        if i == 0 or r["observed_at"] - times[i - 1] > gap:
+            out.append(r)
+    return out
+
+
+# The flown tail from ADS-B: an aircraft logged under the callsign DLH<number>
+# leaving within this of the scheduled departure. On the legs of 1-26 Oct 2026
+# it found the tail of 91% of the 747-8/A380 legs and 83% of the others, and
+# never a wrong one; the rest fly under tactical callsigns (DLH4AB) or where
+# the receivers do not reach.
+FLOWN_WINDOW = timedelta(hours=3)
+FLOWN = "ADSB"     # the truth_status of a tail ADS-B saw fly
+
+
+def flown_tails(legs_due, flights, window=FLOWN_WINDOW):
+    """{key: (tail, fleet type)} — ADS-B's flown tail for each of `legs_due`
+    [(key, flight number, dep_utc)] that exactly one aircraft left under its
+    callsign within `window` of its departure. `flights`: (callsign, tail,
+    fleet type, first_seen) of the ADS-B log."""
+    by_cs = collections.defaultdict(list)
+    for cs, tail, ftype, first_seen in flights:
+        if cs and tail and first_seen is not None:
+            by_cs[cs.strip().upper()].append((first_seen, tail.strip().upper(), (ftype or "").strip()))
+    out = {}
+    for key, number, dep in legs_due:
+        if dep is None:
+            continue
+        seen = {(tail, ftype) for t, tail, ftype in by_cs.get("DLH" + _flight_number(number), ())
+                if abs(t - dep) <= window}
+        if len({tail for tail, _t in seen}) == 1:
+            out[key] = min(seen)
+    return out
+
+
+def build_leg(key, obs, flown=None):
     """Collapse one leg's snapshot sequence into an outcome row + change rows.
 
     The row carries both the analysis columns the offline tools report on
     (tail_at_<H>h / hold_<H>h per BANDS, churn, sampling density, settle
     point) and the columns `fis_legs` stores (latest/first look, collapsed
-    timeline). Returns (None, []) for a leg FIS never returned.
+    timeline). Returns (None, []) for a leg FIS never returned. Stand-in looks
+    (`derived`, see stand_ins) join the published tails, never the schedule.
+    `flown` (tail, fleet type), ADS-B's flown tail (flown_tails), is the truth
+    where no look of the feed's own says which tail flew it.
     """
     flight_date, airline, flight_number = key
     obs = sorted(obs, key=lambda r: r["observed_at"])
-    found = [r for r in obs if r["found"]]
+    found = [r for r in obs if r["found"] and not r.get("derived")]
     if not found:
         return None, []
+    derived = _gap_fillers(found, [r for r in obs if r.get("derived") and r.get("registration")])
 
-    # Truth = the tail in a terminal snapshot. Only legs that have one are
-    # labelable; the rest are still-in-the-future legs (useful as features).
+    # Truth = the tail in a terminal snapshot, else the one ADS-B saw fly it.
+    # Only legs that have one are labelable; the rest are still-in-the-future
+    # legs (useful as features).
     terminal = [r for r in found if (r["overall_status"] or "").upper() in TERMINAL
                 and r["registration"]]
     truth = terminal[-1] if terminal else None
+    if truth is None and flown and not any((r["overall_status"] or "").upper() == "CANCELLED"
+                                           for r in found):
+        truth = {"registration": flown[0], "fleet_type": flown[1], "fis_type": "",
+                 "overall_status": FLOWN, "observed_at": None, "_segs": None}
 
     # The itinerary: what the operated look says (a diversion ends where it
     # ended), else the one most looks show. Its endpoints, times and length
     # come from the looks that show it.
     for r in found:
         r["_segs"] = look_segments(r)
-    route = (route_of(truth["_segs"]) if truth
+    route = (route_of(truth["_segs"]) if truth and truth["_segs"]
              else modal([route_of(r["_segs"]) for r in found]))
     same = [r for r in found if route_of(r["_segs"]) == route]
     dep_ap, arr_ap = route[0], route[-1]
@@ -235,13 +325,17 @@ def build_leg(key, obs):
     arr_local = modal([r["_segs"][-1]["arr_local"] for r in same])
     dep_ref = dep_utc(dep_local, arr_local, dep_ap, arr_ap, duration)
 
-    for r in found:
+    for r in found + derived:
         r["lead_h"] = (dep_ref - r["observed_at"]).total_seconds() / 3600.0
     cancelled = any((r["overall_status"] or "").upper() == "CANCELLED" for r in found)
 
-    pre = [r for r in found if r["lead_h"] > 0 and r["registration"]]
+    pre = sorted((r for r in found + derived if r["lead_h"] > 0 and r["registration"]),
+                 key=lambda r: r["observed_at"])
     post_dep_only = bool(truth) and not pre
-    latest = found[-1]
+    # the tail published now: the newest look, its own or a stand-in; the
+    # status only from its own
+    latest = max(found + derived, key=lambda r: r["observed_at"])
+    latest_own = found[-1]
 
     row = {
         "flight_date": flight_date, "airline": airline, "flight_number": flight_number,
@@ -257,9 +351,10 @@ def build_leg(key, obs):
         # when the truth was first seen (the first terminal look): the offline
         # replays may only use it from then on (not stored in fis_legs, where a
         # truth is by definition already seen)
-        "truth_observed_at": terminal[0]["observed_at"].isoformat() if truth else "",
+        "truth_observed_at": terminal[0]["observed_at"].isoformat() if terminal else "",
         "cancelled": int(cancelled),
         "n_obs": len(found),
+        "n_derived": len(derived),
         "n_obs_pre_dep": len(pre),
         "post_dep_only": int(post_dep_only),
     }
@@ -367,7 +462,7 @@ def build_leg(key, obs):
              "arr_local": s["arr_local"].isoformat() if s["arr_local"] else None,
              "duration_min": s["duration_min"]} for s in ref]) if len(ref) > 1 else "",
         "latest_tail": latest["registration"] or "",
-        "latest_status": (latest["overall_status"] or "").upper(),
+        "latest_status": (latest_own["overall_status"] or "").upper(),
         "latest_observed_at": latest["observed_at"].isoformat(),
         "first_observed_at": found[0]["observed_at"].isoformat(),
         "timeline": timeline,

@@ -98,6 +98,73 @@ class BuildLeg(unittest.TestCase):
         self.assertEqual(legs.build_leg(("2026-09-28", "LH", "716"), [o]), (None, []))
 
 
+class StandIns(unittest.TestCase):
+    """A return leg's look names its outbound (previousFlight) and carries its
+    tail: what the collector reads an outbound through since 2026-11-01."""
+    DEP = datetime(2026, 9, 28, 12, 5, tzinfo=UTC)          # LH716 FRA 14:05
+
+    def back(self, at, reg, prev_date="2026-09-28", dep="HND"):
+        """LH717 HND -> FRA the next day, naming LH716 as the flight before."""
+        return dict(look(at, reg), flight_date="2026-09-29", airline="LH", flight_number="717",
+                    dep_airport_iata=dep, arr_airport_iata="FRA", prev_airline="LH",
+                    prev_flight_number="0716", prev_flight_date=prev_date)
+
+    def test_a_return_leg_names_its_outbound(self):
+        got = legs.stand_ins([self.back(self.DEP - timedelta(hours=50), "D-ABYQ"),
+                              self.back(self.DEP - timedelta(hours=40), "D-ABYQ", dep="FRA"),      # left a hub
+                              dict(self.back(self.DEP - timedelta(hours=30), "D-ABYQ"), found=False)])
+        self.assertEqual(list(got), [("2026-09-28", "LH", "716")])                         # zero-padding off
+        (one,) = got[("2026-09-28", "LH", "716")]
+        self.assertEqual((one["registration"], one["derived"], one["observed_at"]),
+                         ("D-ABYQ", True, self.DEP - timedelta(hours=50)))
+
+    def test_its_looks_fill_the_outbounds_gaps_not_its_schedule(self):
+        own = [look(self.DEP - timedelta(hours=100), "D-ABYT"), look(self.DEP - timedelta(hours=5), "D-ABYQ")]
+        stand = legs.stand_ins([self.back(self.DEP - timedelta(hours=h), reg) for h, reg in
+                                ((98, "D-ABYR"), (60, "D-ABYR"), (30, "D-ABYQ"))])[("2026-09-28", "LH", "716")]
+        row, changes = legs.build_leg(("2026-09-28", "LH", "716"), own + stand)
+        # the look 2 h after its own is left out; the two in the gap count
+        self.assertEqual([t for _, t in row["timeline"]], ["D-ABYT", "D-ABYR", "D-ABYQ"])
+        self.assertEqual((row["n_obs"], row["n_derived"]), (2, 2))
+        self.assertEqual(row["tail_at_48h"], "D-ABYR")
+        self.assertEqual((row["dep_airport"], row["arr_airport"], row["latest_status"]), ("FRA", "HND", "ONTIME"))
+        self.assertEqual([c["to_tail"] for c in changes], ["D-ABYR", "D-ABYQ"])
+
+    def test_the_newest_look_is_the_published_tail_whoever_took_it(self):
+        own = [look(self.DEP - timedelta(hours=100), "D-ABYT")]
+        stand = legs.stand_ins([self.back(self.DEP - timedelta(hours=20), "D-ABYR")])[("2026-09-28", "LH", "716")]
+        row, _ = legs.build_leg(("2026-09-28", "LH", "716"), own + stand)
+        self.assertEqual((row["latest_tail"], row["latest_observed_at"]),
+                         ("D-ABYR", (self.DEP - timedelta(hours=20)).isoformat()))
+        self.assertEqual(legs.build_leg(("2026-09-28", "LH", "716"), stand), (None, []))   # none of its own
+
+
+class FlownTail(unittest.TestCase):
+    DEP = datetime(2026, 9, 28, 12, 5, tzinfo=UTC)
+
+    def test_one_aircraft_under_its_callsign_near_departure(self):
+        key = ("2026-09-28", "LH", "716")
+        flights = [("DLH716", "D-ABYQ", "B748", self.DEP + timedelta(minutes=20)),
+                   ("DLH716", "D-ABYN", "B748", self.DEP + timedelta(hours=26)),     # the next day's
+                   ("DLH717", "D-ABYR", "B748", self.DEP)]
+        self.assertEqual(legs.flown_tails([(key, "716", self.DEP)], flights), {key: ("D-ABYQ", "B748")})
+        two = flights + [("DLH716", "D-ABYS", "B748", self.DEP - timedelta(hours=2))]
+        self.assertEqual(legs.flown_tails([(key, "716", self.DEP)], two), {})            # two: no answer
+        self.assertEqual(legs.flown_tails([(key, "0716", self.DEP)], flights[:1]), {key: ("D-ABYQ", "B748")})
+
+    def test_it_is_the_truth_where_the_feed_has_none(self):
+        obs = [look(self.DEP - timedelta(hours=30), "D-ABYR"), look(self.DEP - timedelta(hours=5), "D-ABYR")]
+        row, _ = legs.build_leg(("2026-09-28", "LH", "716"), obs, flown=("D-ABYQ", "B748"))
+        self.assertEqual((row["truth_tail"], row["truth_status"], row["truth_observed_at"]), ("D-ABYQ", "ADSB", ""))
+        self.assertEqual((row["hold_24h"], row["reassigned"], row["fleet_type"]), (0, 1, "B748"))
+        # the feed's own word wins; a cancelled flight has none
+        flown = obs + [look(self.DEP + timedelta(hours=14), "D-ABYR", status="ARRIVED")]
+        self.assertEqual(legs.build_leg(("2026-09-28", "LH", "716"), flown, flown=("D-ABYQ", "B748"))[0]["truth_tail"],
+                         "D-ABYR")
+        gone = obs + [look(self.DEP - timedelta(hours=2), "D-ABYR", status="CANCELLED")]
+        self.assertEqual(legs.build_leg(("2026-09-28", "LH", "716"), gone, flown=("D-ABYQ", "B748"))[0]["truth_tail"], "")
+
+
 class MultiLeg(unittest.TestCase):
     """LH569: SSG 21:00 -> LOS 22:25 (1h25), LOS 23:35 -> FRA 06:50 (6h15),
     local clocks (Malabo and Lagos UTC+1, Frankfurt UTC+2)."""

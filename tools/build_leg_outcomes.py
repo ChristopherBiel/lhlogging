@@ -51,7 +51,7 @@ DEFAULT_CSV = TMP / "fis_history.csv"
 # can't drift apart. Re-exported here for tools/reassignment_timing.py.
 sys.path.insert(0, str(ROOT / "flightstatus"))
 from legs import (  # noqa: E402
-    BANDS, BERLIN, WIDEBODY, build_leg)
+    BANDS, BERLIN, WIDEBODY, build_leg, stand_ins)
 
 
 _TS_RE = re.compile(
@@ -182,6 +182,11 @@ def main():
     groups = collections.defaultdict(list)
     for r in rows:
         groups[(r["flight_date"], r["airline"], r["flight_number"])].append(r)
+    # what return legs say about their outbounds, as the collector's leg layer
+    # takes it (legs.stand_ins)
+    for key, looks in stand_ins(rows).items():
+        if key in groups:
+            groups[key].extend(looks)
 
     legs, changes = [], []
     for key in sorted(groups):
