@@ -10,7 +10,11 @@ tail that actually flew.
 Scenarios (one row each in the report):
     pre         nothing published — the history regime (what the planner shows
                 beyond the feed's horizon, ~1-2 weeks out)
-    <H>h        the tail published at lead H — the published/swap regimes
+    <H>h        the tail published at lead H — the published/swap regimes; at
+                the bands the hold rate is measured at, and between them (a
+                second table): a visitor rarely stands on a band, and a model
+                that reads the nearer band's rate there is too sure by 3-17
+                points while scoring fine on the bands (--step-hold)
 
 Baselines per scenario:
     uniform     1/N over the fleet of that type
@@ -51,6 +55,9 @@ WIDEBODY = ("B748", "A388", "B789", "B788", "B78X", "A359", "A35K")
 # publishes that far out beats the history regime ("pre"), i.e. whether
 # BOOK_HORIZON_DAYS can be raised.
 SCENARIOS = ("pre", 216, 192, 168, 144, 120, 96, 72, 48, 24, 12, 6)
+# leads between the bands (booking_model.BANDS_H), three quarters of the way
+# from each band to the next one out — where the nearer band's rate is furthest off
+BETWEEN = (114, 90, 66, 45, 33, 22.5, 16.5, 10.5)
 PRE_LEAD_H = 24 * 10      # "pre": standing 10 days out, nothing published
 TRUTH_LAG = bm.TRUTH_LAG  # a leg's truth lands with the D-1/D-2 truth pass
 EPS = 1e-4
@@ -97,9 +104,17 @@ def main():
                          "the history regime (compares collection schedules on the same legs)")
     ap.add_argument("--no-plan", action="store_true",
                     help="no plan index: no clash checks (the pre-clash model)")
+    ap.add_argument("--step-hold", action="store_true",
+                    help="hold rate of the nearer band, not interpolated between the two "
+                         "(the model until 2026-10-13)")
+    ap.add_argument("--chain", action="store_true",
+                    help="hold rates corrected for which legs were seen that far out "
+                         "(booking_model.HOLD_CHAIN; neutral on 2026-10-16, so off)")
     ap.add_argument("--quiet", action="store_true", help="scores only, no reliability tables")
     args = ap.parse_args()
 
+    bm.HOLD_INTERPOLATE = not args.step_hold
+    bm.HOLD_CHAIN = args.chain
     legs = load(args.csv)
     legs.sort(key=lambda l: l["dep_utc"])
     start = legs[0]["dep_utc"] + timedelta(days=args.warmup_days)
@@ -109,9 +124,11 @@ def main():
     print("legs: %d total, %d scored (%s, departing %s .. %s)"
           % (len(legs), len(evals), ",".join(want), start.date(),
              evals[-1]["dep_utc"].date() if evals else "-"))
-    print("params: history %dw, share knobs %s, hold m=%g, swap mix=%g"
+    print("params: history %dw, share knobs %s, hold m=%g, swap mix=%g, hold rate %s, %s"
           % (args.weeks, "DEFAULTS %s" % bm.DEFAULTS if args.no_fit else "fitted per type",
-             args.hold_m, args.swap_mix))
+             args.hold_m, args.swap_mix,
+             "of the nearer band" if args.step_hold else "interpolated between bands",
+             "bands chained" if args.chain else "each band its own legs"))
 
     stats_cache = {}
     # one plan over every leg: tail_as_of reads it as of each moment, and the
@@ -130,7 +147,7 @@ def main():
     agg = defaultdict(lambda: defaultdict(float))
     rel = defaultdict(lambda: [[0, 0.0, 0] for _ in REL_BINS[:-1]])  # regime -> bins [n, sum_p, hits]
     for leg in evals:
-        for sc in SCENARIOS:
+        for sc in SCENARIOS + BETWEEN:
             lead = PRE_LEAD_H if sc == "pre" else sc
             now = leg["dep_utc"] - timedelta(hours=lead)
             pub = None if sc == "pre" else bm.tail_at(leg["timeline"], leg["first_lead_h"], lead)
@@ -173,7 +190,8 @@ def main():
                 a[name + "_mass"] += sum(dist.values())
 
             for x, r in res.items():
-                regime = r["regime"] + (" (clash)" if r.get("conflict") else "")
+                regime = (r["regime"] + (" (clash)" if r.get("conflict") else "")
+                          + (", between the bands" if sc in BETWEEN else ""))
                 for i in range(len(REL_BINS) - 1):
                     if REL_BINS[i] <= r["p"] < REL_BINS[i + 1]:
                         cell = rel[regime][i]
@@ -182,22 +200,24 @@ def main():
                         cell[2] += x == truth
                         break
 
-    print("\n=== scores by scenario (log-loss / Brier: lower is better) " + "=" * 18)
-    print("%-6s %6s %5s | %-24s | %-24s | %-24s | %-24s"
-          % ("scen", "legs", "used", "model  ll / brier / top1", "uniform", "published-only",
-             "unpublished (same now)"))
-    for sc in SCENARIOS:
-        a = agg.get(sc)
-        if not a:
-            continue
-        n = a["n"]
-        cols = []
-        for name in ("model", "uniform", "published", "unpub"):
-            cols.append("%5.2f / %4.2f / %4.0f%%" % (a[name + "_ll"] / n, a[name + "_brier"] / n,
-                                                     100 * a[name + "_top1"] / n))
-        label = "pre" if sc == "pre" else "%dh" % sc
-        print("%-6s %6d %4.0f%% | %-24s | %-24s | %-24s | %-24s"
-              % ((label, int(n), 100 * a["n_pub_regime"] / n) + tuple(cols)))
+    for title, scenarios in (("scores by scenario (log-loss / Brier: lower is better) ", SCENARIOS),
+                             ("between the bands, where a visitor usually stands ", BETWEEN)):
+        print("\n=== " + title + "=" * (76 - len(title)))
+        print("%-6s %6s %5s | %-24s | %-24s | %-24s | %-24s"
+              % ("scen", "legs", "used", "model  ll / brier / top1", "uniform", "published-only",
+                 "unpublished (same now)"))
+        for sc in scenarios:
+            a = agg.get(sc)
+            if not a:
+                continue
+            n = a["n"]
+            cols = []
+            for name in ("model", "uniform", "published", "unpub"):
+                cols.append("%5.2f / %4.2f / %4.0f%%" % (a[name + "_ll"] / n, a[name + "_brier"] / n,
+                                                         100 * a[name + "_top1"] / n))
+            label = "pre" if sc == "pre" else "%gh" % sc
+            print("%-6s %6d %4.0f%% | %-24s | %-24s | %-24s | %-24s"
+                  % ((label, int(n), 100 * a["n_pub_regime"] / n) + tuple(cols)))
     mass = [agg[sc]["model_mass"] / agg[sc]["n"] for sc in SCENARIOS if agg.get(sc)]
     print("model probability mass per leg (should be ~1): %.3f .. %.3f" % (min(mass), max(mass)))
     print("published tail clashes with its plan: " + ", ".join(
@@ -207,7 +227,8 @@ def main():
     if args.quiet:
         return
     print("\n=== reliability: predicted P(target) vs how often it flew " + "=" * 18)
-    for regime in ("published", "published (clash)", "swap", "swap (clash)", "history"):
+    regimes = ("published", "published (clash)", "swap", "swap (clash)", "history")
+    for regime in regimes + tuple(r + ", between the bands" for r in regimes[:4]):
         bins = rel.get(regime)
         if not bins:
             continue

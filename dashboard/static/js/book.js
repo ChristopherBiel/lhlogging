@@ -210,7 +210,7 @@ function drawResults(){
   const R = $('results'), d = LAST;
   if(d.error){ R.replaceChildren(state('bad', d.error)); return; }
   const all = d.flights || [];
-  if(!all.length){ R.innerHTML = '<p class="empty">No upcoming flights found. The schedule is only published about four days ahead: try again closer to your date, or check the spelling.</p>'; return; }
+  if(!all.length){ R.innerHTML = '<p class="empty">No upcoming flights found. Tails are published four to nine days ahead, depending on the fleet: try again closer to your date, or check the spelling.</p>'; return; }
   const fs = all.filter(passes);
   if(!fs.length){ R.innerHTML = '<p class="empty">All '+all.length+' flights are hidden by the filters: adjust or reset them.</p>'; return; }
   let h = KEY;
@@ -220,7 +220,8 @@ function drawResults(){
     h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'">'
       + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+lead+'</div>'
       + '<div class="route"><div class="pair">'+f.dep+' &rarr; '+f.arr+viaTxt(f.via)+'</div>'
-      + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')+reassigned+'</div></div>'
+      + '<div class="sub">'+f.flight+' &middot; dep '+fmtClock(f.dep_sched)+(f.arr_sched?' &middot; arr '+fmtClock(f.arr_sched):'')
+      + (f.pencilled ? ' &middot; <span class="src src-pencilled">pencilled</span>' : '')+reassigned+'</div></div>'
       + '<div class="tail">'+(WATCH.has(f.reg)?'<span class="star">&#9733;</span>':'')+tlink(f.reg)
       + '<span class="tbadge '+tcls(f.type)+'">'+(f.type||'?')+'</span>'
       + (f.allegris?'<span class="abadge" title="Allegris cabin">ALLEGRIS</span>':'')
@@ -242,7 +243,8 @@ function seatMapLink(sm){
 // a tail anywhere on the page opens its airframe profile (cabin, where it flies)
 function tlink(reg){ return reg ? '<a class="tail-link" href="/airframe/'+encodeURIComponent(reg)+'">'+esc(reg)+'</a>' : '?'; }
 function pctText(p){ const v = p * 100; return v >= 10 ? Math.round(v)+'%' : (v >= 1 ? v.toFixed(1)+'%' : (v > 0 ? '&lt;1%' : '0%')); }
-function srcLabel(s){ return ({published:'published', scheduled:'FIS schedule', projected:'projected'})[s] || s; }
+// pencilled: published, but further out than every fleet is read to — an early plan
+function srcLabel(s){ return ({published:'published', pencilled:'pencilled', scheduled:'FIS schedule', projected:'projected'})[s] || s; }
 function leadTxt(fdate){
   const n = Math.round((new Date(fdate+'T00:00:00Z') - new Date(isoDay(new Date())+'T00:00:00Z')) / 864e5);
   return n === 0 ? 'today' : (n === 1 ? 'tomorrow' : 'in '+n+' days');
@@ -265,9 +267,12 @@ function drawPlan(){
     h += '<div class="tsum-line">Published next: ' + t.published_legs.map(l =>
       '<span class="pleg">'+esc(l.flight)+' '+fmtDay(l.dep_sched)+' '+esc(l.dep)+'&rarr;'+esc(l.arr)+'</span>').join('') + '</div>';
   }
+  // past the day every fleet is read to, a published tail is an early plan
+  const pencil = d.firm && d.horizon > d.firm
+    ? ' Those after '+fmtD(d.firm)+' are pencilled: an early plan, each card says how often such a tail held.' : '';
   h += '<div class="tsum-note">' + (t.fit && t.fit.m >= 1e5
-    ? 'On the '+esc(t.type)+' fleet, which tail flies a given flight can&rsquo;t be told from its history: every flight after '+fmtD(d.horizon)+' shows the same even share. The published tail, up to ~4 days out, is where the odds move &mdash; check back then.'
-    : 'Tails are published up to '+fmtD(d.horizon)+'; after that the list is the timetable of recent weeks, ranked by how often '+esc(t.reg)+' flew each flight.') + '</div></div>';
+    ? 'On the '+esc(t.type)+' fleet, which tail flies a given flight can&rsquo;t be told from its history: every flight without a published tail shows the same even share. Tails are published up to '+fmtD(d.horizon)+', and that is where the odds move.'+pencil
+    : 'Tails are published up to '+fmtD(d.horizon)+'; after that the list is the timetable of recent weeks, ranked by how often '+esc(t.reg)+' flew each flight.'+pencil) + '</div></div>';
   const fs = (d.flights || []).slice();
   if(!fs.length){
     R.innerHTML = h + '<p class="empty">No candidate flights for '+esc(t.reg)+' in these dates'+((d.query.dep || d.query.arr) ? ' on this route' : '')+'.</p>';
@@ -281,7 +286,8 @@ function drawPlan(){
     h += '<div class="fcard" data-num="'+f.number+'" data-fdate="'+f.flight_date+'" data-src="'+f.source+'">'
       + '<div class="when"><b>'+fmtDay(f.dep_sched)+'</b>'+leadTxt(f.flight_date)+'</div>'
       + '<div class="route"><div class="pair">'+esc(f.dep)+' &rarr; '+esc(f.arr)+viaTxt(f.via)+'</div>'
-      + '<div class="sub">'+esc(f.flight)+' &middot; dep '+fmtClock(f.dep_sched)+' &middot; <span class="src src-'+f.source+'">'+srcLabel(f.source)+'</span></div>'
+      + '<div class="sub">'+esc(f.flight)+' &middot; dep '+fmtClock(f.dep_sched)+' &middot; <span class="src src-'+f.source+'">'+srcLabel(f.source)+'</span>'
+      + (f.timetable_change ? ' &middot; <span class="warn">from the timetable before '+fmtD(f.timetable_change)+'</span>' : '')+'</div>'
       + '<div class="why">'+esc(f.why)+'</div>'
       + ((t.cabin && t.cabin.F && f.cabin && !f.cabin.F)
           ? '<div class="why nof">&#9888; No First on this flight &mdash; Lufthansa publishes it without a First cabin (a route without First).</div>' : '')

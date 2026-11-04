@@ -115,9 +115,10 @@ FIS_DOOR_WAIT_MIN=15
 # assignment is worth decides whether the booking planner can use it. The 22:00
 # pulse carries those offsets for the deep tier only (~33 numbers x 5 more
 # dates); nearest offsets go first, so its D+1/D+2 cadence is unchanged. It sits
-# in the quietest gap of the day (next slot 00:10). The dashboard keeps capping
-# upcoming flights at D+4 (BOOK_HORIZON_DAYS) until the probe has been scored
-# (tools/benchmark_booking.py, its 120h..216h rows).
+# in the quietest gap of the day (next slot 00:10). Scored 2026-10-13
+# (tools/benchmark_ranking.py, docs/booking_model.md): the pages now show both
+# fleets' tails as far as this reads them (BOOK_HORIZON_BY_TYPE in
+# dashboard/app.py), marked "pencilled" beyond D+4.
 #
 # Timetable (2026-10-13): what the booking planner lists beyond the days it has
 # read is a projection of the last four weeks, which a change of timetable (the

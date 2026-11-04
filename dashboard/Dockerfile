@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py booking_model.py chassis.py chassis.html fleet_sim.py leg_stats.py monitor_stats.py ./
+COPY app.py booking_model.py chassis.py chassis.html fleet_sim.py leg_stats.py monitor_stats.py warm.py ./
 # Faceplate, vendored (dist/ with its MANIFEST, fonts.css with fonts/), and the
 # project's own stylesheets, glyph, favicon and figure scripts. The CSS and the
 # chassis live in real files so `npx faceplate check` can actually read them --

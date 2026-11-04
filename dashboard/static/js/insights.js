@@ -101,11 +101,14 @@ function trust(D) {
   }, NAME[fl.id] + (fl === me ? ' (this page)' : ''))));
   f.legend.append(key(s => rect(s, 1, 2, 24, 8, 'band'), '95% interval'),
                   key(s => line(s, 1, 6, 25, 6, 'ref'), 'even share of the fleet'));
-  f.note.textContent = 'Panel A: of the ' + name + ' flights of the last ' + D.meta.weeks + ' weeks that had a tail ' +
-    'published at each lead time, the share on which that tail flew. Panel B: the same flights followed from one ' +
-    'lead time to the next — how many more had the right tail, per hour waited. Lead times with fewer than ' + minN +
-    ' flights are left out of the plot (they are in Data). The even share is one over the ' + me.tails +
-    ' tails that flew: what a guess with no information scores.';
+  f.note.textContent = 'Panel A: of the ' + name + ' flights of the last ' + D.meta.weeks + ' weeks, the share on ' +
+    'which the tail published at each lead time flew. The collector has not always looked this far ahead, so where ' +
+    'fewer flights were seen at a lead time than one step nearer, the share is estimated: the flights seen that ' +
+    'early give the step from the next lead time in, all flights the level. Panel B: those steps — the same ' +
+    'flights followed from one lead time to the next, how many more had the right tail, per hour waited. Lead ' +
+    'times with fewer than ' + minN + ' flights are left out of the plot (they are in Data, n being the flights ' +
+    'seen that early). The even share is one over the ' + me.tails + ' tails that flew: what a guess with no ' +
+    'information scores.';
 
   f.draw = (host, W) => {
     if (!fleets.some(fl => shown(fl).length)) { host.append(el('p', 'empty', 'Not enough flights yet.')); return; }

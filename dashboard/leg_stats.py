@@ -18,7 +18,8 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from booking_model import BANDS_H, HISTORY_WEEKS, TRUTH_LAG, arr_utc, itinerary, tail_at
+from booking_model import (BANDS_H, HISTORY_WEEKS, TRUTH_LAG, arr_utc, corrected_rate, itinerary,
+                           tail_at)
 
 BERLIN = ZoneInfo("Europe/Berlin")
 # German hubs: a network line is drawn and labelled hub -> outstation.
@@ -207,14 +208,40 @@ def _published(leg):
 
 def hold_curve(legs):
     """How often the tail published `band` hours out is the one that flew:
-    [{band, k, n, p, lo, hi}], farthest band first. The booking model's
-    ("all", type, band) cells, with their interval."""
+    [{band, k, n, p, lo, hi, own}], farthest band first, for all the legs.
+
+    A band only counts the legs we looked at that far out, and the collector
+    has only looked five days and more out since 2026-09-24: counted as is, the
+    far bands spoke for recent legs, the near ones for all of them, and the
+    A380 curve rose from 4 to 5 days out (57% -> 66%) where the same flights
+    went 72% -> 66%. So `p` is corrected from the nearest band out by how
+    differently the legs seen that far out did one band in
+    (booking_model.corrected_rate), `own` is the band's own legs' rate, `k` and
+    `n` are as counted; the interval is Wilson's at p over n. Where every leg
+    was seen at both bands, p is own."""
     cells = {b: [0, 0] for b in BANDS_H}
+    inside = {b: [0, 0] for b in BANDS_H}  # the band one in, over the legs seen at b
     for l in flown(legs):
-        for b, pub in _published(l).items():
-            cells[b][0] += pub == l["truth_tail"]
+        pub = _published(l)
+        for b, nearer in zip(BANDS_H, BANDS_H[1:] + (None,)):
+            if b not in pub:
+                continue
+            cells[b][0] += pub[b] == l["truth_tail"]
             cells[b][1] += 1
-    return [dict(_rate(k, n), band=b) for b, (k, n) in cells.items() if n]
+            if nearer is not None:  # a look counts at every band inside it
+                inside[b][0] += pub[nearer] == l["truth_tail"]
+                inside[b][1] += 1
+    out, p = [], None
+    for b in reversed(BANDS_H):
+        k, n = cells[b]
+        if not n:
+            p = None
+            continue
+        p = corrected_rate(cells[b], inside[b], p)
+        lo, hi = wilson(p * n, n)
+        out.append({"band": b, "k": k, "n": n, "p": round(p, 4), "own": round(k / n, 4),
+                    "lo": round(lo, 4), "hi": round(hi, 4)})
+    return out[::-1]
 
 
 def settling(legs, min_n=MIN_N):

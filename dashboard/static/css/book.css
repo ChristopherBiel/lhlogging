@@ -139,6 +139,7 @@
   font-family:var(--fp-font-mono); font-weight:var(--fp-heading-h2-weight); font-size:var(--fp-text-sm); color:var(--fp-ctx-ink); }
 .src{ font-family:var(--fp-font-mono); font-size:var(--fp-text-xxs); letter-spacing:var(--fp-track-label); text-transform:uppercase; }
 .src-published{ font-weight:var(--fp-heading-h2-weight); color:var(--fp-ctx-ink); }
+.src-pencilled{ color:var(--fp-ctx-ink); }
 .nopub{ font-family:var(--fp-font-sans); font-weight:var(--fp-label-weight); font-size:var(--fp-text-xs); color:var(--fp-ctx-body); }
 /* the share: how likely the tail holds, or (in a plan) that it is your tail */
 .miniconf{ flex:none; display:flex; flex-direction:column; align-items:flex-end; min-inline-size:4.5rem; }

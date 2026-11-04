@@ -112,9 +112,9 @@ QUERIES = {
         WHERE o.observed_at >= NOW() - INTERVAL '4 days' AND o.run_id IS NOT NULL
         GROUP BY 1, 2, 3""",
     # flights with a tail, per fleet type and flight day; ahead, only a tail
-    # seen in the last 36 hours (every day the pages show is read daily, and
-    # the one look the 787/A350 get further out for the timetable is no plan
-    # to count on)
+    # seen in the last 36 hours (what the pages show, dashboard/app.py _shown:
+    # every day they show is read daily, and the one look the 787/A350 get
+    # further out for the timetable is no plan to count on)
     "known": """
         SELECT flight_date, fleet_type AS type, count(*) AS legs,
                max(latest_observed_at) AS newest
@@ -754,18 +754,19 @@ def use(rows, families, days=USE_DAYS, min_type=4):
 
 # ── the page's payload ─────────────────────────────────────────────────────
 def collector(rows, now, families):
-    """The status and the two collector figures (cheap; refreshed every minute)."""
+    """The status and the two collector figures (refreshed every five minutes)."""
     start = now - timedelta(days=RECORD_DAYS + 1)
     slots, extra = match(rows["runs"], start, now + READS_AHEAD, now)
     rec = record(slots, extra, now)
     cov = coverage(rows["known"], now, families)
     return {"headline": headline(slots, rec, cov, now),
             "collectors": collectors(rows["collectors"], now),
-            "ledger": ledger(rows["ledger"][0] if rows["ledger"] else None, now),
             "reads": reads(slots, rows["lookups"], now, _typical(slots)),
             "coverage": cov, "record": rec}
 
 
 def data(rows, now, families):
-    """The two figures on what was flown (heavier; refreshed every quarter-hour)."""
-    return {"hubs": hubs(rows["hubs"], now), "use": use(rows["use"], families)}
+    """The two figures on what was flown and the totals (heavier: they count
+    every flight and lookup; refreshed every quarter-hour)."""
+    return {"hubs": hubs(rows["hubs"], now), "use": use(rows["use"], families),
+            "ledger": ledger(rows["ledger"][0] if rows["ledger"] else None, now)}

@@ -129,6 +129,23 @@ class Trust(unittest.TestCase):
         for c in ls.hold_curve(legs):
             self.assertEqual(tuple(st.hold[("all", "B748", c["band"])]), (c["k"], c["n"]))
 
+    def test_hold_curve_corrects_for_which_legs_were_seen_that_far_out(self):
+        # the old flights were first looked at 4 days out, wrong until the last
+        # day; the recent ones from 5 days out, 8 in 10 right all along: as
+        # counted, 40% at 96h and 80% at 120h, where nothing changed in between
+        old = [seen(leg(d, "FRA", "HND", "D-ABYA"), (100, "D-ABYB"), (20, "D-ABYA")) for d in range(10)]
+        new = [seen(leg(10 + d, "FRA", "HND", "D-ABYA"), (130, "D-ABYA" if d < 8 else "D-ABYB"),
+                    (20, "D-ABYA")) for d in range(10)]
+        curve = {c["band"]: c for c in ls.hold_curve(old + new)}
+        self.assertEqual((curve[120]["own"], curve[120]["n"], curve[120]["k"]), (0.8, 10, 8))
+        self.assertEqual(curve[120]["p"], 0.4)                  # what all flights did at 96h
+        self.assertEqual(curve[96]["p"], curve[96]["own"])      # every leg there was seen at 72h too
+        self.assertTrue(curve[120]["lo"] < 0.4 < curve[120]["hi"])
+        # corrected, the curve steps by exactly what the same flights gained
+        gains = {(s["far"], s["near"]): s["gain"] for s in ls.settling(old + new, min_n=1)}
+        for (far, near), gain in gains.items():
+            self.assertAlmostEqual(curve[near]["p"] - curve[far]["p"], gain, places=4)
+
     def test_settling_is_the_gain_between_neighbouring_bands_per_hour(self):
         legs = [seen(leg(d, "FRA", "HND", "D-ABYA"), (60, "D-ABYB"), (40, "D-ABYA")) for d in range(4)]
         steps = {(x["far"], x["near"]): x for x in ls.settling(legs, min_n=1)}

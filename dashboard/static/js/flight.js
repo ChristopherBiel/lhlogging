@@ -59,7 +59,9 @@ function render(d, leg){
   if(d.found){
     const dur=isoDur(d.duration);
     h+='<dl class="spec">';
-    h+=row('Aircraft', esc(d.current_reg||'?')+(d.current_type?' · '+esc(d.current_type):'')+(d.allegris?' <span class="fp-chip">Allegris</span>':''));
+    // early: a tail seen far ahead or long ago, which the pages do not count as published
+    h+=row('Aircraft', esc(d.current_reg||'?')+(d.current_type?' · '+esc(d.current_type):'')+(d.allegris?' <span class="fp-chip">Allegris</span>':'')
+      +(d.early?' · seen '+fmtD(d.observed)+', not counted as published':''));
     if(d.seat_map){ const sc=String(d.seat_map.code||'').replace(/[^A-Za-z0-9]/g,'');
       h+=row('Seat map','<a class="tail-link" href="'+esc(d.seat_map.url)+'" target="_blank" rel="noopener">'+(d.seat_map.exact?sc+' on aeroLOPA':'aeroLOPA (Lufthansa)')+' →</a>'); }
     if(d.cabin){

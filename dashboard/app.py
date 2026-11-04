@@ -2,6 +2,7 @@
 LHLogging dashboard: the monitor (start page) and the fleet-catching pages,
 each an HTML shell plus the JSON endpoints it reads.
 """
+import gzip
 import json
 import os
 import random
@@ -23,6 +24,7 @@ import chassis
 import fleet_sim
 import leg_stats
 import monitor_stats
+import warm
 from flask import (
     Flask,
     Response,
@@ -89,55 +91,77 @@ def favicon_svg():
     return send_from_directory(app.static_folder, "favicon.svg", max_age=86400)
 
 
+# A stylesheet or script the chassis links carries ?v=<newest mtime of the
+# page's files> (chassis.page), so its URL changes whenever its content does:
+# the browser may keep it for a year without asking again. Unversioned files
+# keep their own headers.
+@app.after_request
+def _cache_versioned(resp):
+    if (request.args.get("v") and request.path.startswith(("/static/", "/faceplate/"))
+            and resp.status_code in (200, 304)):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# JSON and pages go out gzipped: the Schedule's 246 KB is 23 KB so, for about
+# 2 ms of packing. Static files pass through as they are; they are cached.
+_GZIP_TYPES = {"application/json", "text/html"}
+
+
+@app.after_request
+def _gzip(resp):
+    if (resp.mimetype not in _GZIP_TYPES or resp.status_code != 200
+            or resp.direct_passthrough or "Content-Encoding" in resp.headers):
+        return resp
+    resp.vary.add("Accept-Encoding")
+    body = resp.get_data()
+    if request.accept_encodings["gzip"] and len(body) >= 1024:
+        resp.set_data(gzip.compress(body, 6))
+        resp.headers["Content-Encoding"] = "gzip"
+    return resp
+
+
 # ── Monitor (the start page) ────────────────────────────────────────
 # How the site runs (which collector runs read what, and what that leaves
 # known) and the big picture of what it has logged. monitor_stats.py owns the
 # queries and everything computed from their rows; this only runs them, in two
-# parts with their own cache: the collector's side is cheap and moves with
-# every run, the flown-data side scans eight weeks of flights.
+# parts kept warm (warm.py): the status moves with every collector run (1.3 s
+# a build, every five minutes), the figures and totals scan weeks of flights
+# and every lookup (1.5 s, every quarter-hour).
+def _mon_build(names, build):
+    def run(conn):
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            rows = {}
+            for name in names:
+                cur.execute(monitor_stats.QUERIES[name])
+                rows[name] = cur.fetchall()
+        return build(rows, datetime.now(timezone.utc))
+    return run
+
+
 _MON_PARTS = {
-    "collector": (60, ("runs", "lookups", "known", "collectors", "ledger"),
-                  lambda rows, now: monitor_stats.collector(rows, now, _INSIGHT_FAMILIES)),
-    "data": (900, ("hubs", "use"),
-             lambda rows, now: monitor_stats.data(rows, now, _INSIGHT_FAMILIES)),
+    "collector": warm.Payload(300, _mon_build(
+        ("runs", "lookups", "known", "collectors"),
+        lambda rows, now: monitor_stats.collector(rows, now, _INSIGHT_FAMILIES)), _db),
+    "data": warm.Payload(900, _mon_build(
+        ("hubs", "use", "ledger"),
+        lambda rows, now: monitor_stats.data(rows, now, _INSIGHT_FAMILIES)), _db),
 }
-_mon_cache = {}
-
-
-def _mon_part(part):
-    ttl, names, build = _MON_PARTS[part]
-    ts, data = _mon_cache.get(part, (0.0, None))
-    if data is not None and time.time() - ts < ttl:
-        return data
-    try:
-        conn = _db()
-        try:
-            with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-                rows = {}
-                for name in names:
-                    cur.execute(monitor_stats.QUERIES[name])
-                    rows[name] = cur.fetchall()
-        finally:
-            conn.close()
-        data = build(rows, datetime.now(timezone.utc))
-    except Exception:
-        if data is None:
-            raise
-        return data  # stale beats a blank page
-    _mon_cache[part] = (time.time(), data)
-    return data
 
 
 @app.route("/api/monitor")
 def api_monitor():
     """The start page's payload. A part that cannot be built is named under
-    `errors` and left out, so one failing query costs a figure, not the page."""
-    out = {"generated": datetime.now(timezone.utc).isoformat()}
-    for part in _MON_PARTS:
+    `errors` and left out, so one failing query costs a figure, not the page.
+    `generated` is when the status was built: the stamp stands beside it."""
+    out = {}
+    for name, part in _MON_PARTS.items():
         try:
-            out.update(_mon_part(part))
+            out.update(part.get())
         except Exception as e:
-            out.setdefault("errors", {})[part] = str(e)
+            out.setdefault("errors", {})[name] = str(e)
+    built = next((p.ts for p in _MON_PARTS.values() if p.data is not None), time.time())
+    out["generated"] = datetime.fromtimestamp(built, timezone.utc).isoformat()
     return jsonify(out), (503 if len(out.get("errors", {})) == len(_MON_PARTS) else 200)
 
 
@@ -1146,12 +1170,55 @@ _CANON_SHORT = {"B748": "748", "A388": "388", "B788": "788", "B789": "789",
 # FIS_SEED_TYPES, incl. the not-yet-delivered variants (B788/B78X/A35K) so they
 # appear the day the collector first sees one.
 _SCHEDULE_TYPES = ("B748", "A388", "B788", "B789", "B78X", "A359", "A35K")
-# Furthest flight date (days from today) the upcoming-flight pages show. FIS
-# publishes tails out to D+9 and the 22:00 pulse now probes D+5..D+9 for the
-# deep tier, but until that probe is scored (tools/benchmark_booking.py, the
-# 120h..216h rows) the pages stay on the horizon every tier is swept at — so
-# the probe changes no page.
+# Furthest flight date (days from today) the upcoming-flight pages show a
+# published tail for: BOOK_HORIZON_DAYS, the day every tier is read to, unless
+# BOOK_HORIZON_BY_TYPE names the fleet. FIS publishes tails out to D+9 and the
+# 22:00 pulse probes D+5..D+9 for the 747-8 and A380. Scored 2026-10-13
+# (tools/benchmark_ranking.py, docs/booking_model.md): with the tail published
+# there, the flight ranked first for a tail in D+5..D+9 is one it flies 65% of
+# the time against 27% without (A380), 25% against 9% (747-8) — so those two
+# are shown as far as they are read, and a tail beyond BOOK_HORIZON_DAYS is
+# labelled "pencilled". The Schedule's gantt keeps BOOK_HORIZON_DAYS for every
+# fleet: nine days on its axis would halve its scale.
 BOOK_HORIZON_DAYS = int(os.environ.get("BOOK_HORIZON_DAYS", "4"))
+
+
+def _horizons(spec):
+    """'B748=9,A388=9' -> {'B748': 9, 'A388': 9}; what does not parse is left out."""
+    out = {}
+    for part in (spec or "").split(","):
+        ftype, _, days = part.partition("=")
+        if ftype.strip() and days.strip().isdigit():
+            out[ftype.strip().upper()] = int(days)
+    return out
+
+
+BOOK_HORIZON_BY_TYPE = _horizons(os.environ.get("BOOK_HORIZON_BY_TYPE", "B748=9,A388=9"))
+_HORIZON_MAX_DAYS = max([BOOK_HORIZON_DAYS, *BOOK_HORIZON_BY_TYPE.values()])
+
+
+def _horizon_days(ftype):
+    return BOOK_HORIZON_BY_TYPE.get(ftype, BOOK_HORIZON_DAYS)
+
+
+# A look older than this is no publication any more. Every day a page shows is
+# read at least once a day, so an older look means its reader failed — and a
+# stale tail is a much worse bet than its lead says (an A380 five days out:
+# 83% held when the look was under 6 hours old, 47% past 18). It also keeps
+# the one look the 787/A350 get at D+5..D+8 for the timetable
+# (flightstatus: FIS_TIMETABLE_OFFSETS) from standing in for the far pass at
+# D+4 on a day that pass fails.
+_LOOK_MAX_AGE = timedelta(hours=36)
+
+
+def _shown(leg, today=None):
+    """Whether the pages show the tail published on `leg`: its flight day lies
+    within its fleet's horizon and the look behind it is recent."""
+    seen = leg.get("latest_observed_at")
+    return (leg["flight_date"] <= (today or date.today()) + timedelta(days=_horizon_days(leg["fleet_type"]))
+            and seen is not None and datetime.now(timezone.utc) - seen <= _LOOK_MAX_AGE)
+
+
 # German hub airports (all share the Frankfurt timezone) used to anchor each
 # leg onto a single Frankfurt-local clock.
 _DE_HUBS = {"FRA", "MUC", "DUS", "BER", "HAM", "STR", "CGN", "NUE", "LEJ", "TXL"}
@@ -1335,28 +1402,23 @@ def _stab_rates2(bucket):
 # counts as Allegris if any recent observation says so: retrofits only ever
 # add the cabin, and the rare one-off false (a glitchy short-haul leg) is
 # ignored. Derived at read time from raw — no migration, and it backfills
-# from the start of collection. TTL cache keeps the per-request cost flat.
-_ALLEGRIS_TTL_S = 600
-_allegris_cache = {"ts": 0.0, "tails": frozenset()}
+# from the start of collection. Kept warm (warm.py), rebuilt hourly: a cabin
+# changes with a retrofit, not by the minute.
+_ALLEGRIS = warm.Payload(3600, lambda conn: frozenset(r[0] for r in _q(conn, """
+    SELECT DISTINCT btrim(registration)
+    FROM flight_status_observations
+    WHERE found AND registration IS NOT NULL
+      AND (raw->'aircraftInfo'->>'allegris')::boolean
+      AND observed_at >= NOW() - INTERVAL '45 days'
+""")), _db)
 
 
 def _allegris_tails(conn):
     """Registrations whose cabin is Allegris per recent FIS payloads."""
-    nowts = datetime.now(timezone.utc).timestamp()
-    if nowts - _allegris_cache["ts"] < _ALLEGRIS_TTL_S:
-        return _allegris_cache["tails"]
     try:
-        rows = _q(conn, """
-            SELECT DISTINCT btrim(registration)
-            FROM flight_status_observations
-            WHERE found AND registration IS NOT NULL
-              AND (raw->'aircraftInfo'->>'allegris')::boolean
-              AND observed_at >= NOW() - INTERVAL '45 days'
-        """)
+        return _ALLEGRIS.get(conn)
     except Exception:
-        return _allegris_cache["tails"]  # stale beats a 500 mid-request
-    _allegris_cache.update(ts=nowts, tails=frozenset(r[0] for r in rows))
-    return _allegris_cache["tails"]
+        return frozenset()  # an unmarked cabin beats a 500 mid-request
 
 
 # ── Cabin configuration ────────────────────────────────────────────────
@@ -1367,8 +1429,6 @@ def _allegris_tails(conn):
 # physical cabin is therefore the layout it is most often published with; a
 # flight's own layout lives on its leg (fis_legs.seat_config, migration 012).
 _SEAT_RE = re.compile(r"([FCEM])(\d+)")
-_CABIN_TTL_S = 600
-_cabin_cache = {"ts": 0.0, "map": {}, "sub": {}}
 
 
 def _parse_seat_config(s):
@@ -1377,46 +1437,48 @@ def _parse_seat_config(s):
     return cabins or None
 
 
-def _refresh_cabins(conn):
+def _build_cabins(conn):
     """A tail's physical cabin and sub-fleet code: the (seatConfig,
     aircraftSubType) pair it is most often published with over the last 45
     days (latest breaks ties, so a refit takes over as it becomes the
     majority). Taking the pair keeps the two consistent — a far-out plan can
     briefly carry another type's equipment fields (D-ABTK, a 747-400, showed
     74H/C88 for LH422 on 2026-09-21)."""
-    nowts = datetime.now(timezone.utc).timestamp()
-    if nowts - _cabin_cache["ts"] < _CABIN_TTL_S:
-        return
+    rows = _q(conn, """
+        SELECT DISTINCT ON (reg) reg, seat, sub FROM (
+            SELECT btrim(registration) AS reg, raw->'aircraftInfo'->>'seatConfig' AS seat,
+                   raw->'aircraftInfo'->>'aircraftSubType' AS sub,
+                   count(*) AS n, max(observed_at) AS last
+            FROM flight_status_observations
+            WHERE found AND registration IS NOT NULL
+              AND raw->'aircraftInfo'->>'seatConfig' IS NOT NULL
+              AND observed_at >= NOW() - INTERVAL '45 days'
+            GROUP BY 1, 2, 3
+        ) x
+        ORDER BY reg, n DESC, last DESC
+    """)
+    return {"map": {r[0]: r[1] for r in rows}, "sub": {r[0]: r[2] for r in rows if r[2]}}
+
+
+# kept warm like the Allegris tails, rebuilt hourly
+_CABINS = warm.Payload(3600, _build_cabins, _db)
+
+
+def _cabins(conn):
     try:
-        rows = _q(conn, """
-            SELECT DISTINCT ON (reg) reg, seat, sub FROM (
-                SELECT btrim(registration) AS reg, raw->'aircraftInfo'->>'seatConfig' AS seat,
-                       raw->'aircraftInfo'->>'aircraftSubType' AS sub,
-                       count(*) AS n, max(observed_at) AS last
-                FROM flight_status_observations
-                WHERE found AND registration IS NOT NULL
-                  AND raw->'aircraftInfo'->>'seatConfig' IS NOT NULL
-                  AND observed_at >= NOW() - INTERVAL '45 days'
-                GROUP BY 1, 2, 3
-            ) x
-            ORDER BY reg, n DESC, last DESC
-        """)
+        return _CABINS.get(conn)
     except Exception:
-        return  # stale beats a 500 mid-request
-    _cabin_cache.update(ts=nowts, map={r[0]: r[1] for r in rows},
-                        sub={r[0]: r[2] for r in rows if r[2]})
+        return {"map": {}, "sub": {}}  # an unknown cabin beats a 500 mid-request
 
 
 def _cabin_configs(conn):
     """Registration -> its physical cabin (seatConfig string)."""
-    _refresh_cabins(conn)
-    return _cabin_cache["map"]
+    return _cabins(conn)["map"]
 
 
 def _tail_subtypes(conn):
     """Registration -> its physical sub-fleet code (FIS aircraftSubType)."""
-    _refresh_cabins(conn)
-    return _cabin_cache["sub"]
+    return _cabins(conn)["sub"]
 
 
 # ── Seat maps (aeroLOPA, link only) ────────────────────────────────────
@@ -1566,7 +1628,8 @@ def _latest_assignments(conn, *, reg=None, dep=None, arr=None,
 # applied: /book then keeps the day-lead stability chip above.
 _MODEL_TTL_S = 600
 _MODEL_HISTORY_DAYS = booking_model.HISTORY_WEEKS * 7 + booking_model.VALIDATION_DAYS + 3
-_model_cache = {"ts": 0.0, "stats": None, "legs": None, "sims": {}}
+_model_cache = {"ts": 0.0, "stats": None, "legs": None, "sims": {}, "ahead": [], "absent": set()}
+_model_lock = threading.Lock()
 # Planner date range: default and cap, in days from today.
 PLAN_DEFAULT_DAYS = 14
 PLAN_MAX_DAYS = 21
@@ -1615,11 +1678,41 @@ def _leg_from_row(r):
 
 
 def _published(leg):
-    """The tail on the flight right now: the newest look's, unless that look
-    was taken after departure (then the flight has flown, nothing to predict)."""
-    if not leg["latest_tail"] or leg["dep_utc"] is None or leg["latest_observed_at"] is None:
+    """The tail on the flight right now, as the pages show it: the newest
+    look's, unless that look was taken after departure (then the flight has
+    flown, nothing to predict) or the flight lies beyond its fleet's horizon."""
+    if (not leg["latest_tail"] or leg["dep_utc"] is None or leg["latest_observed_at"] is None
+            or not _shown(leg)):
         return None
     return leg["latest_tail"] if leg["latest_observed_at"] < leg["dep_utc"] else None
+
+
+# A lookup the feed answered with "no such flight" stores its (empty) answer in
+# `raw`; a blocked one stores nothing (fetch_flightstatus.parse_flight, since
+# 2026-10-13 — older rows cannot tell the two apart and are left out). Nine
+# days out the feed's window has not reached the late departures yet (14% of
+# day-9 lookups came back empty for flights that were there the next day), so
+# only an answer given within eight days counts.
+_ABSENT_SQL = """
+    SELECT flight_date, flight_number FROM (
+        SELECT DISTINCT ON (flight_date, flight_number) flight_date, flight_number, found
+        FROM flight_status_observations
+        WHERE airline = 'LH' AND flight_date >= CURRENT_DATE AND flight_date <= CURRENT_DATE + %s
+          AND (found OR (raw IS NOT NULL AND flight_date <= observed_date + 8))
+        ORDER BY flight_date, flight_number, observed_at DESC
+    ) latest
+    WHERE NOT found
+"""
+
+
+def _absent_flights(conn):
+    """{(flight_date, flight_number)} the feed's latest answer has no flight
+    for, among the days ahead. Empty on any error: the projection then simply
+    keeps what it would have shown."""
+    try:
+        return {(r[0], r[1]) for r in _q(conn, _ABSENT_SQL, (_PLAN_AHEAD_DAYS,))}
+    except Exception:
+        return set()
 
 
 def _build_model(conn):
@@ -1633,27 +1726,33 @@ def _build_model(conn):
     legs = [_leg_from_row(r) for r in rows]
     ahead = _upcoming_legs(conn, date_from=date.today(),
                            date_to=date.today() + timedelta(days=_PLAN_AHEAD_DAYS), types=None)
+    absent = _absent_flights(conn)
     now = datetime.now(timezone.utc)
     stats = booking_model.build_stats(legs, now, plan=booking_model.PlanIndex(legs + ahead))
-    _model_cache.update(ts=now.timestamp(), stats=stats, legs=legs,
-                        sims=_simulate_fleets(stats, legs, ahead, now))
+    _model_cache.update(ts=now.timestamp(), stats=stats, legs=legs, ahead=ahead, absent=absent,
+                        sims=_simulate_fleets(stats, legs, ahead, now, absent))
     return True
 
 
-def _simulate_fleets(stats, hist, ahead, now):
+def _simulate_fleets(stats, hist, ahead, now, absent=()):
     """fleet_sim results per fleet type it is enabled for (fleet_sim.SIM_TYPES,
     the fleets whose walk-forward it beat). The schedule: what FIS lists, plus
     the timetable projection for flights it does not list yet (the 787/A350
-    tier is only looked up to D+3). A failure leaves that fleet on p_target."""
+    tier is only looked up to D+4). A tail published beyond its fleet's
+    horizon is withheld here as on the pages, or the simulation would move a
+    number whose card says "not published yet". A failure leaves that fleet
+    on p_target."""
     have = {(l["flight_date"], l["flight_number"]) for l in ahead}
+    listed = [l if _shown(l) else booking_model.unpublished(l) for l in ahead]
     dates = [now.date() + timedelta(days=i) for i in range(fleet_sim.HORIZON.days + 2)]
     conn_hist = fleet_sim.connections(hist, now)
     sims = {}
     for ftype in fleet_sim.SIM_TYPES:
-        projected = [l for l in booking_model.project_schedule(hist, dates, now, ftype=ftype)
+        projected = [l for l in booking_model.project_schedule(hist, dates, now, ftype=ftype,
+                                                               ahead=ahead, absent=absent)
                      if (l["flight_date"], l["flight_number"]) not in have]
         try:
-            sims[ftype] = fleet_sim.simulate(stats, ahead + projected, now, ftype,
+            sims[ftype] = fleet_sim.simulate(stats, listed + projected, now, ftype,
                                              fleet_sim.HORIZON, conn=conn_hist)
         except Exception:
             pass
@@ -1673,15 +1772,21 @@ def _p_target(stats, target, leg, published=None, now=None):
 
 def _booking_model(conn):
     """(stats, history legs) for the booking model; (None, None) while fis_legs
-    is absent. Normally served from the cache the warmer below keeps fresh."""
-    nowts = datetime.now(timezone.utc).timestamp()
-    if _model_cache["stats"] is not None and nowts - _model_cache["ts"] < _MODEL_TTL_S:
+    is absent. Normally served from the cache the warmer below keeps fresh;
+    callers that find it cold together wait for one fit (_model_lock)."""
+    def fresh():
+        nowts = datetime.now(timezone.utc).timestamp()
+        return _model_cache["stats"] is not None and nowts - _model_cache["ts"] < _MODEL_TTL_S
+    if fresh():
         return _model_cache["stats"], _model_cache["legs"]
-    try:
-        if not _build_model(conn):
-            return None, None
-    except Exception:
-        pass  # stale beats a 500
+    with _model_lock:
+        if fresh():
+            return _model_cache["stats"], _model_cache["legs"]
+        try:
+            if not _build_model(conn):
+                return None, None
+        except Exception:
+            pass  # stale beats a 500
     return _model_cache["stats"], _model_cache["legs"]
 
 
@@ -1692,7 +1797,8 @@ def _model_warmer():
         try:
             conn = _db()
             try:
-                _build_model(conn)
+                with _model_lock:
+                    _build_model(conn)
             finally:
                 conn.close()
         except Exception:
@@ -1707,11 +1813,12 @@ if os.environ.get("BOOK_MODEL_WARMER", "1") == "1":
 def _upcoming_legs(conn, *, reg=None, dep=None, arr=None, date_from=None, date_to=None,
                    types=_SCHEDULE_TYPES):
     """fis_legs counterpart of _latest_assignments: upcoming flights (today ..
-    BOOK_HORIZON_DAYS, or the given dates) as leg dicts, optionally only those
-    a tail is currently published on (`reg`) or a route (dep/arr: IATA lists)."""
+    each fleet's horizon, or the given dates) as leg dicts, optionally only
+    those a tail is currently published on (`reg`) or a route (dep/arr: IATA
+    lists)."""
     where = ["flight_date >= %s", "flight_date <= %s", "dep_sched_local IS NOT NULL"]
     today = date.today()
-    params = [date_from or today, date_to or today + timedelta(days=BOOK_HORIZON_DAYS)]
+    params = [date_from or today, date_to or today + timedelta(days=_HORIZON_MAX_DAYS)]
     if types:
         where.append("fleet_type = ANY(%s)"); params.append(list(types))
     if reg:
@@ -1726,6 +1833,8 @@ def _upcoming_legs(conn, *, reg=None, dep=None, arr=None, date_from=None, date_t
         where.append("(" + stop + "arr_iata = ANY(%s))"); params.append(list(arr))
     rows = _q(conn, sql + " WHERE " + " AND ".join(where) + " ORDER BY dep_utc", params)
     legs = [_leg_from_row(r) for r in rows]
+    if date_to is None:
+        legs = [l for l in legs if _shown(l, today)]
     if dep or arr:
         legs = [l for l in legs if booking_model.serves(l, dep, arr)]
     return legs
@@ -1747,8 +1856,7 @@ def _target_view(res):
             "hold": res["hold"], "hold_n": res["hold_n"], "band": res["band"]}
 
 
-@app.route("/api/schedule")
-def api_schedule():
+def _build_schedule(conn):
     """Per-airframe upcoming schedule from the latest FIS snapshot of each
     (flight_date, flight_number), grouped by tail for a Gantt timeline.
 
@@ -1757,52 +1865,44 @@ def api_schedule():
     anchored to its German-hub endpoint and sized by true flight duration, so
     both east- and westbound legs show their real length (no tz compression).
     """
-    try:
-        conn = _db()
-    except Exception as e:
-        return jsonify({"error": str(e)}), 503
-
     today = date.today()
     now_fake = datetime.now(_BERLIN).replace(tzinfo=timezone.utc)  # Berlin wall as fake-UTC
     win_start = now_fake - timedelta(hours=24)  # rolling last 24h of history
-    try:
-        rows = _q(conn, """
-            SELECT DISTINCT ON (o.flight_date, o.flight_number)
-                o.flight_date, o.airline, o.flight_number, o.registration,
-                a.aircraft_type, a.icao24, o.seed_type, o.dep_airport_iata, o.arr_airport_iata,
-                o.dep_scheduled, o.arr_scheduled, o.overall_status,
-                o.prev_airline, o.prev_flight_number,
-                o.raw->'legs'->0->>'flightDuration', """ + _SEGMENTS_SQL + """
-            FROM flight_status_observations o
-            JOIN aircraft a ON a.registration = o.registration
-            WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
-              AND o.flight_date >= CURRENT_DATE - 1
-              AND o.flight_date <= CURRENT_DATE + %s
-              AND a.aircraft_type = ANY(%s)
-            ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
-        """, (BOOK_HORIZON_DAYS, list(_SCHEDULE_TYPES)))
-        swap_rows = _q(conn, """
-            SELECT flight_date, flight_number
-            FROM flight_status_observations
-            WHERE found AND registration IS NOT NULL AND flight_date >= CURRENT_DATE - 1
-            GROUP BY flight_date, flight_number
-            HAVING COUNT(DISTINCT registration) > 1
-        """)
-        # Actual flights (ADS-B) for the shown fleet over the recent past.
-        act_rows = _q(conn, """
-            SELECT a.registration, f.callsign, f.departure_airport_icao,
-                   f.arrival_airport_icao, f.first_seen, f.last_seen
-            FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
-            WHERE a.aircraft_type = ANY(%s)
-              AND f.first_seen >= NOW() - INTERVAL '40 hours'
-              AND f.departure_airport_icao IS NOT NULL
-            ORDER BY a.registration, f.first_seen
-        """, (list(_SCHEDULE_TYPES),))
-        endpoints = _route_endpoints(conn)
-        alleg = _allegris_tails(conn)
-        cabins = _cabin_configs(conn)
-    finally:
-        conn.close()
+    rows = _q(conn, """
+        SELECT DISTINCT ON (o.flight_date, o.flight_number)
+            o.flight_date, o.airline, o.flight_number, o.registration,
+            a.aircraft_type, a.icao24, o.seed_type, o.dep_airport_iata, o.arr_airport_iata,
+            o.dep_scheduled, o.arr_scheduled, o.overall_status,
+            o.prev_airline, o.prev_flight_number,
+            o.raw->'legs'->0->>'flightDuration', """ + _SEGMENTS_SQL + """
+        FROM flight_status_observations o
+        JOIN aircraft a ON a.registration = o.registration
+        WHERE o.found AND o.registration IS NOT NULL AND o.dep_scheduled IS NOT NULL
+          AND o.flight_date >= CURRENT_DATE - 1
+          AND o.flight_date <= CURRENT_DATE + %s
+          AND a.aircraft_type = ANY(%s)
+        ORDER BY o.flight_date, o.flight_number, o.observed_at DESC
+    """, (BOOK_HORIZON_DAYS, list(_SCHEDULE_TYPES)))
+    swap_rows = _q(conn, """
+        SELECT flight_date, flight_number
+        FROM flight_status_observations
+        WHERE found AND registration IS NOT NULL AND flight_date >= CURRENT_DATE - 1
+        GROUP BY flight_date, flight_number
+        HAVING COUNT(DISTINCT registration) > 1
+    """)
+    # Actual flights (ADS-B) for the shown fleet over the recent past.
+    act_rows = _q(conn, """
+        SELECT a.registration, f.callsign, f.departure_airport_icao,
+               f.arrival_airport_icao, f.first_seen, f.last_seen
+        FROM flights f JOIN aircraft a ON a.icao24 = f.icao24
+        WHERE a.aircraft_type = ANY(%s)
+          AND f.first_seen >= NOW() - INTERVAL '40 hours'
+          AND f.departure_airport_icao IS NOT NULL
+        ORDER BY a.registration, f.first_seen
+    """, (list(_SCHEDULE_TYPES),))
+    endpoints = _route_endpoints(conn)
+    alleg = _allegris_tails(conn)
+    cabins = _cabin_configs(conn)
 
     swapped = {(r[0], r[1]) for r in swap_rows}
 
@@ -1908,8 +2008,8 @@ def api_schedule():
             })
 
     if not starts:
-        return jsonify({"airframes": [], "window": None, "now": now_fake.isoformat(),
-                        "generated": datetime.now(timezone.utc).isoformat()})
+        return {"airframes": [], "window": None, "now": now_fake.isoformat(),
+                "generated": datetime.now(timezone.utc).isoformat()}
 
     # win_start is now-24h (set above); window runs through the last planned arrival.
     win_end = max(ends).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
@@ -1923,13 +2023,28 @@ def api_schedule():
     ]
     # the visitor's own tails (browser storage) are pinned client-side
     airframes.sort(key=lambda a: (type_order.get(a["type"], 9), a["reg"]))
-    return jsonify({
+    return {
         "airframes": airframes,
         "window": {"start": win_start.isoformat(), "end": win_end.isoformat()},
         "now": now_fake.isoformat(),
         "generated": datetime.now(timezone.utc).isoformat(),
         "swaps": len(swapped),
-    })
+    }
+
+
+# Kept warm (warm.py), rebuilt every five minutes: the ADS-B flights behind the
+# past land every half hour (flight_detector at :15 and :45), the plan with the
+# collector's runs. The NOW line is the build's, so at most five minutes behind.
+_SCHEDULE_DATA = warm.Payload(300, _build_schedule, _db)
+
+
+@app.route("/api/schedule")
+def api_schedule():
+    """The Schedule page's Gantt (_build_schedule), from the kept copy."""
+    try:
+        return jsonify(_SCHEDULE_DATA.get())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
 
 
 @app.route("/api/schedule/flight/<airline>/<number>/<fdate>")
@@ -1999,10 +2114,15 @@ def api_schedule_flight(airline, number, fdate):
         (reg, at, dep, arr, dep_t, arr_t, st, pa, pn, pd, raw, obs_d) = latest[0]
         raw = raw or {}
         _lead = (fdate_d - date.today()).days
+        early = False
         if mleg is not None:
             pub = _published(mleg)
             _hold = (_hold_chip(_p_target(stats, pub, mleg, published=pub))
                      if pub else None)
+            # a tail the pages do not count as published: beyond its fleet's
+            # horizon, or seen too long ago — the dialog says so, as the card did
+            early = bool(reg) and pub is None and (
+                mleg["dep_utc"] is not None and mleg["dep_utc"] > datetime.now(timezone.utc))
         else:
             _hold = (_hold_probability(stab, _lead, f"{dep or '?'}-{arr or '?'}",
                                        _CANON_SHORT.get(at, at)) if _lead >= 0 else None)
@@ -2042,7 +2162,7 @@ def api_schedule_flight(airline, number, fdate):
             "codeshares": [c for c in cs if c],
             "prev": f"{pa}{pn}" if pn else None,
             "prev_date": pd.isoformat() if pd else None,
-            "observed": obs_d.isoformat(),
+            "observed": obs_d.isoformat(), "early": early,
             "lead": _lead, "hold": _hold,
         })
     return jsonify(out)
@@ -2127,7 +2247,8 @@ def api_book():
             "allegris": (r_reg or "").strip() in alleg,
             "cabin": _parse_seat_config(sold or cabins.get((r_reg or "").strip())),
             "cabin_sold": bool(sold),
-            "lead": lead, "status": status,
+            # published further out than every fleet is read to: an early plan
+            "lead": lead, "pencilled": lead > BOOK_HORIZON_DAYS, "status": status,
             "reassigned": (fdate, fnum) in swapped,
             "hold": hold, "target": tview,
         })
@@ -2145,9 +2266,11 @@ def api_book():
 def api_book_plan():
     """The booking planner: for one target tail, every candidate flight in a
     date range — optionally one route (dep/arr: comma-separated IATA lists) —
-    with P(target operates it), ranked. Inside the published window the
-    candidates are the flights FIS lists (with the tail published now); beyond
-    it, the timetable projected from recent weeks (booking_model.project_schedule).
+    with P(target operates it), ranked. The candidates are the flights FIS
+    lists, with the tail published now as far as that fleet's horizon reaches
+    (`published`, or `pencilled` beyond the day every fleet is read to), and
+    beyond what FIS lists the timetable projected from recent weeks and from
+    what it lists (booking_model.project_schedule).
     ?target=D-ABYN [&dep=FRA&arr=EZE] [&from=YYYY-MM-DD&to=YYYY-MM-DD]"""
     target = (request.args.get("target") or "").strip().upper() or None
     if not target:
@@ -2178,12 +2301,14 @@ def api_book_plan():
                   "ORDER BY is_active DESC LIMIT 1", (target,))
         if not ttype:
             return jsonify({"error": f"unknown tail {target}"}), 404
-        horizon = today + timedelta(days=BOOK_HORIZON_DAYS)
-        # every row FIS has in the range: inside the horizon they carry the
-        # published tail, beyond it (horizon probe) only confirm the timetable
+        horizon = today + timedelta(days=_horizon_days(ttype))
+        firm = today + timedelta(days=BOOK_HORIZON_DAYS)
+        # every row FIS has in the range: inside its fleet's horizon a row
+        # carries the published tail, beyond it it only confirms the timetable
         listed = _upcoming_legs(conn, dep=dep, arr=arr, date_from=d_from, date_to=d_to,
                                 types=None)
-        own = _upcoming_legs(conn, reg=target, date_from=today, date_to=horizon, types=None)
+        own = [l for l in _upcoming_legs(conn, reg=target, date_from=today, date_to=horizon,
+                                         types=None) if _published(l) == target]
         alleg = _allegris_tails(conn)
         cabins = _cabin_configs(conn)
         subs = _tail_subtypes(conn)
@@ -2193,15 +2318,20 @@ def api_book_plan():
     now = datetime.now(timezone.utc)
     cands, have = [], set()
     for leg in listed:
-        inside = leg["flight_date"] <= horizon
-        pub = _published(leg) if inside else None
+        pub = _published(leg)
         if leg["fleet_type"] != ttype and pub != target:
             continue  # another fleet: the target flies it only as a rare substitution
-        cands.append((leg, pub, "published" if pub else "scheduled"))
+        cands.append((leg, pub, "scheduled" if not pub else
+                      "published" if leg["flight_date"] <= firm else "pencilled"))
         have.add((leg["flight_date"], leg["flight_number"]))
+    # From the last day every fleet is read to, whatever FIS does not list is
+    # projected. That day included: the 787/A350 get it from the far pass at
+    # noon, and until then it would be missing from their plans every morning.
     dates = [d_from + timedelta(days=i) for i in range((d_to - d_from).days + 1)]
-    for leg in booking_model.project_schedule(hist, [d for d in dates if d > horizon], now,
-                                              ftype=ttype, deps=dep, arrs=arr):
+    for leg in booking_model.project_schedule(hist, [d for d in dates if d >= firm], now,
+                                              ftype=ttype, deps=dep, arrs=arr,
+                                              ahead=_model_cache["ahead"],
+                                              absent=_model_cache["absent"]):
         if (leg["flight_date"], leg["flight_number"]) not in have:
             cands.append((leg, None, "projected"))
 
@@ -2218,6 +2348,10 @@ def api_book_plan():
             "arr_sched": leg["arr_local"].isoformat() if leg["arr_local"] else None,
             "type": _CANON_SHORT.get(leg["fleet_type"], leg["fleet_type"]),
             "source": source, "published": pub,
+            # a projection across a change of timetable, with nothing of the
+            # new one to go on yet: the day that timetable starts
+            "timetable_change": (leg["timetable_change"].isoformat()
+                                 if leg.get("timetable_change") else None),
             "published_allegris": bool(pub) and pub in alleg,
             "published_cabin": _parse_seat_config(cabins.get(pub)) if pub else None,
             # what this flight is sold with — for a projection, the layout it
@@ -2244,7 +2378,8 @@ def api_book_plan():
                                for l in own],
         },
         "query": {"dep": dep, "arr": arr, "from": d_from.isoformat(), "to": d_to.isoformat()},
-        "horizon": horizon.isoformat(),
+        # tails are shown to `horizon` for this fleet; past `firm` they are pencilled
+        "horizon": horizon.isoformat(), "firm": firm.isoformat(),
         "flights": flights,
         "generated": now.isoformat(),
     })
@@ -2445,59 +2580,55 @@ def api_airframe_photo(reg):
 # recent FIS payloads, with the city name FIS itself publishes (ICN → "Seoul").
 # Derived at read time from raw, so the list tracks the collected network
 # exactly — no airports-table change, no migration. `n` (observation count)
-# lets the client rank busier airports first.
-_BOOK_AIRPORTS_TTL_S = 3600
-_book_airports_cache = {"ts": 0.0, "data": []}
+# lets the client rank busier airports first. Kept warm (warm.py) and rebuilt
+# once a day: it reads 120 days of raw payloads (2.9 s), and the network
+# barely moves.
+def _build_book_airports(conn):
+    rows = _q(conn, """
+        WITH ends AS (
+            SELECT raw->'legs'->0->'departure'->>'departureAirport' AS code,
+                   raw->'legs'->0->'departure'->>'departureAirportName' AS name
+            FROM flight_status_observations
+            WHERE found AND raw IS NOT NULL
+              AND observed_at >= NOW() - INTERVAL '120 days'
+            UNION ALL
+            SELECT raw->'legs'->0->'arrival'->>'arrivalAirport',
+                   raw->'legs'->0->'arrival'->>'arrivalAirportName'
+            FROM flight_status_observations
+            WHERE found AND raw IS NOT NULL
+              AND observed_at >= NOW() - INTERVAL '120 days'
+        )
+        SELECT code, name, n FROM (
+            SELECT code, name,
+                   SUM(COUNT(*)) OVER (PARTITION BY code) AS n,
+                   ROW_NUMBER() OVER (PARTITION BY code
+                                      ORDER BY COUNT(*) DESC) AS rk
+            FROM ends WHERE code IS NOT NULL
+            GROUP BY code, name
+        ) t WHERE rk = 1 ORDER BY code
+    """)
+    return [{"code": c, "name": nm, "n": int(n)} for c, nm, n in rows]
+
+
+_BOOK_AIRPORTS = warm.Payload(86400, _build_book_airports, _db)
 
 
 def _book_airports(conn):
-    nowts = datetime.now(timezone.utc).timestamp()
-    if nowts - _book_airports_cache["ts"] < _BOOK_AIRPORTS_TTL_S:
-        return _book_airports_cache["data"]
     try:
-        rows = _q(conn, """
-            WITH ends AS (
-                SELECT raw->'legs'->0->'departure'->>'departureAirport' AS code,
-                       raw->'legs'->0->'departure'->>'departureAirportName' AS name
-                FROM flight_status_observations
-                WHERE found AND raw IS NOT NULL
-                  AND observed_at >= NOW() - INTERVAL '120 days'
-                UNION ALL
-                SELECT raw->'legs'->0->'arrival'->>'arrivalAirport',
-                       raw->'legs'->0->'arrival'->>'arrivalAirportName'
-                FROM flight_status_observations
-                WHERE found AND raw IS NOT NULL
-                  AND observed_at >= NOW() - INTERVAL '120 days'
-            )
-            SELECT code, name, n FROM (
-                SELECT code, name,
-                       SUM(COUNT(*)) OVER (PARTITION BY code) AS n,
-                       ROW_NUMBER() OVER (PARTITION BY code
-                                          ORDER BY COUNT(*) DESC) AS rk
-                FROM ends WHERE code IS NOT NULL
-                GROUP BY code, name
-            ) t WHERE rk = 1 ORDER BY code
-        """)
+        return _BOOK_AIRPORTS.get(conn)
     except Exception:
-        return _book_airports_cache["data"]  # stale beats a 500 mid-request
-    data = [{"code": c, "name": nm, "n": int(n)} for c, nm, n in rows]
-    _book_airports_cache.update(ts=nowts, data=data)
-    return _book_airports_cache["data"]
+        return []  # no suggestions beats a 500 mid-request
 
 
 @app.route("/api/book/airports")
 def api_book_airports():
     """Searchable airports for the /book route pickers (see _book_airports)."""
     try:
-        conn = _db()
+        data = _BOOK_AIRPORTS.get()
     except Exception as e:
         return jsonify({"error": str(e)}), 503
-    try:
-        data = _book_airports(conn)
-    finally:
-        conn.close()
     return jsonify({"airports": data,
-                    "generated": datetime.now(timezone.utc).isoformat()})
+                    "generated": datetime.fromtimestamp(_BOOK_AIRPORTS.ts, timezone.utc).isoformat()})
 
 
 # ── Map mode on /book ─────────────────────────────────────────────────────
@@ -3610,22 +3741,28 @@ def api_insights():
     atype = (request.args.get("type") or "B748").strip().upper()
     family = next((f for f, m in _INSIGHT_FAMILIES.items() if atype == f or atype in m), "B748")
     try:
-        conn = _db()
+        return jsonify(_INSIGHTS_DATA[family].get())
     except Exception as e:
         return jsonify({"error": str(e)}), 503
-    try:
+
+
+def _build_insights(family):
+    def build(conn):
         _stats, hist = _booking_model(conn)
         if hist is None:
-            return jsonify({"error": "insights need the leg layer (migration 010)"}), 503
+            raise RuntimeError("insights need the leg layer (migration 010)")
         # twice the calendar: a tail parked since before it still gets its row
         legs = [_leg_from_row(r) for r in _q(
             conn, _leg_sql(conn) + " WHERE fleet_type = ANY(%s) AND flight_date >= CURRENT_DATE - %s"
                                    " ORDER BY dep_utc",
             (list(_INSIGHT_FAMILIES[family]), 2 * leg_stats.CALENDAR_DAYS))]
-    finally:
-        conn.close()
-    return jsonify(leg_stats.insights(legs, hist, _INSIGHT_FAMILIES, family,
-                                      datetime.now(timezone.utc)))
+        return leg_stats.insights(legs, hist, _INSIGHT_FAMILIES, family, datetime.now(timezone.utc))
+    return build
+
+
+# Kept warm (warm.py), one per family, rebuilt hourly: the page looks back over
+# weeks of flown legs (0.3-1.1 s a family), which gain a day's worth at a time.
+_INSIGHTS_DATA = {f: warm.Payload(3600, _build_insights(f), _db) for f in _INSIGHT_FAMILIES}
 
 
 _SCHEDULE = {
@@ -3833,6 +3970,18 @@ def _page(spec):
 
 for _route, _spec in _PAGES.items():
     app.add_url_rule(_route, "page" + _spec.lower(), _page(globals()[_spec]))
+
+
+# ── Kept warm ────────────────────────────────────────────────────────
+# Everything warm.py keeps, in the order a fresh process builds it: the start
+# page first (where a visit lands), the Schedule with its cabin lookups, then
+# the rest; about 10 s for the first round. At these timers the rebuilds cost
+# about ten minutes of server time a day (measured 2026-10-14).
+_WARM = [*_MON_PARTS.values(), _ALLEGRIS, _CABINS, _SCHEDULE_DATA,
+         *_INSIGHTS_DATA.values(), _BOOK_AIRPORTS]
+
+if os.environ.get("DASHBOARD_REFRESHER", "1") == "1":
+    warm.start(_WARM)
 
 
 if __name__ == "__main__":

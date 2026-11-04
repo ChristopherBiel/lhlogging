@@ -4,7 +4,7 @@
 """
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 from pathlib import Path
 
@@ -161,6 +161,91 @@ class Clash(unittest.TestCase):
         self.assertIn("LH717", r["why"])
 
 
+class Coverage(unittest.TestCase):
+    """A band only counts the legs looked at that far out (HOLD_CHAIN): the old
+    flights were first seen 4 days out and wrong until the last day, the recent
+    ones from 5 days out and right 8 in 10 all along."""
+
+    def legs(self):
+        old = [leg(30 - d, "716", "D-ABYA", [[100.0, "D-ABYB"], [20.0, "D-ABYA"]], 100.0) for d in range(10)]
+        new = [leg(12 - d, "716", "D-ABYA", [[130.0, "D-ABYA" if d < 8 else "D-ABYB"], [20.0, "D-ABYA"]], 130.0)
+               for d in range(10)]
+        return old + new
+
+    def stats(self, chain):
+        with mock.patch.object(bm, "HOLD_CHAIN", chain):
+            return bm.build_stats(self.legs(), NOW, weeks=8, fit=False, plan=bm.PlanIndex([]))
+
+    def rate(self, st, k):
+        held, n = st.hold[k]
+        return held / n
+
+    def test_the_corrected_rate(self):
+        self.assertEqual(bm.corrected_rate([8, 10], [8, 10], None), 0.8)   # nothing one band in
+        self.assertEqual(bm.corrected_rate([8, 10], [0, 0], 0.4), 0.8)     # no leg to compare
+        self.assertAlmostEqual(bm.corrected_rate([8, 10], [8, 10], 0.4), 0.4)
+        self.assertEqual(bm.corrected_rate([1, 10], [9, 10], 0.1), 0.0)    # clipped
+
+    def test_as_counted_the_far_band_speaks_for_the_recent_legs(self):
+        st = self.stats(False)
+        self.assertAlmostEqual(self.rate(st, ("type", "B748", 120)), 0.8)
+        self.assertAlmostEqual(self.rate(st, ("type", "B748", 96)), 0.4)
+        self.assertAlmostEqual(bm.hold_rate(st, 120, "FRA-HND", "B748")[0], 0.8)
+
+    def test_chained_every_band_speaks_for_all_of_them(self):
+        st = self.stats(True)
+        for kind, key in (("all", "B748"), ("type", "B748"), ("route", "FRA-HND"), ("overall", "")):
+            self.assertAlmostEqual(self.rate(st, (kind, key, 120)), 0.4, msg=kind)
+            self.assertEqual(st.hold[(kind, key, 120)][1], 10)                # n as counted
+        self.assertAlmostEqual(self.rate(st, ("type", "B748", 96)), 0.4)      # seen at 72h too: as counted
+        self.assertAlmostEqual(self.rate(st, ("type", "B748", 12)), 1.0)
+        self.assertAlmostEqual(self.rate(st, ("far:type", "B748", 120)), 0.4)
+        self.assertAlmostEqual(bm.hold_rate(st, 120, "FRA-HND", "B748")[0], 0.4)
+
+
+class Between(unittest.TestCase):
+    """A flight stands between two bands nearly always; the rate it is quoted
+    is the two cells' interpolated, not the nearer (more hopeful) one's."""
+
+    def cells(self):
+        st = bm.Stats(NOW, 8)
+        st.hold[("overall", "", 48)] = [60, 100]
+        st.hold[("overall", "", 72)] = [40, 100]
+        return st
+
+    def test_bands_around(self):
+        self.assertEqual(bm.bands_around(48), (48, 48, 0.0))
+        self.assertEqual(bm.bands_around(66), (48, 72, 0.75))
+        self.assertEqual(bm.bands_around(1), (3, 3, 0.0))            # inside the innermost
+        self.assertEqual(bm.bands_around(300), (216, 216, 0.0))      # beyond the outermost
+
+    def test_the_rate_between_two_bands_is_interpolated(self):
+        st = self.cells()
+        self.assertAlmostEqual(bm.hold_at(st, 48, "FRA-HND", "B748")[0], 0.6)
+        self.assertAlmostEqual(bm.hold_at(st, 66, "FRA-HND", "B748")[0], 0.45)
+        self.assertAlmostEqual(bm.hold_at(st, 72, "FRA-HND", "B748")[0], 0.4)
+        with mock.patch.object(bm, "HOLD_INTERPOLATE", False):       # the model until 2026-10-13
+            self.assertAlmostEqual(bm.hold_at(st, 66, "FRA-HND", "B748")[0], 0.6)
+
+    def test_a_band_without_legs_leaves_the_other_one(self):
+        st = self.cells()
+        self.assertAlmostEqual(bm.hold_at(st, 80, "FRA-HND", "B748")[0], 0.4)    # no 96h cell
+        self.assertAlmostEqual(bm.hold_at(st, 40, "FRA-HND", "B748")[0], 0.6)    # no 36h cell
+        self.assertIsNone(bm.hold_at(st, 10, "FRA-HND", "B748"))
+
+    def test_the_weaker_cell_names_what_the_rate_rests_on(self):
+        st = self.cells()
+        st.hold[("type", "B748", 48)] = [30, 40]
+        _p, n, kind = bm.hold_at(st, 60, "FRA-HND", "B748")
+        self.assertEqual((n, kind), (100, "overall"))                # the 72h cell has no type rows
+
+    def test_the_card_says_the_lead_it_stands_at(self):
+        st = bm.build_stats(history(), NOW, weeks=8, fit=False, plan=bm.PlanIndex([]))
+        r = bm.p_target(st, "D-ABYA", upcoming(2.5), published="D-ABYA", now=NOW, knobs=KNOBS)
+        self.assertEqual(r["band"], 48)
+        self.assertIn("60h out", r["why"])
+
+
 class Idle(unittest.TestCase):
     def test_idle_tail_weighs_less_near_than_far(self):
         legs = [l for l in history() if not (l["truth_tail"] == "D-ABYD" and
@@ -199,6 +284,58 @@ class Projection(unittest.TestCase):
         target = (NOW + timedelta(days=7)).date()
         out = bm.project_schedule(legs, [target], NOW, ftype="B748")
         self.assertEqual(out[0]["seat_config"], "F8C80E32M244")
+
+
+    def test_what_the_feed_lists_ahead_counts_and_times_the_projection(self):
+        day = lambda n: (NOW + timedelta(days=n)).date()
+        # LH716 flew once on this weekday; the feed lists it again in two days, an hour later
+        listed = dict(leg(-2, "716", ""), dep_local=NOW + timedelta(days=2, hours=1))
+        legs = [leg(5, "716", "D-ABYA")]
+        self.assertEqual(bm.project_schedule(legs, [day(9)], NOW, ftype="B748"), [])    # one run is not enough
+        out = bm.project_schedule(legs, [day(2), day(9)], NOW, ftype="B748", ahead=[listed])
+        self.assertEqual([l["flight_date"] for l in out], [day(9)])                     # day 2 is listed, not projected
+        self.assertEqual(out[0]["dep_local"], listed["dep_local"] + timedelta(days=7))  # timed like the listing
+        self.assertEqual((out[0]["timeline"], out[0]["latest_tail"]), ([], ""))
+
+    def test_a_flight_the_feed_has_no_more_is_not_projected(self):
+        day = lambda n: (NOW + timedelta(days=n)).date()
+        legs = [leg(7 * w, "716", "D-ABYA") for w in (1, 2, 3)]
+        self.assertEqual(len(bm.project_schedule(legs, [day(7), day(14)], NOW)), 2)
+        # asked for the next same weekday: no such flight -> that day and those after it go
+        self.assertEqual(bm.project_schedule(legs, [day(7), day(14)], NOW, absent={(day(7), "716")}), [])
+        # ... unless the feed lists it again later: its latest word counts
+        back = leg(-14, "716", "")
+        out = bm.project_schedule(legs, [day(7), day(21)], NOW, ahead=[back], absent={(day(7), "716")})
+        self.assertEqual([l["flight_date"] for l in out], [day(21)])
+        # another weekday's answer says nothing about this one
+        self.assertEqual(len(bm.project_schedule(legs, [day(7)], NOW, absent={(day(6), "716")})), 1)
+
+    def test_a_projection_across_a_change_of_timetable_says_so(self):
+        now = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)                 # winter starts Sun 25 Oct
+        run = lambda d, truth="D-ABYA": dict(leg(0, "716", truth), flight_date=d.date(), dep_utc=d,
+                                             dep_local=d, arr_local=d + timedelta(hours=12))
+        legs = [run(now - timedelta(days=7 * w)) for w in (1, 2)]       # Wednesdays in the summer timetable
+        before, after = date(2026, 10, 21), date(2026, 10, 28)
+        out = {l["flight_date"]: l for l in bm.project_schedule(legs, [before, after], now)}
+        self.assertIsNone(out[before]["timetable_change"])
+        self.assertEqual(out[after]["timetable_change"], date(2026, 10, 25))
+        # once the feed lists the flight in the new timetable, later weeks rest on that
+        listed = run(datetime(2026, 10, 28, 13, 0, tzinfo=UTC), "")
+        out = bm.project_schedule(legs, [date(2026, 11, 4)], now, ahead=[listed])
+        self.assertIsNone(out[0]["timetable_change"])
+
+    def test_season_start(self):
+        self.assertEqual(bm.season_start(date(2026, 10, 24)), date(2026, 3, 29))
+        self.assertEqual(bm.season_start(date(2026, 10, 25)), date(2026, 10, 25))
+        self.assertEqual(bm.season_start(date(2027, 1, 10)), date(2026, 10, 25))
+        self.assertEqual(bm.season_start(date(2027, 3, 28)), date(2027, 3, 28))
+
+    def test_unpublished_hides_the_publication_from_the_plan(self):
+        lg = leg(-6, "716", "", [[150.0, "D-ABYA"]], 150.0)
+        self.assertEqual(bm.tail_as_of(lg, NOW), "D-ABYA")
+        hidden = bm.unpublished(lg)
+        self.assertIsNone(bm.tail_as_of(hidden, NOW))
+        self.assertEqual(lg["timeline"], [[150.0, "D-ABYA"]])           # the leg itself is left alone
 
 
 class Itinerary(unittest.TestCase):

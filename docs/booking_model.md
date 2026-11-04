@@ -3,15 +3,17 @@
 What the `/book` planner's percentages are, what they rest on, and how well
 they score. Code: `dashboard/booking_model.py` (shared with the benchmark),
 `dashboard/fleet_sim.py` (the fleet simulation on top of it),
-`flightstatus/legs.py` (the leg layer it reads), `tools/benchmark_booking.py`
-and `tools/benchmark_fleet.py` (walk-forward scoring). Measured 2026-09-24 over 4,579 settled widebody legs
-departing 2026-08-11..09-24, each scored using only what was known before it.
+`flightstatus/legs.py` (the leg layer it reads), `tools/benchmark_booking.py`,
+`tools/benchmark_fleet.py` (walk-forward scoring) and `tools/benchmark_ranking.py`
+(one tail's flights, ranked). Measured 2026-09-24 over 4,579 settled widebody legs
+departing 2026-08-11..09-24, each scored using only what was known before it;
+the sections dated later say what they were measured on.
 
 ## The question
 
 An award is booked for one exact airframe, typically 1-2 weeks out, but
-Lufthansa's feed publishes the tail only a few days ahead (the collector reads
-it to D+4; the feed has it to D+9, see *Horizon probe*). So every flight in a
+Lufthansa's feed publishes the tail only a few days ahead (every fleet is read
+to D+4, the 747-8 and A380 to D+9, see *Horizon*). So every flight in a
 booking window is in one of two states, and the model has one regime for each:
 
 | regime | when | P(target) |
@@ -94,6 +96,71 @@ except the 747-8 at 192–216h (+0.05, n=62, a cold-start artefact: until the
 747-8's own far cell fills it borrows the cross-type rate). Clash
 publications: predicted 31–45%, observed 25–42%.
 
+## Between the bands (2026-10-13)
+
+A hold cell says how often the tail published at exactly that band flew. The
+model read a flight's rate from the largest band not beyond its lead — the
+nearer one, where a tail holds more often. A flight 71h out was quoted the 48h
+cell. On the same legs (departures 07-21..10-11), the tail as it stood an hour
+before the next band against the cell it was quoted from:
+
+| standing at | cell quoted | 747-8 held / quoted | A380 | 787 | A350 |
+|---|---|---|---|---|---|
+| 95h | 72h | 28% / 39% | 53 / 57 | 54 / 54 | 50 / 53 |
+| 71h | 48h | 40% / 56% | 56 / 65 | 56 / 62 | 51 / 57 |
+| 47h | 36h | 56% / 66% | 66 / 73 | 62 / 71 | 58 / 68 |
+| 35h | 24h | 67% / 78% | 74 / 80 | 71 / 79 | 69 / 77 |
+| 23h | 18h | 79% / 82% | 80 / 84 | 80 / 83 | 77 / 83 |
+
+That is the far end of each band's stretch; over a whole stretch the gap is
+about half. No benchmark saw it: `benchmark_booking.py` scored at the bands
+only, `benchmark_fleet.py` at most 6h off them.
+
+The rate is now interpolated between the two cells a lead lies between
+(`booking_model.hold_at`; `n` and the context a card names are the weaker
+cell's), and the benchmark also scores three quarters of the way from each
+band to the next. Walk-forward over 6,867 legs (departures 08-10..10-12), the
+published tail's number there:
+
+| predicted | 50–70% | 70–85% | 85–100% |
+|---|---|---|---|
+| nearer band's rate: mean → observed | 61.9 → 55.2% | 78.4 → 72.8% | 92.7 → 88.0% |
+| interpolated | 61.1 → 60.5% | 78.1 → 77.7% | 91.1 → 90.7% |
+
+Log-loss between the bands moves a little (66h 2.05 → 2.03, 33h 1.40 → 1.38,
+10.5h 0.64 → 0.62); on the bands nothing changes, by construction.
+`--step-hold` scores the old reading.
+
+## Which legs a band speaks for (2026-10-16)
+
+A band counts only the legs looked at that far out, and the collector has
+looked further ahead over time: D+5..D+9 for the 747-8 and A380 since 09-24,
+D+4 for the 787/A350 since 10-06. Counted as is, the far bands held recent
+legs and the near ones all eight weeks, and /insights drew an A380 tail
+published five days out as surer than one four days out (66% against 57%;
+the same 131 flights held 66% and then 72%).
+
+`booking_model.corrected_rate`: from the nearest band out, a band's rate moves
+by the gap, one band in, between all the legs there and the legs seen at this
+band — the recent legs give the step, all of them the level. Where every leg
+one band in was also seen at this band (inside four days, nearly always) the
+gap is nil. The corrected curve steps by exactly the paired gains of Panel B.
+Live, on the export of 10-16: A380 120h 73 → 54%, 144h 67 → 45%, 192h 47 →
+24%; 747-8 within two points; A350 96h 35 → 48% (its recent flights churned
+more).
+
+/insights draws the corrected curve. The model does not (`HOLD_CHAIN = False`):
+walk-forward over 7,251 legs (departures 08-10..10-15) it moved no lead by
+more than 0.02 log-loss (A380 144h 1.37 → 1.35, 747-8 168h 2.81 → 2.83).
+A first version that chained the plan-consistent cells through legs
+consistent at *both* bands shifted the near bands too (A380 96h 59 → 71%) —
+that filter differs per band, so pairs on it change what a band measures.
+
+What the far A380 quote misses is open item (3) below, not the coverage: the
+tail published 5–7 days out was quoted about 41% walk-forward and held
+56–73%. Four weeks of history instead of eight did not close it (far leads
+up to 0.29 worse, the A380 at 96h and in at most 0.02 better).
+
 ## Fleet simulation (2026-10-06)
 
 `p_target` judges each flight on its own, so it could give a tail swap odds on
@@ -164,25 +231,105 @@ python3 tools/fleet_state_report.py            # the physics above
 python3 tools/benchmark_fleet.py --type B748   # --conn, --samples, --horizon-h
 ```
 
-## Horizon probe
+## Horizon: how far ahead a tail is shown (2026-10-13)
 
 The feed returns a tail up to D+9 (D+10: no flight). Since 2026-09-24 the 22:00
-pulse also looks at D+5..D+9 for the 747-8/A380 tier (`flightstatus/crontab`).
-The pages stay capped at D+4 (`BOOK_HORIZON_DAYS`) until that data is scored:
-after ~3 weeks, rebuild the leg export and read the benchmark's 120h..216h rows.
-If a tail published 5-9 days out beats the history regime, raise the cap — the
-planner then shows real published tails across most of a booking window.
+pulse also looks at D+5..D+9 for the 747-8/A380 tier (`flightstatus/crontab`);
+the pages stayed on D+4 until that was scored.
 
-Early look (2026-10-06, 11 probe nights, leave-one-departure-date-out because
-the walk-forward is still cold at 168h+): the A380's far tail is real signal
-(holds ~48% vs 1 in 8; −0.30 nats/leg against withholding it); the 747-8's is
-a ~2× lift for the published tail (10–16% vs 1 in 17) but a wash overall
-(+0.01 nats/leg). The benchmark's "unpublished (same now)" column scores each
-leg again with the publication withheld — the paired answer to whether a far
-publication beats not looking.
+**The score that decides it is a ranking, not a log-loss.** `benchmark_booking.py`
+asks of each flight whether the tail that flew got a fair probability; a
+visitor asks of one tail which of many flights to book. A publication that
+holds one time in five barely moves the first score and still puts the right
+flight on top of the list. `tools/benchmark_ranking.py` ranks, every evening
+after the probe and for every tail of a fleet, the fleet's flights of D+5..D+9
+— with the tail published then ("open") and with it withheld ("capped", what a
+page shows beyond its horizon) — and scores them on what that tail then flew.
+Thirteen probe evenings (09-24..10-06, those whose flights had flown by
+10-11), shares walk-forward, the far hold rate from the other evenings' legs
+(walk-forward it is still cold):
+
+| D+5..D+9 | flights ranked | even guess | capped: top-1 / top-3 / AUC | open: top-1 / top-3 / AUC |
+|---|---|---|---|---|
+| 747-8 | 96 | 6% | 9% / 7% / 0.53 | **25% / 21% / 0.58** |
+| A380 | 48 | 15% | 27% / 26% / 0.63 | **65% / 60% / 0.78** |
+
+(D+1..D+4 for scale: 747-8 79% / 65% / 0.83, A380 90% / 84% / 0.93.) A tail
+published that evening flew the flight, by day: 747-8 D+5 26%, D+6 23%, D+7
+19%, D+8 19%, D+9 15%; A380 72%, 65%, 52%, 44%, 43%.
+
+The per-flight score agrees, now that there is more of it. Strictly
+walk-forward, log-loss with the publication against the same moment without:
+747-8 2.71 vs 2.87 at 120h, 2.77 vs 2.89 at 144h, 2.79 vs 2.89 at 168h, 2.85
+vs 2.90 at 192h (216h: 3.01 vs 3.00, n=39); A380 1.41 vs 1.98, 1.55 vs 1.97,
+1.73 vs 1.97, 1.79 vs 1.99.
+
+**So both fleets are shown as far as they are read.** `BOOK_HORIZON_BY_TYPE`
+(dashboard, default `B748=9,A388=9`) names the fleets whose horizon differs
+from `BOOK_HORIZON_DAYS` (4, the day every tier is read to). A tail beyond D+4
+is labelled **pencilled** on `/book`: an early plan, with its own hold rate on
+the card. The 787/A350 stay on D+4 — nothing reads their tails further out —
+and the Schedule's gantt keeps D+4 for every fleet (nine days on its axis
+would halve its scale; that is a choice still open).
+
+Two things the same change settles:
+
+- **The fleet simulation obeys the horizon.** It read every tail the plan
+  had, the probe's included, so since 2026-10-06 a flight five or six days out
+  could carry "Not published yet … Playing the fleet forward: 51%" — a number
+  moved by a publication its card did not show. A tail beyond its fleet's
+  horizon is now withheld from the simulation too (`booking_model.unpublished`).
+- **A look older than 36 hours is no publication.** Every day a page shows is
+  read at least once a day, so an older look means its reader failed, and a
+  stale tail is a much worse bet than its lead says: an A380 published 120h
+  out held 83% when the look was under 6 hours old, 69% at 6–18h, 47% beyond
+  (144h: 76 / 58 / 34%; departures from 09-29). The monitor counts a day ahead
+  as known by the same rule.
+
+**Open.** (1) The far cell is one rate per type over 120–216h; the rate does
+fall with the lead (above). Bending the type's flat rate by each band's own
+cell scored within ±0.01 of it walk-forward, so it was left out until the far
+cells have weeks behind them. (2) How old the look is matters most far out
+and is not in the hold rate, only in the 36-hour cut-off. (3) The A380's plan
+has firmed up since the end of September — a tail published 96h out held 48%
+until 09-28 and 72% from 09-29 (72h: 53 → 72%, 48h: 64 → 74%; the 747-8 did
+not move) — and the eight-week window follows that slowly: its A380 numbers
+are low for now.
 
 ```bash
 ./tools/pull_fis_history.sh
 python3 tools/build_leg_outcomes.py --since 2026-07-21
-python3 tools/benchmark_booking.py            # --type B748, --no-fit, --no-plan, --hold-m, --swap-mix
+python3 tools/benchmark_booking.py            # --type B748, --no-fit, --no-plan, --hold-m, --swap-mix, --step-hold, --chain
+python3 tools/benchmark_ranking.py            # --type A388, --since, --strict
 ```
+
+## The timetable beyond what the feed lists (2026-10-13)
+
+Past the days it has read, the planner's candidates are a projection: a flight
+number that ran on a weekday in two of the last four weeks is assumed to run
+again (`booking_model.project_schedule`). A change of timetable — the last
+Sunday of October and of March — makes that wrong for weeks: a flight that
+ended stays a candidate until four weeks have forgotten it, a new one appears
+after its second run. Three things now bound the damage:
+
+- **What the feed lists ahead counts as a run, and times the projection.** A
+  flight listed for next week is projected from that listing on, so the new
+  timetable is followed as far as the feed shows it (D+9 for the 747-8/A380,
+  D+8 for the 787/A350 once the collector's timetable look runs).
+- **The feed's "no such flight" counts too.** A flight it was asked for and
+  does not have is not projected onto that day, nor onto later days of that
+  weekday while that answer is its latest word. This needs the collector to
+  tell an empty answer from a refused lookup, which it does from 2026-10-13
+  on (`raw` = `{}`; older rows cannot be told apart and are ignored). Only an
+  answer given within eight days counts: at 22:00 the feed does not have day
+  9's late departures yet — 86% of day-9 lookups found their flight against
+  97–99.6% for days 5–8, and 32 of 34 that did not were there on a later look.
+- **A projection across the change says so.** Where a flight's latest run
+  lies before the start of the season its date lies in, the card reads "from
+  the timetable before Sun 25 Oct".
+
+The projection now also covers D+4 itself: the 787/A350 get that day from the
+far pass at noon, and until then it was missing from their plans every morning.
+
+Not done: a projection's UTC time is its last run's shifted by whole days, so
+across the change of clocks it is an hour off (the local time is right).

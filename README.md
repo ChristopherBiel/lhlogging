@@ -303,7 +303,8 @@ ADS-B pipeline can only observe after the fact.
   sessions in a row open without the bot check and are refused, a scheduled run waits and tries
   again until shortly before the next slot, `flightstatus/door.py`), `FIS_LEGS_REFRESH_DAYS`
   (3: every run rebuilds `fis_legs` from D-3 on). Dashboard: `BOOK_HORIZON_DAYS`
-  (4: furthest day the pages show published tails for). Ad-hoc single lookup:
+  (4: furthest day the pages show published tails for) and `BOOK_HORIZON_BY_TYPE`
+  (`B748=9,A388=9`: the fleets shown further, as far as they are read). Ad-hoc single lookup:
   `docker compose exec flightstatus /app/run_nightly.sh --flight LH716 --date 2026-06-25`
   (set `NIGHTLY_JITTER=0` to skip the start jitter).
 
@@ -314,11 +315,31 @@ ADS-B pipeline can only observe after the fact.
 The dashboard runs on port **8080**. The `/` monitor says how the site itself
 runs; the fleet-catching pages below are driven by the FIS snapshots.
 
+**Kept warm.** A page's data is rebuilt in the background on a timer matched
+to how often it changes, and a visit reads the last copy, so no visit waits on
+a rebuild (`dashboard/warm.py`, the list at the end of `app.py`):
+
+| Data | Rebuilt every | One rebuild |
+|---|---|---|
+| Monitor status | 5 min | 1.3 s |
+| Monitor figures and totals | 15 min | 1.5 s |
+| Schedule | 5 min | 0.3 s |
+| Allegris tails, cabin layouts | 1 h | 1.3 s together |
+| Insights, per family | 1 h | 0.3–1.1 s |
+| Book airport list | 1 day | 2.9 s |
+
+That is about ten minutes of server time a day, whatever the traffic; the
+booking model keeps its own warmer (every 9 min). JSON and pages go out
+gzipped, and the stylesheets and scripts, versioned by `?v=`, are cached for a
+year. `DASHBOARD_REFRESHER=0` turns the background rebuilds off (a request
+then rebuilds what is two rounds old).
+
 **`/` — Monitor** (how the site runs, and the big picture of what it logged):
 - **Status, in sentences** — when the schedule was last read, how far ahead
   each fleet's plan is known, and any slot of the schedule reader that keeps
   failing, with the flight day only it reads. Below it, the last run of every
-  collector. This block refreshes every minute.
+  collector. The page asks again every minute; the server rebuilds the block
+  every five minutes.
 - **Schedule reads by flight day** — every run of the last two days
   against the flight days it read, per fleet group (747-8/A380 and 787/A350):
   read, failed, planned-but-never-asked, or still planned; with the planned
@@ -355,9 +376,12 @@ assignment is to still hold by departure.
   want to fly, optionally a route (several airports per side) and your dates
   (default the next 14 days), and every candidate flight is ranked by the
   chance *that* tail operates it — from the published tail and its measured
-  hold rate up to ~4 days out, from the fleet's history beyond (timetable
-  projected from recent weeks). Each card says what its number rests on; the
-  model and its benchmark are in [docs/booking_model.md](docs/booking_model.md).
+  hold rate as far as the fleet is read (4 days; 9 for the 747-8 and A380,
+  where a tail past day 4 is marked *pencilled*), from the fleet's history
+  beyond (the timetable projected from recent weeks and from what the feed
+  already lists; a projection across a change of timetable says so). Each
+  card says what its number rests on; the model and its benchmarks are in
+  [docs/booking_model.md](docs/booking_model.md).
   The lookup modes remain: **by tail** (every leg a registration is published
   on), **by route**, or **by location**, each with the published tail, the
   cabin the flight is *sold* with (First/Business seat counts, Allegris marker)
@@ -392,6 +416,9 @@ assignment is to still hold by departure.
   1. *When can I trust a published tail?* — hold rate against hours before
      departure for all four fleets (95% intervals, the even-share baseline, the
      leads at which it crosses 50% and 80%), and what an hour of waiting buys.
+     Where fewer flights were looked at that far out (five days and more only
+     since 2026-09-24), the rate is corrected to speak for all of them
+     (`docs/booking_model.md`, "Which legs a band speaks for").
   2. *Which flights are the safer bet?* — hold rate per route, outbound against
      return, against the fleet's rate, at 24/48/72 h.
   3. *What does a plane do next?* — every hub turnaround as a strand from the
