@@ -7,6 +7,7 @@ and what it records.
 import json
 import os
 import sys
+import tempfile
 import types
 import unittest
 from collections import Counter
@@ -232,6 +233,78 @@ class DueRun(unittest.TestCase):
         self.run_due([self.item("716", day(1))], Feed({}))
         self.assertEqual(self.coverage[0], {"plan": "due", "due": {"b748": {"day": 1}}})
         self.assertEqual(len(self.coverage), 2)                                          # and what it did
+
+    # the rows a restart of the container left on 'running' (close_lost_runs)
+
+    def test_when_the_container_started(self):
+        with tempfile.TemporaryDirectory() as proc:
+            os.makedirs(os.path.join(proc, "1"))
+            with open(os.path.join(proc, "stat"), "w") as f:
+                f.write("cpu  1 2 3\nbtime 1762300000\nprocesses 9\n")
+            fields = ["S", "0", "1", "1", "0", "-1", "4194560"] + ["0"] * 12 + ["360000", "1234", "5"]
+            with open(os.path.join(proc, "1", "stat"), "w") as f:
+                f.write("1 (sh -c x) " + " ".join(fields) + "\n")                       # field 22: 360000
+            self.assertEqual(self.fs.container_started(proc),
+                             datetime.fromtimestamp(1762300000 + 360000 / os.sysconf("SC_CLK_TCK"), UTC))
+            self.assertIsNone(self.fs.container_started(os.path.join(proc, "none")))
+
+    def test_the_rows_a_restart_left_running_are_closed(self):
+        restart = datetime(2026, 11, 5, 6, 45, 51, tzinfo=UTC)
+        next_run = datetime(2026, 10, 15, 7, 2, tzinfo=UTC)
+        last_read = datetime(2026, 10, 15, 3, 59, 57, tzinfo=UTC)
+        cur = Cursor([(201792, "waiting for the feed, next try 07:58", restart + timedelta(minutes=23), None),
+                      (183213, None, next_run, last_read), (183300, None, next_run, None)])
+        self.assertEqual(self.fs.close_lost_runs(Conn(cur), restart), [201792, 183213, 183300])
+        (sql, params), *updates = cur.done
+        self.assertIn("b.started_at < %(started)s", sql)
+        self.assertEqual(params["started"], restart)
+        (status, text, end, run_id), reading, before = (u[1] for u in updates)
+        self.assertEqual((status, end, run_id), ("blocked", restart, 201792))           # ended by the restart
+        self.assertTrue(text.startswith("feed shut") and text.endswith("next try 07:58"))
+        self.assertEqual(reading[0::2], ("error", last_read))                             # at its last lookup
+        self.assertEqual(before[0::2], ("error", next_run))                               # by the next run
+
+    def test_the_next_run_knows_the_feed_was_shut(self):
+        restart = datetime(2026, 11, 5, 6, 45, 51, tzinfo=UTC)
+        cur = Cursor([], one=("blocked", "feed shut, and the run was stopped from outside ...", restart))
+        got = self.patched["_shut_before"](Conn(cur), 201827, restart + timedelta(minutes=23))
+        self.assertEqual(got, restart)
+
+    def test_a_run_starts_even_when_closing_them_fails(self):
+        cur = Cursor([], one=(42,))
+        saved, self.fs.close_lost_runs = self.fs.close_lost_runs, lambda conn: 1 / 0
+        try:
+            self.assertEqual(self.patched["log_batch_start"](Conn(cur)), 42)
+        finally:
+            self.fs.close_lost_runs = saved
+        self.assertTrue(any(line.startswith("could not close the runs") for line in self.lines))
+
+
+class Cursor:
+    """A database cursor: what was executed, `rows` for a fetchall, `one` for
+    a fetchone."""
+
+    def __init__(self, rows, one=None):
+        self.rows, self.one, self.done = rows, one, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.done.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        return self.rows
+
+    def fetchone(self):
+        return self.one
+
+
+def Conn(cur):
+    return types.SimpleNamespace(cursor=lambda: cur, commit=lambda: None, rollback=lambda: None)
 
 
 if __name__ == "__main__":

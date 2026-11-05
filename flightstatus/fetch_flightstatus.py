@@ -1209,7 +1209,70 @@ def upsert_observation(conn: psycopg.Connection, obs: dict, run_id: int | None =
         )
 
 
+def container_started(proc: str = "/proc") -> datetime | None:
+    """When this container started: when its PID 1 did (the kernel's boot time
+    plus the clock ticks after it the process started at). None without /proc."""
+    try:
+        with open(f"{proc}/stat") as f:
+            boot = next(int(line.split()[1]) for line in f if line.startswith("btime "))
+        with open(f"{proc}/1/stat") as f:
+            ticks = int(f.read().rsplit(")", 1)[1].split()[19])   # field 22, starttime
+    except (OSError, StopIteration, ValueError, IndexError):
+        return None
+    return datetime.fromtimestamp(boot + ticks / os.sysconf("SC_CLK_TCK"), timezone.utc)
+
+
+# the run types of this collector, one at a time (run_nightly.sh's lock)
+RUN_TYPES = ("flightstatus", "fis_census")
+
+
+def close_lost_runs(conn: psycopg.Connection, started: datetime | None = None) -> list:
+    """Close the runs a restart of this container ended. When Docker or the
+    server restarts (automatic updates: a new kernel, a new Docker) a run is
+    killed before it can write its end, and its row stays on 'running': nine
+    times from July to November 2026. A row on 'running' that started before
+    this container did is one of those (runs by hand go through `docker compose
+    exec`, in this container). It is closed as blocked if it was waiting for a
+    shut feed, so the next run knows (_shut_before), ended by the restart or
+    by the next run's start, whichever came first; else as an error, ended at
+    its last lookup (if it had one). Returns the ids closed."""
+    started = container_started() if started is None else started
+    if started is None:
+        return []
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT b.id, b.error_detail,
+                   (SELECT min(n.started_at) FROM batch_runs n
+                     WHERE n.run_type = ANY(%(types)s) AND n.id > b.id),
+                   (SELECT max(o.observed_at) FROM flight_status_observations o WHERE o.run_id = b.id)
+            FROM batch_runs b
+            WHERE b.run_type = ANY(%(types)s) AND b.status = 'running' AND b.started_at < %(started)s
+            ORDER BY b.id""", {"types": list(RUN_TYPES), "started": started})
+        lost = cur.fetchall()
+        for run_id, detail, next_start, last_read in lost:
+            end = min(t for t in (started, next_start) if t)
+            if (detail or "").startswith("waiting for the feed"):
+                status = BLOCKED_STATUS
+                text = ("feed shut, and the run was stopped from outside while it waited (Docker or the "
+                        f"server restarted); its last note: {detail}")
+            else:
+                status, text = "error", "stopped from outside before it could finish (Docker or the server restarted)"
+                end = last_read or end
+            cur.execute("""
+                UPDATE batch_runs SET status = %s, error_detail = %s, finished_at = %s
+                WHERE id = %s AND status = 'running'""", (status, text, end, run_id))
+    conn.commit()
+    return [r[0] for r in lost]
+
+
 def log_batch_start(conn: psycopg.Connection, run_type: str = "flightstatus") -> int:
+    try:  # the rows a restart left on 'running' first; never the run's problem
+        lost = close_lost_runs(conn)
+        if lost:
+            log(f"closed {len(lost)} run(s) a restart of the container ended: {', '.join(map(str, lost))}")
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        log(f"could not close the runs a restart ended ({_brief(e)})")
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO batch_runs (run_type, status) VALUES (%s, 'running') RETURNING id",
