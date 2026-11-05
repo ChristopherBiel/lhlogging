@@ -24,6 +24,7 @@ import chassis
 import fleet_sim
 import leg_stats
 import monitor_stats
+import photos
 import warm
 from flask import (
     Flask,
@@ -93,11 +94,12 @@ def favicon_svg():
 
 # A stylesheet or script the chassis links carries ?v=<newest mtime of the
 # page's files> (chassis.page), so its URL changes whenever its content does:
-# the browser may keep it for a year without asking again. Unversioned files
-# keep their own headers.
+# the browser may keep it for a year without asking again. An airframe photo
+# carries a hash of its bytes the same way. Unversioned files keep their own
+# headers.
 @app.after_request
 def _cache_versioned(resp):
-    if (request.args.get("v") and request.path.startswith(("/static/", "/faceplate/"))
+    if (request.args.get("v") and request.path.startswith(("/static/", "/faceplate/", "/photos/"))
             and resp.status_code in (200, 304)):
         resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
@@ -229,7 +231,8 @@ _DATENSCHUTZ = {
       <div class="fp-sec__body"><div class="prose"><p>Diese Website erhebt, speichert und verarbeitet keine personenbezogenen Daten
 ihrer Besucher. Es werden keine Cookies gesetzt, keine Analyse- oder Tracking-Tools
 eingesetzt und keine Daten an Dritte weitergegeben &ndash; mit Ausnahme des in
-Abschnitt 5 beschriebenen, nur auf Ihren Klick geladenen Flugzeugfotos.</p></div></div>
+Abschnitt 5 beschriebenen, nur auf Ihren Klick geladenen Flugzeugfotos von
+planespotters.net.</p></div></div>
     </section>
     <section class="fp-sec fp-sec--terra">
       <header class="fp-sec__label"><span class="fp-index">03</span><h2 class="fp-sec__title">Server-Logfiles</h2></header>
@@ -248,8 +251,12 @@ nicht an diesen Server oder Dritte &uuml;bertragen und lassen sich jederzeit &uu
 die Browsereinstellungen l&ouml;schen.</p></div></div>
     </section>
     <section class="fp-sec fp-sec--terra">
-      <header class="fp-sec__label"><span class="fp-index">05</span><h2 class="fp-sec__title">Flugzeugfotos von planespotters.net</h2></header>
-      <div class="fp-sec__body"><div class="prose"><p>Auf den Flugzeugseiten (/airframe) kann ein Foto des Flugzeugs von
+      <header class="fp-sec__label"><span class="fp-index">05</span><h2 class="fp-sec__title">Flugzeugfotos</h2></header>
+      <div class="fp-sec__body"><div class="prose"><p>Die Fotos auf den Flugzeugseiten (/airframe) stammen von Wikimedia
+Commons und stehen unter freien Lizenzen; Urheber und Lizenz stehen jeweils unter
+dem Foto. Dieser Server hat sie vorab abgerufen und liefert sie selbst aus. Ihr
+Browser stellt daf&uuml;r keine Verbindung zu Wikimedia her.</p>
+<p>Gibt es dort kein geeignetes Foto eines Flugzeugs, kann stattdessen eines von
 planespotters.net angezeigt werden. Es wird erst geladen, wenn Sie auf
 &bdquo;Show photo&ldquo; klicken. Erst dann ruft Ihr Browser das Bild direkt bei
 planespotters.net ab und &uuml;bermittelt dabei technisch bedingt Ihre IP-Adresse an
@@ -2617,6 +2624,7 @@ def api_airframe(reg):
         "routes": leg_stats.route_shares(window, reg),
         "window_weeks": booking_model.HISTORY_WEEKS,
         "upcoming": nxt,
+        "photo": _airframe_photo(reg, ftype),
         "recent": [{"flight": f"{l['airline']}{l['flight_number']}", "number": l["flight_number"],
                     "flight_date": l["flight_date"].isoformat(), "dep": l["dep"], "arr": l["arr"],
                     "via": booking_model.stops(l)}
@@ -2625,40 +2633,82 @@ def api_airframe(reg):
     })
 
 
-# Photos: Planespotters' terms allow hotlinking a thumbnail (with credit and a
-# link back) but not copying it, and our privacy page promises no third-party
-# requests without the visitor's action. So the photo is click-to-load: the
-# click asks this endpoint, which looks up the thumbnail *metadata* server-side
-# (no visitor data leaves; kept an hour), and only then does the visitor's
-# browser load the image from Planespotters.
-_PHOTO_API = "https://api.planespotters.net/pub/photos/reg/%s"
-_PHOTO_UA = "LHFleetLogger/1.0 (+https://lhlogging.biels.net/impressum)"
-_PHOTO_TTL_S = 3600
-_photo_cache = {}
+# Photos. Wikimedia Commons first (photos.py): its photos are freely
+# licensed, so this server keeps a 1280 px copy of one per tail and serves it
+# itself -- sharp on a 2x screen, shown without a click, and the visitor's
+# browser never contacts Wikimedia. A background walk covers the active fleet
+# and looks at each tail again weekly; an airframe page of a tail it has not
+# reached yet puts that tail first. The copies live in the `photos` volume.
+_PHOTOS = photos.Store(os.environ.get("PHOTO_DIR", "/var/lib/lhlogging/photos"))
 
 
-@app.route("/api/airframe/<reg>/photo")
-def api_airframe_photo(reg):
+def _photo_tails():
+    conn = _db()
+    try:
+        return [(r[0], r[1]) for r in _q(conn, """
+            SELECT btrim(registration), aircraft_type FROM aircraft
+            WHERE is_active AND btrim(registration) ~ '^[A-Z0-9]{1,2}-[A-Z0-9]{2,5}$'
+            ORDER BY last_seen_date DESC NULLS LAST""")]
+    finally:
+        conn.close()
+
+
+_PHOTO_KEEPER = photos.Keeper(_PHOTOS, _photo_tails)
+
+
+def _airframe_photo(reg, ftype):
+    """The kept photo's URL and credit for the airframe payload, or None."""
+    try:
+        ph = _PHOTOS.public(reg)
+        if ph is None and _PHOTOS.meta(reg) is None:
+            _PHOTO_KEEPER.want(reg, ftype)
+        return ph
+    except Exception:
+        return None
+
+
+@app.route("/photos/<reg>.jpg")
+def airframe_photo_file(reg):
+    f = _PHOTOS.image(reg) if _REG_RE.match(reg) else None
+    if f is None:
+        abort(404)
+    return send_from_directory(f.parent, f.name, max_age=86400)
+
+
+# A tail without a usable Commons photo falls back to Planespotters. Their
+# terms allow hotlinking a thumbnail (with credit and a link back) but not
+# copying it, and our privacy page promises no third-party requests without
+# the visitor's action. So that photo is click-to-load: the click asks this
+# endpoint, which looks up the thumbnail *metadata* server-side (no visitor
+# data leaves; kept an hour), and only then does the visitor's browser load
+# the image from Planespotters.
+_PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos/reg/%s"
+_PLANESPOTTERS_TTL_S = 3600
+_planespotters_cache = {}
+
+
+@app.route("/api/airframe/<reg>/planespotters")
+def api_airframe_planespotters(reg):
     reg = reg.strip().upper()
     if not _REG_RE.match(reg):
         return jsonify({"error": "not a registration"}), 400
-    hit = _photo_cache.get(reg)
-    if hit and time.time() - hit[0] < _PHOTO_TTL_S:
+    hit = _planespotters_cache.get(reg)
+    if hit and time.time() - hit[0] < _PLANESPOTTERS_TTL_S:
         return jsonify(hit[1])
     try:
-        req = urllib.request.Request(_PHOTO_API % reg, headers={"User-Agent": _PHOTO_UA})
+        req = urllib.request.Request(_PLANESPOTTERS_API % reg, headers={"User-Agent": photos.UA})
         with urllib.request.urlopen(req, timeout=8) as resp:
-            photos = json.load(resp).get("photos") or []
+            found = json.load(resp).get("photos") or []
     except Exception:
         return jsonify({"error": "Planespotters did not answer"}), 502
     out = {"photo": None}
-    if photos:
-        p = photos[0]
+    if found:
+        p = found[0]
         thumb = p.get("thumbnail_large") or p.get("thumbnail") or {}
         if thumb.get("src") and p.get("link"):
             out = {"photo": {"src": thumb["src"], "size": thumb.get("size"),
                              "link": p["link"], "photographer": p.get("photographer")}}
-    _photo_cache[reg] = (time.time(), out)
+    _planespotters_cache[reg] = (time.time(), out)
     return jsonify(out)
 
 
@@ -4067,12 +4117,15 @@ for _route, _spec in _PAGES.items():
 # Everything warm.py keeps, in the order a fresh process builds it: the start
 # page first (where a visit lands), the Schedule with its cabin lookups, then
 # the rest; about 10 s for the first round. At these timers the rebuilds cost
-# about ten minutes of server time a day (measured 2026-10-14).
-_WARM = [*_MON_PARTS.values(), _ALLEGRIS, _CABINS, _SCHEDULE_DATA,
+# about ten minutes of server time a day (measured 2026-10-14). The airframe
+# photos walk the fleet on a thread of their own (photos.Keeper): its steps
+# wait on Wikimedia, not on the database.
+_WARM =[*_MON_PARTS.values(), _ALLEGRIS, _CABINS, _SCHEDULE_DATA,
          *_INSIGHTS_DATA.values(), _BOOK_AIRPORTS]
 
 if os.environ.get("DASHBOARD_REFRESHER", "1") == "1":
     warm.start(_WARM)
+    _PHOTO_KEEPER.start()
 
 
 if __name__ == "__main__":

@@ -107,6 +107,7 @@ lhlogging/
 │   ├── chassis.py, chassis.html    # The page every route is built on (Faceplate's chassis: top bar, lead, sections, footer)
 │   ├── leg_stats.py                # Descriptive statistics over the leg layer (/insights, /airframe)
 │   ├── monitor_stats.py            # The monitor: the collector's plan vs. its runs, hubs, fleet use
+│   ├── photos.py                   # Airframe photos: one Wikimedia Commons photo per tail, kept in the `photos` volume
 │   ├── static/                     # One stylesheet and one script per page, the shared ones (app.css, page.js, figure.*, flight.js), the project glyph
 │   ├── dist/, fonts/, fonts.css, bin/  # Faceplate v3.0.0, vendored verbatim (see "Design system")
 │   ├── Dockerfile
@@ -344,7 +345,8 @@ That is about ten minutes of server time a day, whatever the traffic; the
 booking model keeps its own warmer (every 9 min). JSON and pages go out
 gzipped, and the stylesheets and scripts, versioned by `?v=`, are cached for a
 year. `DASHBOARD_REFRESHER=0` turns the background rebuilds off (a request
-then rebuilds what is two rounds old).
+then rebuilds what is two rounds old), and the walk that keeps the airframe
+photos with them.
 
 **`/` — Monitor** (how the site runs, and the big picture of what it logged):
 - **Status, in sentences** — when the schedule was last read, how far ahead
@@ -415,8 +417,16 @@ assignment is to still hold by departure.
   where it is published next with hold rates, a link to the aeroLOPA seat map
   of its cabin version (chosen by the FIS sub-fleet code, e.g. `38A` = the
   2026 A380 cabin; also in the planner summary and the flight popup), and a
-  click-to-load planespotters.net photo (nothing is requested from them before
-  the click).
+  photo of the tail. The photo comes from Wikimedia Commons: the tail's
+  category "<REG> (aircraft)", else a file named after it that also names its
+  type. The newest freely licensed outside shot (CC0/BY/BY-SA, ≥1200 px,
+  landscape) is kept as Wikimedia's 1280 px copy in the `photos` volume and
+  served from here with its credit, so it shows without a click and the
+  visitor never contacts Wikimedia (`dashboard/photos.py`: a background walk
+  over the active fleet, each tail looked at again weekly; `OVERRIDES` fixes
+  a pick by hand). About 96% of the active fleet has one (all 747-8s,
+  2026-11-05). A tail without one keeps the click-to-load planespotters.net
+  thumbnail (nothing is requested from them before the click).
   Linked from every tail on `/book`, `/schedule`, `/insights` and `/fleet`.
 - **`/schedule`** — per-airframe upcoming timeline from the latest snapshot of
   each flight, grouped by tail.

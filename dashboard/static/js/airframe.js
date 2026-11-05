@@ -52,8 +52,9 @@ function cabinBlock(d){
   }
   h += aside('Everything above is what Lufthansa&rsquo;s own flight-status feed publishes for this tail; the layout is the one it is most often sold with'
     + (d.amenities_seen ? ' (last seen '+ago(d.amenities_seen)+')' : '')+'.');
-  h += '<div class="photo" id="photo"><button class="fp-btn" id="photo-btn" type="button">Show photo</button>'
-    + '<p class="photo__credit">Loads from planespotters.net &mdash; nothing is requested from them until you click.</p></div>';
+  h += '<div class="photo" id="photo">' + (d.photo ? photoHtml(d.photo)
+    : '<button class="fp-btn" id="photo-btn" type="button">Show photo</button>'
+      + credit('Loads from planespotters.net &mdash; nothing is requested from them until you click.')) + '</div>';
   return h;
 }
 // How the tail stands, for the lead's marker and the sentence under its name.
@@ -113,10 +114,22 @@ function recentBlock(d){
   return h + '</table>';
 }
 // A photo is held by four registration marks, which close into a frame on its link.
+const credit = html => '<p class="photo__credit">'+html+'</p>';
+const outLink = (href, words) => '<a href="'+esc(href)+'" target="_blank" rel="noopener noreferrer">'+words+'</a>';
+// The Wikimedia Commons photo this server keeps (no click: it comes from here),
+// credited as its licence asks: author, licence, source.
+function photoHtml(ph){
+  const when = ph.taken ? ', '+new Date(ph.taken+'T00:00:00Z').toLocaleDateString('en-GB',{month:'short',year:'numeric',timeZone:'UTC'}) : '';
+  return '<a class="fp-reg photo__frame" href="'+esc(ph.link)+'" target="_blank" rel="noopener noreferrer">'
+    + '<img src="'+esc(ph.src)+'" width="'+ph.width+'" height="'+ph.height+'" alt="'+esc(REG)+(ph.artist ? ', photographed by '+esc(ph.artist) : '')+'" decoding="async"></a>'
+    + credit('Photo '+esc(ph.artist || 'unknown')+when+' &middot; '
+      + (ph.license_url ? outLink(ph.license_url, esc(ph.license)) : esc(ph.license))+' &middot; '+outLink(ph.link, esc(ph.source)));
+}
+// No Commons photo: Planespotters' thumbnail, only on a click (their terms: hotlink, don't copy).
 function loadPhoto(){
-  const box = $('photo'), credit = html => '<p class="photo__credit">'+html+'</p>';
+  const box = $('photo');
   box.innerHTML = credit('Loading from planespotters.net&hellip;');
-  fetch('/api/airframe/'+encodeURIComponent(REG)+'/photo').then(r => r.json()).then(p => {
+  fetch('/api/airframe/'+encodeURIComponent(REG)+'/planespotters').then(r => r.json()).then(p => {
     if(p.error || !p.photo){ box.innerHTML = credit(p.error ? esc(p.error) : 'No photo of '+esc(REG)+' on planespotters.net.'); return; }
     const ph = p.photo;
     box.innerHTML = '<a class="fp-reg photo__frame" href="'+esc(ph.link)+'" target="_blank" rel="noopener noreferrer">'
@@ -155,6 +168,6 @@ fetch('/api/airframe/'+encodeURIComponent(REG)).then(r => r.json()).then(d => {
     part('Where it flies', 'Last '+d.window_weeks+' weeks', routesBlock(d), '', 'tint'),
     part('Cabin history', 'Every layout the feed has published for it', historyBlock(d), 'ink'),
     part('Recent flights', 'Operated, newest first', recentBlock(d), 'ink', 'tint'));
-  $('photo-btn').addEventListener('click', loadPhoto);
+  if($('photo-btn')) $('photo-btn').addEventListener('click', loadPhoto);
 }).catch(() => { $('about').replaceChildren(mark('bad', 'The airframe could not be loaded')); });
 })();

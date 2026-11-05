@@ -2,7 +2,8 @@
    tail links and the small print from app.css. */
 .pct{ font-weight:var(--fp-heading-h2-weight); }
 .fp-sec--lead .fp-chip{ background:var(--fp-bg); vertical-align:middle; margin-right:var(--fp-space-1); }
-/* the photo: held by four marks, loaded only on a click */
+/* the photo: held by four marks; a 1280 px copy kept here, drawn up to the
+   measure (sharp at 2x), or Planespotters' 420 px thumbnail after a click */
 .photo{ margin-top:var(--fp-space-4); max-width:var(--fp-page-measure); }
 .photo__frame{ display:block; padding:var(--fp-space-2); }
 .photo__frame img{ display:block; max-width:100%; height:auto; }

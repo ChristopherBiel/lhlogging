@@ -36,6 +36,9 @@ services:
         condition: service_healthy
     expose:
       - "8080"
+    volumes:
+      # airframe photos kept from Wikimedia Commons (dashboard/photos.py)
+      - photos:/var/lib/lhlogging/photos
 
   # Nightly Lufthansa flight-status fetcher (headed Chromium under Xvfb to clear
   # Distil). Separate image from `app` because it needs a browser; talks to `db`
@@ -59,3 +62,4 @@ services:
 volumes:
   pgdata:
   applogs:
+  photos:
