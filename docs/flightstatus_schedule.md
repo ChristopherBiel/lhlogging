@@ -110,7 +110,7 @@ had no flown tail; ADS-B gives one for 165 of them.
 
 | class | what |
 |---|---|
-| 0 | near reads of the 747-8, the A380 and the watched tails |
+| 0 | near reads of every pool and of the watched tails, and where a watched tail went after a swap |
 | 1 | the 747-8 and A380 daily reads (D0..D+9), and their flights not read yet |
 | 2 | their 6-hourly reads, the watched and the idle tails' |
 | 3 | A350 Allegris to D+4 |
@@ -120,7 +120,17 @@ had no flown tail; ADS-B gives one for 165 of them.
 | 7 | numbers no pool has flown lately (one read a day each, so a new flight finds its pool) |
 
 Inside a class the nearest day first, then the earliest flight. About 350
-lookups a day keep the 747-8 and the A380 complete.
+lookups a day keep the 747-8 and the A380 complete. A flight a read names that
+the feed was never asked about (a chain) takes the class of the read that
+named it: it is nearly always a day the plan reads anyway, often a far one.
+
+Until 5 Nov the near reads of the other pools came in their pool's class (3
+and 4), and a swap's follow-ups in class 2. In the hourly plan's first 18
+hours the feed let 160 lookups through, the 747-8/A380 days to D+9 took 158 of
+them, and no 787 or A350 was read, not even 3 h before it left; 16 follow-ups
+after a watched tail's swap queued behind them and were dropped when the feed
+shut. The near reads are few at any time: 15 due in a run on average, 33 at
+most, in those 18 hours.
 
 **Day nine.** The feed lists a flight from about nine days before it leaves;
 asked earlier, it says "no such flight" for a flight it lists later that day

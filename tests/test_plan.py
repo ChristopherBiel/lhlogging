@@ -153,12 +153,14 @@ class Reads(unittest.TestCase):
         days = {("716", day(0)): flight("D-ABYN", day(0), 20, read=-3)}
         self.assertEqual([w["why"] for w in run(days)[0]], ["12h"])
 
-    def test_near_reads_for_the_787_come_after_the_747s(self):
+    def test_near_reads_come_first_in_every_pool(self):
+        # a 787 3 h before it leaves goes with the 747-8's, the earliest first
         days = {("506", day(0)): flight("D-ABPU", day(0), 11, read=-5),
                 ("716", day(0)): flight("D-ABYN", day(0), 11.5, read=-5)}
         work, _ = run(days)
         self.assertEqual([(w["flight_number"], w["cls"]) for w in work],
-                         [("716", plan.NEAR_TOP), ("506", plan.SECOND)])
+                         [("506", plan.NEAR_TOP), ("716", plan.NEAR_TOP)])
+        self.assertEqual(plan.class_of("day", "b787", 1), plan.SECOND)     # its daily reads stay behind
 
     def test_no_near_reads_for_a_flight_leaving_an_outstation(self):
         days = {("717", day(0)): flight("D-ABYN", day(0), 11, dep="HND", arr="FRA", read=-5)}

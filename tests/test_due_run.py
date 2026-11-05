@@ -202,6 +202,14 @@ class DueRun(unittest.TestCase):
         self.assertEqual(self.coverage[-1]["follow_ups"], 1)
         self.assertEqual(days[("718", day(2))]["tail"], "D-ABYN")                        # found it
 
+    def test_where_a_watched_tail_went_comes_before_the_daily_reads(self):
+        days = {("716", day(1)): {"tail": "D-ABYN"}, ("718", day(2)): {"tail": "D-ABYA"}}
+        feed = Feed({("716", day(1)): flight("D-ABYA", "FRA", "HND"),
+                     ("718", day(2)): flight("D-ABYN", "FRA", "HND")})
+        work = [self.item("716", day(1), cls=0, why="watch-near")] + [self.item(str(400 + i), day(3)) for i in range(3)]
+        self.run_due(work, feed, days=days, watched={"D-ABYN"})
+        self.assertEqual(feed.asked[:2], [("716", day(1)), ("718", day(2))])
+
     def test_the_most_valuable_first_and_at_most_due_max(self):
         work = [self.item(str(400 + i), day(1), cls=4) for i in range(5)] + [self.item("716", day(0), cls=0, why="3h")]
         work.sort(key=lambda w: w["cls"])

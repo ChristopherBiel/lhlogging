@@ -2479,7 +2479,8 @@ def _read_due(conn: psycopg.Connection, work: list, due: dict, state: dict, star
                         for k in plan.follow_ups(days, after, done | {key}, today):
                             follow += 1
                             _enqueue(queue, dict(it, flight_number=k[0], flight_date=k[1], why="swap",
-                                                 cls=plan.CLOSE_TOP, lead=(k[1] - today).days, covers=[]))
+                                                 cls=plan.class_of("swap", None, 0), lead=(k[1] - today).days,
+                                                 covers=[]))
                     time.sleep(random.uniform(REQUEST_DELAY_MIN_S, REQUEST_DELAY_MAX_S))
 
                 if status == "ok" and gate.waits:

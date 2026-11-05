@@ -54,7 +54,8 @@ The flown tail comes from ADS-B (fis_legs: the callsign DLH<number> finds it on
 ADS-B did not see is asked for after it has landed ("flown").
 
 When the feed lets a run read only part of what is due, the order is (CLASS):
-    0  near reads of the 747-8, the A380 and the watched tails
+    0  near reads of every pool and of the watched tails, and where a watched
+       tail went after a swap (a run's own follow-ups)
     1  the 747-8 and A380 daily reads (D0..D+9), and flights not read yet
     2  their 6-hourly reads, the watched and the idle tails'
     3  A350 Allegris, to D+4
@@ -63,7 +64,10 @@ When the feed lets a run read only part of what is due, the order is (CLASS):
     6  the far days: Allegris D+5..D+9, 787 and A350 Munich D+3..D+4
     7  flight numbers no pool has flown lately
 inside a class the nearest day first, then the earliest flight. About 350
-lookups a day keep the 747-8 and the A380 complete.
+lookups a day keep the 747-8 and the A380 complete. Until 2026-11-05 the near
+reads of the other pools came in their pool's class; while the feed let a few
+hundred lookups a day through, the 747-8/A380 days to D+9 then took them all,
+and a 787 leaving in 3 h was not read.
 
 Stdlib only, nothing here touches a database or a browser: the collector hands
 in rows (fetch_flightstatus.run_due), the tests their own.
@@ -101,7 +105,7 @@ POOL_TYPE = {"b748": "B748", "a388": "A388", "a350-allegris": "A359", "b787": "B
 
 # the order (see above)
 NEAR_TOP, DAY_TOP, CLOSE_TOP, FIRST, SECOND, FLOWN, FAR, FIND = range(8)
-CLASS_NAME = ("near: 747-8, A380, watched", "daily: 747-8, A380", "6-hourly: 747-8, A380, watched, idle",
+CLASS_NAME = ("near: every pool, watched", "daily: 747-8, A380", "6-hourly: 747-8, A380, watched, idle",
               "A350 Allegris", "787, A350 Munich", "flown", "far days", "new numbers")
 
 DAY = timedelta(hours=24)            # every flight day of a pool: a read this often
@@ -192,13 +196,13 @@ def class_of(why, pool, lead, pools=POOLS):
         return FLOWN
     if why == "find":
         return FIND
-    if why == "watch-near":
+    if why in ("12h", "3h", "watch-near", "swap"):
         return NEAR_TOP
-    if why in ("watch", "swap"):
+    if why == "watch":
         return CLOSE_TOP
     p = pools[pool]
     if p.rank == 0:
-        return {"12h": NEAR_TOP, "3h": NEAR_TOP, "6h": CLOSE_TOP, "idle": CLOSE_TOP}.get(why, DAY_TOP)
+        return {"6h": CLOSE_TOP, "idle": CLOSE_TOP}.get(why, DAY_TOP)
     if why in ("day", "new") and lead > p.near_days:
         return FAR
     return FIRST if p.rank == 1 else SECOND
