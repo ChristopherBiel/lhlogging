@@ -210,7 +210,7 @@ function drawResults(){
   const R = $('results'), d = LAST;
   if(d.error){ R.replaceChildren(state('bad', d.error)); return; }
   const all = d.flights || [];
-  if(!all.length){ R.innerHTML = '<p class="empty">No upcoming flights found. Tails are published four to nine days ahead, depending on the fleet: try again closer to your date, or check the spelling.</p>'; return; }
+  if(!all.length){ R.innerHTML = '<p class="empty">No upcoming flights found. Tails are published up to nine days ahead: try again closer to your date, or check the spelling.</p>'; return; }
   const fs = all.filter(passes);
   if(!fs.length){ R.innerHTML = '<p class="empty">All '+all.length+' flights are hidden by the filters: adjust or reset them.</p>'; return; }
   let h = KEY;

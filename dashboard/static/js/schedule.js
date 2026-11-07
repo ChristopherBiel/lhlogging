@@ -3,8 +3,8 @@
 // /api/schedule. The gantt is built as positioned boxes (a bar is a leg, its
 // length the flight's duration); a leg opens the flight dialog (flight.js).
 // The days to day 4 fill the width as they always have; the fleets read
-// further (747-8, A380, A350 Allegris: to day 9, "pencilled") go on to the
-// right, and the chart scrolls sideways with the tails pinned.
+// further (the 747-8 and A380: to day 9, "pencilled") go on to the right, and
+// the chart scrolls sideways with the tails pinned.
 (() => {
 'use strict';
 
@@ -188,6 +188,11 @@ async function init(){
   // explicit cabin lens, not a row-decluttering toggle like the type boxes.
   let allegOnly=false;
   try { allegOnly = localStorage.getItem(ALLEG_KEY)==='1'; } catch(e){}
+  // no tail shown has the cabin (the 747-8 and A380 only, since 2026-11-07):
+  // no box, and a remembered "only" would hide every row
+  const anyAlleg = d.airframes.some(a=>a.allegris);
+  $('allegchk').hidden = !anyAlleg;
+  if(!anyAlleg) allegOnly=false;
   $('allegchk').classList.toggle('off', !allegOnly);
   $('allegchk').setAttribute('aria-checked', allegOnly?'true':'false');
   const applyTypes=()=>{

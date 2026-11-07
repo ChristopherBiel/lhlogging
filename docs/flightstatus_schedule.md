@@ -46,10 +46,11 @@ lookups a day through from 30 Oct to 5 Nov, in spells of minutes to a few hours,
 and a 24 h pause (5–6 Nov 16:00) did not open it for longer: the evening after
 looked like the evenings before. That is too little for every pool, so the
 A350 and 787 pools are off: no read at all, not near their departure, not of a
-watched tail (D-AIXL, D-ABPU), not after a swap.
+watched tail (D-AIXL, D-ABPU), not after a swap. The pages show the 747-8 and
+the A380 only (`dashboard/app.py`, `_SCHEDULE_TYPES` and `_INSIGHT_FAMILIES`).
 A 747-8 or A380 on a number of theirs is still read, as a 747-8 or A380.
 `FIS_POOLS=a350-allegris=near:9,b787=near:4,a350-muc=near:4` reads them again
-as until then.
+as until then; the pages need their types back too.
 
 A tail's pool comes from its type, its cabin (`airframe_cabin`: Allegris
 published in the last 45 days) and the hub ADS-B saw it at most in two weeks
@@ -374,7 +375,7 @@ changed several times and staleness statistics are meaningless across the seams:
 | 2026-10-30 (written 10-13) | the 22:00 pulse also asks the wide tier's unread flight days of D+5..D+8; census at 08:15; an empty answer is stored as one (`raw` = `{}`) |
 | 2026-10-30 | a run waits for the feed when it is shut (`door.py`) and gives way to the next slot; sweeps and the far pass read the 747-8/A380 first; a flight day answered "no such flight" is not asked again |
 | first hourly run (`batch_runs.coverage->>'plan' = 'due'`) | the read plan: pools, a run every hour, outbounds through their return legs, flown tails from ADS-B, the A350 Frankfurt not read; 747-8/A380 every 6 h at D+1..D+3 and daily to D+9, A350 Allegris daily to D+9, 787/A350 Munich daily to D+4 |
-| 2026-11-07 (the deploy) | the 747-8 and A380 only: no 787 or A350 read (their pools off, their watched tails too); a run reads until the next is due, no 150 cap |
+| 2026-11-07 (the deploy) | the 747-8 and A380 only: no 787 or A350 read (their pools off, their watched tails too), and none shown; a run reads until the next is due, no 150 cap |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.

@@ -297,7 +297,8 @@ ADS-B pipeline can only observe after the fact.
   (Python 3.10+) for what the next run would read, on production rows.
 - **Config:** the read plan: `FIS_POOLS` (empty: levels and days as in
   `plan.POOLS`, the 747-8 and A380 only; `a350-allegris=near:9,b787=near:4,a350-muc=near:4`
-  reads the A350 and 787 again as until 2026-11-07), `FIS_WATCH_TAILS`
+  reads the A350 and 787 again as until 2026-11-07, and the pages need their types back,
+  `_SCHEDULE_TYPES` and `_INSIGHT_FAMILIES` in `dashboard/app.py`), `FIS_WATCH_TAILS`
   (`D-AIMH,D-ABYN,D-AIXL,D-ABPU`; a tail whose pool is off is not read), `FIS_WATCH_LIVERIES`
   (1: also every widebody shown in a special livery), `FIS_DUE_MAX` (0: no cap, a run
   reads until the next is due; 150 a run until 2026-11-07). The passes:
@@ -433,13 +434,13 @@ assignment is to still hold by departure.
   Linked from every tail on `/book`, `/schedule`, `/insights` and `/fleet`.
 - **`/schedule`** — per-airframe upcoming timeline from the latest snapshot of
   each flight, grouped by tail.
-- **`/insights`** — the fleet field guide: one page per family (747-8, A380,
-  787, A350) of the patterns that make a booking better, from the leg layer
+- **`/insights`** — the fleet field guide: one page per family (747-8 and
+  A380; the 787 and A350 too until 2026-11-07) of the patterns that make a booking better, from the leg layer
   (the tail FIS reports as having flown each flight) over the same eight weeks
   the booking model reads. Five figures, each a question with its finding
   spelled out, a plot and the table behind it:
   1. *When can I trust a published tail?* — hold rate against hours before
-     departure for all four fleets (95% intervals, the even-share baseline, the
+     departure for every fleet shown (95% intervals, the even-share baseline, the
      leads at which it crosses 50% and 80%), and what an hour of waiting buys.
      Where fewer flights were looked at that far out (five days and more only
      since 2026-09-24), the rate is corrected to speak for all of them

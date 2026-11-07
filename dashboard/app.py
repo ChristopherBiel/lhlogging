@@ -1173,10 +1173,15 @@ if ADMIN_PATH_PREFIX:
 # Canonical fleet types (from the aircraft table) → short Gantt labels.
 _CANON_SHORT = {"B748": "748", "A388": "388", "B788": "788", "B789": "789",
                 "B78X": "78X", "A359": "359", "A35K": "35K"}
-# Only these airframe types are shown on the schedule. Mirrors the fetcher's
-# FIS_SEED_TYPES, incl. the not-yet-delivered variants (B788/B78X/A35K) so they
-# appear the day the collector first sees one.
-_SCHEDULE_TYPES = ("B748", "A388", "B788", "B789", "B78X", "A359", "A35K")
+# Only these airframe types are shown on the schedule, /book and (as families,
+# _INSIGHT_FAMILIES) /insights. Since 2026-11-07 the 747-8 and the A380 only:
+# the collector reads no 787 or A350 for now (flightstatus/plan.py, POOLS). To
+# show them again, turn their pools on and add "B788", "B789", "B78X", "A359",
+# "A35K" here (the not-yet-delivered variants too, so they appear the day the
+# collector first sees one) and their families to _INSIGHT_FAMILIES.
+_SCHEDULE_TYPES = ("B748", "A388")
+# how the pages name them, where they say why a tail is not shown
+_SCHEDULE_FLEETS = "the 747-8 and the A380"
 # Furthest flight date (days from today) the upcoming-flight pages show a
 # published tail for: BOOK_HORIZON_DAYS, the day every tier is read to, unless
 # BOOK_HORIZON_BY_TYPE names the fleet. FIS publishes tails out to D+9 and the
@@ -1188,7 +1193,8 @@ _SCHEDULE_TYPES = ("B748", "A388", "B788", "B789", "B78X", "A359", "A35K")
 # labelled "pencilled". Since 2026-11-01 the collector reads by pool
 # (flightstatus/plan.py): the A350 Allegris to D+9 as well
 # (BOOK_HORIZON_ALLEGRIS: an A350 flight sold with the Allegris cabin), the
-# 787 and the other A350 to D+4, the A350 Frankfurt not at all. The Schedule's
+# 787 and the other A350 to D+4, the A350 Frankfurt not at all; since
+# 2026-11-07 the 747-8 and the A380 only (_SCHEDULE_TYPES). The Schedule's
 # gantt keeps BOOK_HORIZON_DAYS for every fleet unless asked for more
 # (/api/schedule?days=9): nine days on its axis would halve its scale.
 BOOK_HORIZON_DAYS = int(os.environ.get("BOOK_HORIZON_DAYS", "4"))
@@ -1765,6 +1771,8 @@ def _simulate_fleets(stats, hist, ahead, now, absent=()):
     conn_hist = fleet_sim.connections(hist, now)
     sims = {}
     for ftype in fleet_sim.SIM_TYPES:
+        if ftype not in _SCHEDULE_TYPES:       # a fleet the pages do not show
+            continue
         projected = [l for l in booking_model.project_schedule(hist, dates, now, ftype=ftype,
                                                                ahead=ahead, absent=absent)
                      if (l["flight_date"], l["flight_number"]) not in have]
@@ -2298,6 +2306,8 @@ def api_book():
     target = (request.args.get("target") or "").strip().upper() or None
     try:
         stats, _hist = _booking_model(conn)
+        if reg and stats is not None and stats.tail_type.get(reg) not in (None, *_SCHEDULE_TYPES):
+            return jsonify({"error": f"{reg} is not read for now: only {_SCHEDULE_FLEETS} are"}), 404
         if stats is not None:
             legs = _upcoming_legs(conn, reg=reg, dep=dep, arr=arr)
             rows = [(l["flight_date"], l["airline"], l["flight_number"], l["latest_tail"],
@@ -2394,6 +2404,8 @@ def api_book_plan():
                   "ORDER BY is_active DESC LIMIT 1", (target,))
         if not ttype:
             return jsonify({"error": f"unknown tail {target}"}), 404
+        if ttype not in _SCHEDULE_TYPES:
+            return jsonify({"error": f"{target} is not read for now: only {_SCHEDULE_FLEETS} are"}), 404
         alleg = _allegris_tails(conn)
         horizon = today + timedelta(days=_horizon_days(ttype, target in alleg))
         firm = today + timedelta(days=BOOK_HORIZON_DAYS)
@@ -3857,12 +3869,13 @@ def api_book_network():
 
 # Insights tab -> member aircraft types, in display order. A family aggregates
 # every variant, incl. the not-yet-delivered ones (same rationale as
-# _SCHEDULE_TYPES): they show up the day the collector first sees one.
+# _SCHEDULE_TYPES): they show up the day the collector first sees one. Since
+# 2026-11-07 the 747-8 and the A380 only, as _SCHEDULE_TYPES (until then also
+# "B787": ("B788", "B789", "B78X") and "A350": ("A359", "A35K")); the monitor
+# on / counts these families too.
 _INSIGHT_FAMILIES = {
     "B748": ("B748",),
     "A388": ("A388",),
-    "B787": ("B788", "B789", "B78X"),
-    "A350": ("A359", "A35K"),
 }
 
 
@@ -3947,7 +3960,7 @@ _SCHEDULE = {
         </div>
         <details class="fold">
           <summary class="fold__sum">How to read this</summary>
-          <p class="aside">Times in Frankfurt local; a bar is as long as the flight. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. A grey strip at the end of a bar marks a leg whose tail was <b>swapped</b>. The 747-8, A380 and A350 Allegris are shown to <b>day 9</b>: past the dashed line at the end of day 4 the chart goes on to the right (scroll sideways, or <b>Days 5&ndash;9</b> above), and their bars there are framed dashed &mdash; <b>pencilled</b>, an early plan that changes more often (five days out, a published A380 tail flies it about three times in four, a 747-8 tail one time in four). The 787 and the other A350s are read to day 4, the Frankfurt A350s not at all. A dashed bar nearer in has not been read for 36 hours. Your tails (the ones you planned on <a class="tail-link" href="/book">Catch a Tail</a>, remembered in this browser) are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out and back legs across the time it is <b>parked away from base</b>. Click a leg for details; click a tail for its airframe page.</p>
+          <p class="aside">Times in Frankfurt local; a bar is as long as the flight. The ink <b>NOW</b> line splits past from plan: to its <b>left</b>, solid bars are what each tail actually did (ADS-B) and a hatched bar is an unplanned flight; to the <b>right</b>, white bars framed in the type colour are the plan, and grey dashed bars are <b>planned slots</b> not yet tracked. A grey strip at the end of a bar marks a leg whose tail was <b>swapped</b>. The 747-8 and A380 are shown to <b>day 9</b>: past the dashed line at the end of day 4 the chart goes on to the right (scroll sideways, or <b>Days 5&ndash;9</b> above), and their bars there are framed dashed &mdash; <b>pencilled</b>, an early plan that changes more often (five days out, a published A380 tail flies it about three times in four, a 747-8 tail one time in four). A dashed bar nearer in has not been read for 36 hours. Your tails (the ones you planned on <a class="tail-link" href="/book">Catch a Tail</a>, remembered in this browser) are starred and grouped up top, above a dashed rule. A faint tie-line links a tail&rsquo;s out and back legs across the time it is <b>parked away from base</b>. Click a leg for details; click a tail for its airframe page.</p>
         </details>
       </div>
     </section>""",
@@ -4031,10 +4044,8 @@ _BOOK = {
         <div class="fp-sec__note filterbar" id="filterbar" hidden>
           <span class="fchk" data-fam="747" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t748"></span>747-8</span>
           <span class="fchk" data-fam="A380" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t388"></span>A380</span>
-          <span class="fchk" data-fam="787" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t789"></span>787</span>
-          <span class="fchk" data-fam="A350" role="checkbox" aria-checked="true" tabindex="0"><span class="sw t359"></span>A350</span>
-          <span class="flabel">Allegris</span>
-          <div class="fp-seg" id="f-alleg"><button type="button" class="is-on" data-v="any">any</button><button type="button" data-v="yes">yes</button><button type="button" data-v="no">no</button></div>
+          <span class="flabel" hidden>Allegris</span>
+          <div class="fp-seg" id="f-alleg" hidden><button type="button" class="is-on" data-v="any">any</button><button type="button" data-v="yes">yes</button><button type="button" data-v="no">no</button></div>
           <span class="flabel">First</span>
           <div class="fp-seg" id="f-first"><button type="button" class="is-on" data-v="any">any</button><button type="button" data-v="yes">yes</button><button type="button" data-v="no">no</button></div>
           <button class="fp-btn" id="f-reset" type="button">Reset</button>

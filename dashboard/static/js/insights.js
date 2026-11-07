@@ -852,7 +852,10 @@ async function init() {
     lede.replaceChildren(state('bad', 'The insights could not be loaded'));
     return;
   }
-  FLEETS.forEach(([id, label]) => {
+  // the families the dashboard serves (app.py _INSIGHT_FAMILIES; the 747-8 and
+  // the A380 since 2026-11-07), all of them if the page could not say
+  const served = D.trust ? D.trust.fleets.map(fl => fl.id) : FLEETS.map(([id]) => id);
+  FLEETS.filter(([id]) => served.includes(id)).forEach(([id, label]) => {
     const a = el('a', D.family === id ? 'is-on' : '', label);
     a.href = '/insights?type=' + id + (REG ? '&reg=' + encodeURIComponent(REG) : '');
     if (D.family === id) a.setAttribute('aria-current', 'page');
