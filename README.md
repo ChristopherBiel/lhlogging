@@ -246,7 +246,7 @@ TRACK_AIRCRAFT_TYPES=
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 | **Flight-Routes Seed** | Mondays at 02:30 UTC | Rebuilds the `flight_routes` callsign→route reference from a consensus of clean flights (plus curated overrides) |
-| **Flight-Status Fetch** | Every hour at :07, Europe/Berlin ([read plan](docs/flightstatus_schedule.md)) | Asks the public Lufthansa FIS feed for what has fallen due in the read plan (`flightstatus/plan.py`): the long-haul fleet pool by pool — since 2026-11-07 the 747-8 and A380 only: to D+9 (every 6 h at D+1…D+3), each flight 12 h and 3 h before it leaves a hub, the watched tails every 6 h — the most valuable first, ~390 lookups a day (the A350 and 787 are not read: their pools are off). Records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
+| **Flight-Status Fetch** | Every hour at :07, Europe/Berlin ([read plan](docs/flightstatus_schedule.md)) | Asks the public Lufthansa FIS feed for what has fallen due in the read plan (`flightstatus/plan.py`): the long-haul fleet pool by pool — since 2026-11-07 the 747-8 and A380 only: to D+9 (every 6 h at D+1…D+3), each flight 12 h and 3 h before it leaves a hub, the watched tails every 6 h — the most valuable first, while the feed answers, ~390 lookups a day (the A350 and 787 are not read: their pools are off). Records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
 | **Timetable Census** | Daily at 08:40, Europe/Berlin | Asks the feed for a sixth of the long-haul flight numbers (LH400–799) the catalog does not sweep, eight days ahead, so a flight new to the timetable is found before it flies |
 
 ---
@@ -276,7 +276,7 @@ ADS-B pipeline can only observe after the fact.
 
   | mode | what it does | ~lookups |
   |---|---|---|
-  | `--due` | the read plan, the crontab's run: what has fallen due since the last run, most valuable first; an outbound through its return leg; the catalog's upkeep once a day | ~30 (≤150) |
+  | `--due` | the read plan, the crontab's run: what has fallen due since the last run, most valuable first, until the next run is due; an outbound through its return leg; the catalog's upkeep once a day | ~16 (a backlog: as many as the feed answers) |
   | *(none)* | near sweep, D-2…D+2 — owns discovery, pairing, catalog lifecycle, `previousFlight` chaining, coverage audit (the passes below ran until 2026-10-31; by hand now) | 400–470 |
   | `--far` | far pass, D+3 for every number, D+4 for the deep and wide tiers, the deep tier's D+1/D+2 first; read-only against the catalog | ~310 |
   | `--watch H` | re-check only flights departing within the next H hours | 5–50 |
@@ -299,7 +299,8 @@ ADS-B pipeline can only observe after the fact.
   `plan.POOLS`, the 747-8 and A380 only; `a350-allegris=near:9,b787=near:4,a350-muc=near:4`
   reads the A350 and 787 again as until 2026-11-07), `FIS_WATCH_TAILS`
   (`D-AIMH,D-ABYN,D-AIXL,D-ABPU`; a tail whose pool is off is not read), `FIS_WATCH_LIVERIES`
-  (1: also every widebody shown in a special livery), `FIS_DUE_MAX` (150 a run). The passes:
+  (1: also every widebody shown in a special livery), `FIS_DUE_MAX` (0: no cap, a run
+  reads until the next is due; 150 a run until 2026-11-07). The passes:
   `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`),
   `FIS_LOOKAHEAD_DAYS` (2), `FIS_BACKFILL_DAYS` (2), `FIS_FAR_MIN_DAYS`/`MAX_DAYS`
   (3/3), `FIS_FAR_DEEP_MAX_DAYS` (4), `FIS_DEEP_TYPES`, `FIS_PULSE_OFFSETS`

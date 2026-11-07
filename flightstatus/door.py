@@ -114,6 +114,10 @@ class Door:
             self._close()
         self.page = None
 
+    def overdue(self):
+        """Whether the run's time is up: the next run is due (the deadline)."""
+        return self.deadline is not None and self._now() >= self.deadline
+
     def fetch(self, label, ask):
         """One lookup: `ask(page)` -> (kind, payload, note), `note` saying what
         a refusal was. Returns the payload of an answer; None if the lookup is
@@ -121,7 +125,7 @@ class Door:
         Raises Stop when the run has to stop; the lookup is then not done."""
         attempt = 1
         while True:
-            if self.waits and self.deadline is not None and self._now() >= self.deadline:
+            if self.waits and self.overdue():
                 raise Stop("deadline", "gave way to the next run at %s, after waiting for the feed %s"
                            % (_hm(self._now()), self.waited()))
             if self.page is None:

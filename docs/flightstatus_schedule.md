@@ -17,11 +17,15 @@ change. The read plan asks for about a third of that, and for what matters
 most first, so that what the feed lets through is spent well.
 
 **One kind of run, every hour** (`--due`, at seven past, with up to ten minutes
-of random wait). Each run asks for what has fallen due since the last one, at
-most `FIS_DUE_MAX` (150) lookups; a run with nothing due opens no browser. When
-the feed is shut it waits for it as before (`door.py`), and the next run,
-finding that the run before stopped for that, waits at its first shut session
-instead of its third.
+of random wait). Each run asks for what has fallen due since the last one, and
+reads while the feed answers, until shortly before the next run is due (that
+slot less `FIS_DOOR_MARGIN_MIN`); what is left, that run plans again. A run
+with nothing due opens no browser. When the feed is shut it waits for it as
+before (`door.py`), and the next run, finding that the run before stopped for
+that, waits at its first shut session instead of its third. Until 7 Nov a run
+stopped at 150 lookups (`FIS_DUE_MAX`, now 0: no cap) whether the feed was open
+or not: on 5–6 Nov five runs ended so with up to 373 due, and on 5 Nov most of
+two hours of open feed went unused between them.
 
 **Pools.** Tails swap almost only within their pool: of the changes on flights
 departing 12–26 Oct, 93–100% brought a tail of the same pool. A pool is
@@ -154,9 +158,9 @@ the production rows, as if the feed answered every read. On the rows of
 the fifteen passes made ~2,270. The 6-hourly reads of the 747-8/A380 are the
 largest part (~255); the replay of 1 Nov had put the plan at ~700, but it
 could count D+3 only as often as the passes had read it (about twice a day).
-The first runs after a shut spell read the backlog, 150 a run; at night,
-when the feed is often shut, what falls due waits for the morning, so the
-real count is somewhat lower.
+The first runs after a shut spell read the backlog while the feed answers; at
+night, when the feed is often shut, what falls due waits for the morning, so
+the real count is somewhat lower.
 
 With the 747-8 and the A380 only (the rows of 7 Nov 2026, 01:01 UTC): about
 390 lookups a day — 747-8 ~272, A380 ~115, numbers no pool has flown 3 — and
@@ -370,7 +374,7 @@ changed several times and staleness statistics are meaningless across the seams:
 | 2026-10-30 (written 10-13) | the 22:00 pulse also asks the wide tier's unread flight days of D+5..D+8; census at 08:15; an empty answer is stored as one (`raw` = `{}`) |
 | 2026-10-30 | a run waits for the feed when it is shut (`door.py`) and gives way to the next slot; sweeps and the far pass read the 747-8/A380 first; a flight day answered "no such flight" is not asked again |
 | first hourly run (`batch_runs.coverage->>'plan' = 'due'`) | the read plan: pools, a run every hour, outbounds through their return legs, flown tails from ADS-B, the A350 Frankfurt not read; 747-8/A380 every 6 h at D+1..D+3 and daily to D+9, A350 Allegris daily to D+9, 787/A350 Munich daily to D+4 |
-| 2026-11-07 (the deploy) | the 747-8 and A380 only: no 787 or A350 read (their pools off, their watched tails too) |
+| 2026-11-07 (the deploy) | the 747-8 and A380 only: no 787 or A350 read (their pools off, their watched tails too); a run reads until the next is due, no 150 cap |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.

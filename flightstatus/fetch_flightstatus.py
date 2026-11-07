@@ -257,9 +257,12 @@ WATCH_LIVERIES = os.environ.get("FIS_WATCH_LIVERIES", "1") == "1"
 # poller stopped), not the fleet, and nobody counts as idle.
 IDLE_HOURS = 36
 IDLE_MAX_SHARE = 0.4
-# A run reads at most this many (~30 min); what is left the next run plans
-# again, with fresher looks.
-DUE_MAX = int(os.environ.get("FIS_DUE_MAX", "150"))
+# A run reads while the feed answers, until shortly before the next one is due
+# (the crontab's next slot, less DOOR_MARGIN_MIN); what is left, that run plans
+# again, with fresher looks. A number here caps a run at that many lookups (0:
+# no cap, since 2026-11-07; 150 until then, which ended a run after ~30 min even
+# when the feed was still open, and the next often found it shut).
+DUE_MAX = int(os.environ.get("FIS_DUE_MAX", "0"))
 # Who flew a number lately: the feed's looks and ADS-B's callsigns, this far back.
 POOL_DAYS = 14
 # The plan's window: the feed keeps a few days of the past (the flown tail)
@@ -2368,7 +2371,8 @@ def _enqueue(queue: list, item: dict) -> None:
 
 def run_due(dry_run: bool = False) -> int:
     """A run of the read plan (plan.py): ask the feed for what has fallen due
-    since the last run, the most valuable first, at most DUE_MAX."""
+    since the last run, the most valuable first, until the next run is due
+    (and at most DUE_MAX, if set)."""
     conn = connect()
     now = datetime.now(timezone.utc)
     if not dry_run:
@@ -2418,12 +2422,17 @@ def _read_due(conn: psycopg.Connection, work: list, due: dict, state: dict, star
                     args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
                 )
                 gate = _door(browser, conn, run_id, shut_since=_shut_before(conn, run_id, started))
-                while queue and total < DUE_MAX:
+                while queue and (DUE_MAX <= 0 or total < DUE_MAX):
                     it = queue[0]
                     key = (it["flight_number"], it["flight_date"])
                     if key in done:
                         queue.pop(0)
                         continue
+                    # the next run is due: it plans what is left (a run that
+                    # waited for the feed the door stops, door.Door.fetch)
+                    if not gate.waits and gate.overdue():
+                        log(f"due: the next run is due, {len(queue)} left for it")
+                        break
                     if gate.asked >= SESSION_LOOKUPS:
                         log(f"  recycling session after {gate.asked} lookups")
                         resets += 1

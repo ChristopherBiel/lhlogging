@@ -158,10 +158,15 @@ class Shut(unittest.TestCase):
         self.assertEqual((f.opened, d.waits, d.shut), (1, [], 0))
 
     def test_a_run_that_did_not_wait_is_not_cut_at_the_deadline(self):
+        # the door still answers it; the run sees that the next one is due
+        # (overdue) and leaves the rest to it (fetch_flightstatus._read_due)
         f = Feed((403, [A]))
         d = f.door(wait=timedelta(minutes=15), deadline=START + timedelta(minutes=1))
+        self.assertFalse(d.overdue())
         f.sleep(600)
-        self.assertEqual(d.fetch("LH716", f.ask), {"flights": []})   # as before: the lock skips the next
+        self.assertTrue(d.overdue())
+        self.assertEqual(d.fetch("LH716", f.ask), {"flights": []})
+        self.assertFalse(f.door().overdue())                         # by hand: no deadline, never due
 
 
 class NextSlot(unittest.TestCase):

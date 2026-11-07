@@ -21,8 +21,9 @@ FIS_DOOR_WAIT_MIN=15
 #
 # an outbound through its return leg, which names it as its previousFlight; the
 # flown tail from ADS-B, and from the feed where ADS-B did not see it. About 390
-# lookups a day, ~16 a run; a run reads at most FIS_DUE_MAX (150). Nothing due:
-# no browser, a run of 0 lookups. When the feed is shut (door.py) a run waits
+# lookups a day, ~16 a run; a run reads while the feed answers, until shortly
+# before the next line is due (FIS_DUE_MAX 0: no cap since 2026-11-07, 150 a run
+# before). Nothing due: no browser, a run of 0 lookups. When the feed is shut (door.py) a run waits
 # for it until the next line here, and the next run, finding the run before it
 # stopped for that, waits at its first shut session instead of its third.
 #
@@ -37,6 +38,6 @@ FIS_DOOR_WAIT_MIN=15
 # D+8. A widebody found on one enters the catalog with the next day's upkeep, a
 # week before the flight operates. ~47 lookups, nearly all answered "no such
 # flight" at once; between the 08:07 and the 09:07 run (if the 08:07 run is
-# still reading, the slot is skipped, like any other).
+# still reading a backlog, the slot is skipped, like any other).
 7  *  * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=600 /app/run_nightly.sh --due >> /var/log/lhlogging/flightstatus.log 2>&1
 40 8  * * *  root  . /etc/environment && NIGHTLY_JITTER_MAX_S=300 /app/run_nightly.sh --census >> /var/log/lhlogging/flightstatus.log 2>&1

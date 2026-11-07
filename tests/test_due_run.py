@@ -222,6 +222,32 @@ class DueRun(unittest.TestCase):
         self.assertEqual(self.coverage[-1]["left"], {"b748": 3})
         self.assertIn("3 due left for the next run", self.finished[-1][-1])
 
+    def test_no_cap_by_default(self):
+        # until 2026-11-07 a run stopped at 150 lookups, open feed or not
+        self.assertEqual(self.fs.DUE_MAX, 0)
+        work = [self.item(str(400 + i % 400), day(1 + i // 400)) for i in range(160)]
+        self.run_due(work, Feed({}))
+        self.assertEqual(self.finished[-1][0], 160)
+        self.assertEqual(self.finished[-1][4:], ("ok", None))
+
+    def test_a_run_reads_on_until_the_next_one_is_due(self):
+        # the clock moves a minute a lookup, the next run is due in three: what
+        # is left is the next run's (an "ok" run, not a blocked one)
+        real, calls = self.fs._door, []
+        start = datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+
+        def door_(*a, **kw):
+            gate = real(*a, **kw)
+            gate.deadline = start + timedelta(minutes=3)
+            gate._now = lambda: calls.append(1) or start + timedelta(minutes=len(calls) - 1)
+            return gate
+        self.patched.setdefault("_door", real)
+        self.fs._door = door_
+        self.run_due([self.item(str(400 + i), day(1)) for i in range(5)], Feed({}))
+        self.assertEqual(self.finished[-1][0], 3)
+        self.assertEqual(self.finished[-1][4:], ("ok", "2 due left for the next run"))
+        self.assertEqual(self.coverage[-1]["left"], {"b748": 2})
+
     def test_a_watched_tail_counts_only_where_its_pool_is_read(self):
         rows = {"tails": [("D-ABYN", "B748", 10, 0, NOW), ("D-AIXL", "A359", 0, 10, NOW),
                           ("D-ABPU", "B789", 10, 0, NOW)],
