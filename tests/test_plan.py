@@ -19,6 +19,9 @@ NOW = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)            # a Monday, 10:00 in Be
 TODAY = date(2026, 11, 2)
 TAILS = {"D-ABYN": "b748", "D-ABYA": "b748", "D-AIMH": "a388", "D-AIXL": "a350-muc",
          "D-AIXF": "a350-muc", "D-AIXR": "a350-allegris", "D-AIXA": "a350-fra", "D-ABPU": "b787"}
+# the pools as they were read 2026-11-01..11-07, every one but the A350
+# Frankfurt: what the plan does across pools is tested on them
+ALL = plan.configure("a350-allegris=near:9,b787=near:4,a350-muc=near:4")
 
 
 def day(n):
@@ -40,10 +43,11 @@ def flight(tail, d, dep_h, dep="FRA", arr="HND", read=-2.0, block=12.0, prev=Non
     return out
 
 
-def run(days, numbers=None, now=NOW, quiet=True, **kw):
-    """plan.plan at `now`; `numbers` by default: each number in `days` flown
-    by its tails' pool. `quiet`: the days of those numbers that `days` does not
-    name were answered "no such flight" (else each would be a new day)."""
+def run(days, numbers=None, now=NOW, quiet=True, pools=ALL, **kw):
+    """plan.plan at `now` on `pools` (ALL by default); `numbers` by default:
+    each number in `days` flown by its tails' pool. `quiet`: the days of those
+    numbers that `days` does not name were answered "no such flight" (else each
+    would be a new day)."""
     if numbers is None:
         numbers = {}
         for (n, _d), fd in days.items():
@@ -54,7 +58,7 @@ def run(days, numbers=None, now=NOW, quiet=True, **kw):
         for n in {k[0] for k in days}:
             for i in range(-3, 10):
                 days.setdefault((n, day(i)), {"answered_at": hours(-1), "absent": True})
-    return plan.plan(now, days, TAILS, numbers, **kw)
+    return plan.plan(now, days, TAILS, numbers, pools=pools, **kw)
 
 
 def keys(work):
@@ -78,10 +82,28 @@ class Pools(unittest.TestCase):
         self.assertIsNone(plan.pool_of("A320"))
 
     def test_the_pools_as_agreed(self):
+        # since 2026-11-07 the 747-8 and the A380 only
         P = plan.POOLS
         self.assertEqual({p: (P[p].level, P[p].days) for p in P}, {
+            "b748": (plan.CLOSE, 9), "a388": (plan.CLOSE, 9), "a350-allegris": (plan.OFF, 0),
+            "b787": (plan.OFF, 0), "a350-muc": (plan.OFF, 0), "a350-fra": (plan.OFF, 0)})
+        # and as until then, with FIS_POOLS
+        self.assertEqual({p: (ALL[p].level, ALL[p].days) for p in ALL}, {
             "b748": (plan.CLOSE, 9), "a388": (plan.CLOSE, 9), "a350-allegris": (plan.NEAR, 9),
             "b787": (plan.NEAR, 4), "a350-muc": (plan.NEAR, 4), "a350-fra": (plan.OFF, 0)})
+        self.assertEqual({p: (ALL[p].rank, ALL[p].near_days) for p in ALL},
+                         {p: (P[p].rank, P[p].near_days) for p in P})
+
+    def test_a_pool_that_is_off_is_not_read(self):
+        # the default pools: a 787 and an A350 are not asked about, not even
+        # near their departure; a 747-8 on an A350 number still is
+        days = {("506", day(0)): flight("D-ABPU", day(0), 12.0, read=-20.0),
+                ("412", day(1)): flight("D-AIXL", day(1), 12.0, dep="MUC", arr="JFK", read=-30.0),
+                ("714", day(1)): flight("D-ABYN", day(1), 12.0, read=-30.0)}
+        numbers = {"506": {"b787": 12}, "412": {"a350-muc": 12}, "714": {"a350-muc": 12}}
+        work, due = run(days, numbers=numbers, pools=plan.POOLS)
+        self.assertEqual({w["flight_number"] for w in work}, {"714"})
+        self.assertEqual(set(due), {"b748"})
 
     def test_configure(self):
         P = plan.configure("a350-fra=near:4, b787=near:9, x=near:1, b748=loud:3, a388=off")

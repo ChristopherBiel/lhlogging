@@ -103,21 +103,27 @@ class Plan(unittest.TestCase):
         P = plan.POOLS
         self.assertEqual(ms.horizon("deep"), P["b748"].days)
         self.assertEqual(ms.horizon("deep"), P["a388"].days)
-        self.assertEqual(ms.horizon("wide"), max(P["b787"].days, P["a350-muc"].days))
-        self.assertEqual(ms.SHOWN, {"deep": 9, "wide": 4})
         self.assertEqual(ms.DUE_READS["deep"][2], plan.DAY // plan.CLOSE_EVERY)        # every 6 h
+        # the 787/A350 tier has a plan exactly when one of its pools is read
+        # (none since 2026-11-07), and then the furthest day of them
+        wide = [P[p] for p in ("b787", "a350-muc", "a350-allegris", "a350-fra") if P[p].level != plan.OFF]
+        self.assertEqual("wide" in ms.DUE_READS, bool(wide))
+        if wide:
+            self.assertEqual(ms.horizon("wide"), max(p.days for p in wide))
+        self.assertEqual(ms.SHOWN, {"deep": 9, "wide": 4})                             # wide: the passes'
+        self.assertEqual(ms.READS["due"], {t: tuple(range(-3, 10)) for t in ms.DUE_READS})
 
     def test_how_often_a_day_is_read(self):
         per = ms.reads_per_day()
         self.assertEqual((per["deep"][1], per["deep"][2], per["deep"][4], per["deep"][9]), (4, 4, 1, 1))
-        self.assertEqual((per["wide"][1], per["wide"][4]), (1, 1))
-        self.assertNotIn(5, per["wide"])
+        self.assertEqual(per["wide"], {})                    # not read since 2026-11-07
         old = ms.reads_per_day(hourly=False)                  # the passes
         self.assertEqual((old["deep"][1], old["deep"][2], old["deep"][4], old["deep"][9]), (10, 10, 1, 1))
         self.assertEqual((old["wide"][1], old["wide"][3], old["wide"][4]), (2, 2, 1))
         self.assertEqual((ms.horizon("deep", False), ms.horizon("wide", False)), (9, 4))
         self.assertEqual(ms.readers("wide", 4, hourly=False), [SLOT["11:20"]])   # one pass read their day 4
-        self.assertEqual(len(ms.readers("wide", 4)), 24)                       # every hourly run may
+        self.assertEqual(len(ms.readers("deep", 9)), 24)                       # every hourly run may
+        self.assertEqual(ms.readers("wide", 4), [])
 
     def test_a_day_is_judged_by_the_plan_it_ran_under(self):
         # the far pass and a pulse swapped places on 12 Oct 2026
@@ -331,15 +337,14 @@ class Hourly(unittest.TestCase):
         self.assertEqual([(c["tier"], c["lead"], c["state"]) for c in mine["cells"]], [("deep", 1, "read")])
         self.assertEqual({len(s["cells"]) for s in out["slots"] if s["state"] == "planned"}, {0})
         self.assertEqual({t["id"]: (t["horizon"], t["shown"], t["per_day"]["1"]) for t in out["tiers"]},
-                         {"deep": (9, 9, 4), "wide": (4, 4, 1)})
+                         {"deep": (9, 9, 4)})                 # the 787/A350: no plan since 2026-11-07
 
     def test_every_day_it_reads_is_due(self):
         rows = [{"flight_date": TODAY + timedelta(days=d), "type": t, "legs": n, "newest": NOW}
                 for t, n in (("B748", 22), ("A359", 46)) for d in range(-30, 3)]
         due = lambda now: {c["id"]: c["due_through"] for c in ms.coverage(rows, now, FAMILIES, self.SINCE)}
         self.assertEqual(due(NOW)["B748"], (TODAY + timedelta(days=9)).isoformat())
-        self.assertEqual(due(NOW)["A350"], (TODAY + timedelta(days=4)).isoformat())
-        self.assertEqual(due(at(0, "08:00"))["A350"], (TODAY + timedelta(days=3)).isoformat())   # night: not day 4 yet
+        self.assertIsNone(due(NOW)["A350"])                  # not read since 2026-11-07: nothing is due
         self.assertEqual(due(at(0, "15:00"))["B748"], (TODAY + timedelta(days=8)).isoformat())   # day 9 fills by day
 
     def test_answers_without_a_flight_are_answers(self):

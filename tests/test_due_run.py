@@ -222,6 +222,20 @@ class DueRun(unittest.TestCase):
         self.assertEqual(self.coverage[-1]["left"], {"b748": 3})
         self.assertIn("3 due left for the next run", self.finished[-1][-1])
 
+    def test_a_watched_tail_counts_only_where_its_pool_is_read(self):
+        rows = {"tails": [("D-ABYN", "B748", 10, 0, NOW), ("D-AIXL", "A359", 0, 10, NOW),
+                          ("D-ABPU", "B789", 10, 0, NOW)],
+                "days": [], "numbers": [], "liveries": [("D-ABPU",)]}
+        watch = ["D-ABYN", "D-AIXL"]
+        self.assertEqual(self.fs.due_inputs(rows, NOW, watch=watch, liveries=True)["watched"], {"D-ABYN"})
+        both = self.plan.configure("b787=near:4,a350-muc=near:4")          # as until 2026-11-07
+        self.assertEqual(self.fs.due_inputs(rows, NOW, watch=watch, liveries=True, pools=both)["watched"],
+                         {"D-ABYN", "D-AIXL", "D-ABPU"})
+        # an idle tail too (none of the three has flown for two days)
+        rows["tails"] = [(t, ft, fra, muc, NOW - timedelta(hours=48)) for t, ft, fra, muc, _ in rows["tails"]]
+        rows["tails"] += [("D-ABY%s" % c, "B748", 10, 0, NOW) for c in "ABCDEFG"]   # the fleet flies
+        self.assertEqual(self.fs.due_inputs(rows, NOW, watch=[])["idle"], {"D-ABYN"})
+
     def test_a_shut_feed_stops_the_run_and_what_is_left_is_counted(self):
         feed = Feed({}, nav=200, refuse=True)                  # by hand: no wait, stops at the third session
         self.assertEqual(self.run_due([self.item("716", day(1)), self.item("717", day(2))], feed), 1)

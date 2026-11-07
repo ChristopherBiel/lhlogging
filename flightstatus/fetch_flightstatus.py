@@ -242,11 +242,13 @@ CATALOG_RETIRE_MISSES = int(os.environ.get("FIS_CATALOG_RETIRE_MISSES", "8"))
 LEGS_REFRESH_DAYS = int(os.environ.get("FIS_LEGS_REFRESH_DAYS", "3"))
 
 # --- the read plan (--due, plan.py; the crontab's only schedule since 2026-11-01)
-# The pools' levels and how far each is read, over plan.POOLS: e.g.
-# "a350-fra=near:4" reads the A350 Frankfurt again, "b787=near:9" the 787 to D+9.
+# The pools' levels and how far each is read, over plan.POOLS: since 2026-11-07
+# only the 747-8 and the A380; "a350-allegris=near:9,b787=near:4,a350-muc=near:4"
+# reads the A350 and the 787 again as until then.
 POOLS = plan.configure(os.environ.get("FIS_POOLS", ""))
-# Tails read every 6 h to D+3 in any pool: these, and (FIS_WATCH_LIVERIES=1)
-# every widebody the feed has shown in a special livery in the last 30 days.
+# Tails read every 6 h to D+3 in any pool that is read: these, and
+# (FIS_WATCH_LIVERIES=1) every widebody the feed has shown in a special livery
+# in the last 30 days. D-AIXL (A350) and D-ABPU (787) wait while their pools are off.
 WATCH_TAILS = [t.strip().upper() for t in os.environ.get(
     "FIS_WATCH_TAILS", "D-AIMH,D-ABYN,D-AIXL,D-ABPU").split(",") if t.strip()]
 WATCH_LIVERIES = os.environ.get("FIS_WATCH_LIVERIES", "1") == "1"
@@ -2258,10 +2260,13 @@ def _flight_day(row) -> tuple:
                  if (pa or "").strip() == "LH" and pn and pd and pn.isdigit() else None)}
 
 
-def due_inputs(rows: dict, now: datetime, watch=None, liveries=None) -> dict:
-    """plan.plan's keyword arguments (bar now and pools) from due_rows."""
+def due_inputs(rows: dict, now: datetime, watch=None, liveries=None, pools=None) -> dict:
+    """plan.plan's keyword arguments (bar now and pools) from due_rows. A
+    watched tail counts only where its pool is read (`pools`, POOLS): a pool
+    that is off is not read at all, nor after a swap (2026-11-07)."""
     watch = WATCH_TAILS if watch is None else watch
     liveries = WATCH_LIVERIES if liveries is None else liveries
+    pools = POOLS if pools is None else pools
     allegris = {norm_registration(r[0]) for r in rows.get("allegris", ())}
     tails, types, flown = {}, {}, {}
     for tail, ftype, fra, muc, last in rows["tails"]:
@@ -2281,11 +2286,13 @@ def due_inputs(rows: dict, now: datetime, watch=None, liveries=None) -> dict:
     watched = {t for t in watch if t}
     if liveries:
         watched |= {norm_registration(r[0]) for r in rows.get("liveries", ())} & set(tails)
+    watched = {t for t in watched if t in tails and pools[tails[t]].level != plan.OFF}
     idle = {t for t, last in flown.items() if last is None or now - last > timedelta(hours=IDLE_HOURS)}
     if len(idle) > IDLE_MAX_SHARE * max(len(tails), 1):
         log(f"due: {len(idle)} of {len(tails)} tails not seen flying for {IDLE_HOURS} h — "
             "the ADS-B log is behind, no tail counts as idle")
         idle = set()
+    idle = {t for t in idle if pools[tails[t]].level != plan.OFF}     # the whole fleet decides, above
     return {"days": days, "tails": tails, "types": types, "numbers": dict(numbers),
             "catalog": {norm_flight_number(r[0]) for r in rows.get("catalog", ())},
             "watched": watched, "idle": idle}

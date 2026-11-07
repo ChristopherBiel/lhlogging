@@ -15,14 +15,13 @@ FIS_DOOR_WAIT_MIN=15
 # the day the pool is read to, and on top
 #
 #   747-8, A380        D+9   every 6 h at D+1..D+3, within 12 h and 3 h of departure
-#   A350 Allegris      D+9   within 12 h and 3 h of a hub departure
-#   787, A350 Munich   D+4   within 12 h and 3 h of a hub departure
-#   A350 Frankfurt      -    not read (ADS-B still logs its flights)
-#   watched tails     D+3   every 6 h (FIS_WATCH_TAILS, and special liveries)
+#   A350, 787           -    not read since 2026-11-07 (FIS_POOLS reads them again:
+#                            until then the Allegris to D+9, the 787 and Munich A350 to D+4)
+#   watched tails     D+3   every 6 h (FIS_WATCH_TAILS, and special liveries), of the above
 #
 # an outbound through its return leg, which names it as its previousFlight; the
-# flown tail from ADS-B, and from the feed where ADS-B did not see it. About 800
-# lookups a day, ~30 a run; a run reads at most FIS_DUE_MAX (150). Nothing due:
+# flown tail from ADS-B, and from the feed where ADS-B did not see it. About 390
+# lookups a day, ~16 a run; a run reads at most FIS_DUE_MAX (150). Nothing due:
 # no browser, a run of 0 lookups. When the feed is shut (door.py) a run waits
 # for it until the next line here, and the next run, finding the run before it
 # stopped for that, waits at its first shut session instead of its third.

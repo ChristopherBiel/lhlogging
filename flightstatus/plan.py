@@ -16,10 +16,16 @@ completely or not at all — what the fleet simulation and the hold rates need:
     pool            tails  legs a day  level   read to
     747-8             17       21      close     D+9
     A380               8       10      close     D+9
-    A350 Allegris     10       14      near      D+9
-    787               20       31      near      D+4
-    A350 Munich       16       24      near      D+4
+    A350 Allegris     10       14      off        -     (near to D+9 until 2026-11-07)
+    787               20       31      off        -     (near to D+4 until 2026-11-07)
+    A350 Munich       16       24      off        -     (near to D+4 until 2026-11-07)
     A350 Frankfurt     5        6      off        -
+
+Since 2026-11-07 only the 747-8 and the A380 are read: the feed lets a few
+hundred lookups a day through, too few for every pool. A pool that is off is
+not read at all, its watched tails neither (fetch_flightstatus.due_inputs);
+FIS_POOLS turns the others on again ("a350-allegris=near:9,b787=near:4,
+a350-muc=near:4", as until then).
 
 A tail's pool comes from its type, its cabin (Allegris) and the hub it flies
 from (pool_of). A flight day is read by the highest of its tail's pool and the
@@ -44,8 +50,8 @@ leg's (`covers`). Only its first read, its near reads and its flown tail ask
 for the outbound itself.
 
 Watched tails (FIS_WATCH_TAILS, and every widebody the feed shows in a special
-livery) are read every 6 h from today to D+3, in any pool, and within 12 h and
-3 h of a hub departure. A tail ADS-B has not seen fly for 36 h is likely to
+livery) are read every 6 h from today to D+3, in any pool that is read, and
+within 12 h and 3 h of a hub departure. A tail ADS-B has not seen fly for 36 h is likely to
 lose its flights (a change within 24 h 36% of the time against 18%): its
 flights get the 6-hourly reads too.
 
@@ -63,7 +69,8 @@ When the feed lets a run read only part of what is due, the order is (CLASS):
     5  flown tails ADS-B did not see (the feed keeps a few days of the past)
     6  the far days: Allegris D+5..D+9, 787 and A350 Munich D+3..D+4
     7  flight numbers no pool has flown lately
-inside a class the nearest day first, then the earliest flight. About 350
+inside a class the nearest day first, then the earliest flight (3, 4 and 6 stay
+empty while the A350 and 787 pools are off). About 350
 lookups a day keep the 747-8 and the A380 complete. Until 2026-11-05 the near
 reads of the other pools came in their pool's class; while the feed let a few
 hundred lookups a day through, the 747-8/A380 days to D+9 then took them all,
@@ -93,9 +100,10 @@ Pool = namedtuple("Pool", "name level days rank near_days")
 POOLS = {
     "b748": Pool("747-8", CLOSE, 9, 0, 9),
     "a388": Pool("A380", CLOSE, 9, 0, 9),
-    "a350-allegris": Pool("A350 Allegris", NEAR, 9, 1, 4),
-    "b787": Pool("787", NEAR, 4, 2, 2),
-    "a350-muc": Pool("A350 Munich", NEAR, 4, 2, 2),
+    # off since 2026-11-07 (see above); until then near to D+9, D+4 and D+4
+    "a350-allegris": Pool("A350 Allegris", OFF, 0, 1, 4),
+    "b787": Pool("787", OFF, 0, 2, 2),
+    "a350-muc": Pool("A350 Munich", OFF, 0, 2, 2),
     "a350-fra": Pool("A350 Frankfurt", OFF, 0, 3, 0),
 }
 # the fleet type a read is logged with when no tail is known yet (the

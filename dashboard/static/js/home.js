@@ -110,7 +110,7 @@ function readsFig(D) {
   if (R.hourly) {
     // the hourly plan (flightstatus/plan.py): a run asks for what has fallen due
     if (deep) parts.push('The ' + tierWords(deep) + ' are read ', ['every 6 hours'], ' one to three days ahead and once a day out to ',
-                         ['day ' + deep.horizon], '. ');
+                         ['day ' + deep.horizon], wide ? '. ' : ', and 12 and 3 hours before a flight leaves a hub. ');
     if (wide) parts.push('The ' + tierWords(wide) + ' once a day to ', ['day ' + wide.horizon],
                          ' (the A350 Allegris to day 9, the Frankfurt A350 not at all); every long-haul flight 12 and 3 hours before it leaves a hub. ');
     parts.push('In the last 48 hours ', lost.length ? [lost.length + ' of ' + cells.length] : ['all ' + cells.length],
@@ -267,8 +267,8 @@ function readsFig(D) {
     '(Berlin time); up, the flight day it asked about. The shaded diagonal is the day of departure, so a mark’s height ' +
     'above it is how far ahead the read was. ' +
     (R.hourly
-      ? 'A run every hour asks for what has fallen due since the last, the most valuable first: the 747-8 and A380 before the ' +
-        '787 and A350, near days before far ones. An outbound is mostly read through its return leg, which names it as the ' +
+      ? 'A run every hour asks for what has fallen due since the last, the most valuable first: ' +
+        (R.tiers.length > 1 ? 'the 747-8 and A380 before the 787 and A350, ' : '') + 'near days before far ones. An outbound is mostly read through its return leg, which names it as the ' +
         'flight before; those reads are drawn on the return leg’s day. “Reads a day” is the plan for a day at that distance from ' +
         'today. The line is the last day the pages show. '
       : 'A run asks the nearest days first, which is why a sweep’s marks step to the right. “Reads a day” is the plan for a ' +

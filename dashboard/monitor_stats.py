@@ -51,7 +51,7 @@ KIND_NAME = {"pulse": "pulse", "probe": "pulse and probe", "watch": "watch",
 # due (flightstatus/plan.py), Berlin time. Its days are not fixed; READS["due"]
 # is every day it may ask for.
 SLOTS = tuple(("%02d:07" % h, "due") for h in range(24))
-READS["due"] = {"deep": tuple(range(-3, 10)), "wide": tuple(range(-3, 10))}
+READS["due"] = {"deep": tuple(range(-3, 10))}
 # The plan before: 15 passes a day, each with its own days (READS).
 PASSES = (
     ("00:10", "pulse"), ("02:00", "pulse"), ("02:45", "watch"), ("03:30", "pulse"),
@@ -75,9 +75,10 @@ TYPICAL_MIN = {"pulse": 11, "probe": 45, "watch": 6, "far": 60, "lite": 85, "ful
 # What the hourly plan reads a day, per tier and day ahead: a daily read of
 # every day out to the last its pools are read to, the near reads of a hub
 # departure (12 h and 3 h out), the 747-8/A380's 6-hourly ones at D+1..D+3.
-# The A350 Allegris is read to day 9 too, the A350 Frankfurt not at all.
-DUE_READS = {"deep": {0: 3, 1: 4, 2: 4, 3: 4, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1},
-             "wide": {0: 2, 1: 1, 2: 1, 3: 1, 4: 1}}
+# Since 2026-11-07 the 787 and A350 are not read (their pools are off): the
+# wide tier has no plan, and the page leaves it out. Until then it was
+# {0: 2, 1: 1, 2: 1, 3: 1, 4: 1} (the A350 Allegris to day 9 too).
+DUE_READS = {"deep": {0: 3, 1: 4, 2: 4, 3: 4, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1}}
 # from this hour (Berlin) the tier's last day counts as due: day 9 fills as the
 # feed lists each flight, nine days before it leaves; the 787/A350's day 4 is
 # asked for as the day begins, but the feed is often shut at night
@@ -371,7 +372,8 @@ def _run_view(run):
 
 
 # ── Fig. 1: which flight days were read, and when ──────────────────────────
-# the last day the pages show, per tier (dashboard/app.py, BOOK_HORIZON_BY_TYPE)
+# the last day the pages show, per tier (dashboard/app.py, BOOK_HORIZON_BY_TYPE;
+# the wide tier's for the passes: the pages show no 787 or A350 since 2026-11-07)
 SHOWN = {"deep": 9, "wide": 4}
 
 
@@ -442,7 +444,7 @@ def reads(slots, lookups, now, typical=None, since=None):
             "days": [(today + timedelta(days=i)).isoformat() for i in range(FIRST_LEAD - 1, LAST_LEAD + 1)],
             "tiers": [{"id": tid, "name": name, "horizon": horizon(tid, hourly), "shown": SHOWN[tid],
                        "per_day": {str(k): v for k, v in sorted(per_day[tid].items())}}
-                      for tid, name, _t in TIERS],
+                      for tid, name, _t in TIERS if not hourly or tid in DUE_READS],
             "slots": out}
 
 
@@ -451,8 +453,11 @@ def _due(tier, now, back=11, since=None):
     """The flight days this tier's plan should have read by now: a day is due
     once a slot that reads it lies behind us (start, longest wait, typical run).
     The hourly plan reads every day out to its last each day: from two days
-    back, the last one from DUE_LAST_FROM on."""
+    back, the last one from DUE_LAST_FROM on; a tier it has no plan for (the
+    787/A350 since 2026-11-07) nothing."""
     if since is not None and now >= since:
+        if tier not in DUE_READS:
+            return set()
         local = now.astimezone(BERLIN)
         last = horizon(tier)
         due = {local.date() + timedelta(days=i) for i in range(-2, last)}

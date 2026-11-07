@@ -246,7 +246,7 @@ TRACK_AIRCRAFT_TYPES=
 | **Positions Cleanup** | Daily at 04:00 UTC | Deletes position snapshots older than `POSITIONS_RETENTION_DAYS` |
 | **Fleet Refresh** | Mondays at 02:00 UTC | Updates type data for existing fleet, retires decommissioned aircraft. Does **not** add new aircraft (that's fleet_discovery's job) |
 | **Flight-Routes Seed** | Mondays at 02:30 UTC | Rebuilds the `flight_routes` callsign→route reference from a consensus of clean flights (plus curated overrides) |
-| **Flight-Status Fetch** | Every hour at :07, Europe/Berlin ([read plan](docs/flightstatus_schedule.md)) | Asks the public Lufthansa FIS feed for what has fallen due in the read plan (`flightstatus/plan.py`): the long-haul fleet pool by pool — 747-8 and A380 to D+9 (every 6 h at D+1…D+3), A350 Allegris to D+9, 787 and the other Munich A350s to D+4, each flight 12 h and 3 h before it leaves a hub, the watched tails every 6 h — the most valuable first, ~800 lookups a day. Records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
+| **Flight-Status Fetch** | Every hour at :07, Europe/Berlin ([read plan](docs/flightstatus_schedule.md)) | Asks the public Lufthansa FIS feed for what has fallen due in the read plan (`flightstatus/plan.py`): the long-haul fleet pool by pool — since 2026-11-07 the 747-8 and A380 only: to D+9 (every 6 h at D+1…D+3), each flight 12 h and 3 h before it leaves a hub, the watched tails every 6 h — the most valuable first, ~390 lookups a day (the A350 and 787 are not read: their pools are off). Records assigned tail, route, scheduled times, and the airframe's previous flight into `flight_status_observations` (see below) |
 | **Timetable Census** | Daily at 08:40, Europe/Berlin | Asks the feed for a sixth of the long-haul flight numbers (LH400–799) the catalog does not sweep, eight days ahead, so a flight new to the timetable is found before it flies |
 
 ---
@@ -287,7 +287,8 @@ ADS-B pipeline can only observe after the fact.
 
 - **Pools:** tails swap almost only within their pool (747-8, A380, A350
   Allegris, 787, A350 Munich, A350 Frankfurt), so the plan reads a pool
-  completely or not at all, at its pool's level; a flight number's pools come
+  completely or not at all, at its pool's level (since 2026-11-07 only the
+  747-8 and the A380: the feed lets too few lookups through for the rest); a flight number's pools come
   from who flew it in the last two weeks (the feed and ADS-B). The flown tail
   comes from ADS-B (callsign `DLH<number>`; `fis_legs.truth_status` `ADSB`),
   from the feed where ADS-B did not see it. See
@@ -295,9 +296,10 @@ ADS-B pipeline can only observe after the fact.
   measurements behind the plan and its budget, and `tools/plan_preview.py`
   (Python 3.10+) for what the next run would read, on production rows.
 - **Config:** the read plan: `FIS_POOLS` (empty: levels and days as in
-  `plan.POOLS`; e.g. `a350-fra=near:4`), `FIS_WATCH_TAILS`
-  (`D-AIMH,D-ABYN,D-AIXL,D-ABPU`), `FIS_WATCH_LIVERIES` (1: also every widebody
-  shown in a special livery), `FIS_DUE_MAX` (150 a run). The passes:
+  `plan.POOLS`, the 747-8 and A380 only; `a350-allegris=near:9,b787=near:4,a350-muc=near:4`
+  reads the A350 and 787 again as until 2026-11-07), `FIS_WATCH_TAILS`
+  (`D-AIMH,D-ABYN,D-AIXL,D-ABPU`; a tail whose pool is off is not read), `FIS_WATCH_LIVERIES`
+  (1: also every widebody shown in a special livery), `FIS_DUE_MAX` (150 a run). The passes:
   `FIS_SEED_TYPES` (default `B748,A388,B788,B789,B78X,A359,A35K`),
   `FIS_LOOKAHEAD_DAYS` (2), `FIS_BACKFILL_DAYS` (2), `FIS_FAR_MIN_DAYS`/`MAX_DAYS`
   (3/3), `FIS_FAR_DEEP_MAX_DAYS` (4), `FIS_DEEP_TYPES`, `FIS_PULSE_OFFSETS`
@@ -355,7 +357,7 @@ photos with them.
   collector. The page asks again every minute; the server rebuilds the block
   every five minutes.
 - **Schedule reads by flight day** — every run of the last two days
-  against the flight days it read, per fleet group (747-8/A380 and 787/A350):
+  against the flight days it read, per fleet group (747-8/A380; the 787/A350 too until 2026-11-07):
   read, failed, planned-but-never-asked, or still planned; with the planned
   reads a day at each distance, and the flights that have a tail right now.
 - **Collector runs** — all runs of the

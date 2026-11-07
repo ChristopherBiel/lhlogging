@@ -32,10 +32,20 @@ hold rates need:
 |---|---|---|---|---|---|---|
 | 747-8 | 17 | 21 | 29 | 100% | close | D+9 |
 | A380 | 8 | 10 | 14 | 100% | close | D+9 |
-| A350 Allegris (Munich) | 10 | 14 | 29 | 93% | near | D+9 |
-| 787 (Frankfurt) | 20 | 31 | 54 | 100% | near | D+4 |
-| A350 Munich, without Allegris | 16 | 24 | 46 | 99% | near | D+4 |
+| A350 Allegris (Munich) | 10 | 14 | 29 | 93% | off (near until 7 Nov) | – (D+9) |
+| 787 (Frankfurt) | 20 | 31 | 54 | 100% | off (near until 7 Nov) | – (D+4) |
+| A350 Munich, without Allegris | 16 | 24 | 46 | 99% | off (near until 7 Nov) | – (D+4) |
 | A350 Frankfurt | 5 | 6 | 13 | 98% | off | – |
+
+**Only the 747-8 and the A380, since 2026-11-07.** The feed let 56–1,365
+lookups a day through from 30 Oct to 5 Nov, in spells of minutes to a few hours,
+and a 24 h pause (5–6 Nov 16:00) did not open it for longer: the evening after
+looked like the evenings before. That is too little for every pool, so the
+A350 and 787 pools are off: no read at all, not near their departure, not of a
+watched tail (D-AIXL, D-ABPU), not after a swap.
+A 747-8 or A380 on a number of theirs is still read, as a 747-8 or A380.
+`FIS_POOLS=a350-allegris=near:9,b787=near:4,a350-muc=near:4` reads them again
+as until then.
 
 A tail's pool comes from its type, its cabin (`airframe_cabin`: Allegris
 published in the last 45 days) and the hub ADS-B saw it at most in two weeks
@@ -82,8 +92,8 @@ outbound's own looks only showed it after it had left.
 **Watched tails** (`FIS_WATCH_TAILS`, default D-AIMH, D-ABYN, D-AIXL, D-ABPU,
 and with `FIS_WATCH_LIVERIES=1` every widebody the feed has shown in a special
 livery in 30 days: D-ABPU "LH 100 years", D-ABYP "1500th 747", D-ABYT "Retro")
-are read every 6 h from today to D+3 in any pool, and near their hub
-departures. When a read shows a watched tail leave a flight or take one, the
+are read every 6 h from today to D+3 in any pool that is read (not D-AIXL and
+D-ABPU while the A350 and 787 are off), and near their hub departures. When a read shows a watched tail leave a flight or take one, the
 run reads the flights the other tail is shown on: in a swap, that is where the
 watched tail went (a single such read found it 47% of the time).
 
@@ -113,10 +123,10 @@ had no flown tail; ADS-B gives one for 165 of them.
 | 0 | near reads of every pool and of the watched tails, and where a watched tail went after a swap |
 | 1 | the 747-8 and A380 daily reads (D0..D+9), and their flights not read yet |
 | 2 | their 6-hourly reads, the watched and the idle tails' |
-| 3 | A350 Allegris to D+4 |
-| 4 | 787 and A350 Munich to D+2 |
+| 3 | A350 Allegris to D+4 (empty since 7 Nov: the pool is off) |
+| 4 | 787 and A350 Munich to D+2 (empty since 7 Nov) |
 | 5 | flown tails ADS-B did not see (the feed keeps a few days of the past) |
-| 6 | the far days: Allegris D+5..D+9, 787 and A350 Munich D+3..D+4 |
+| 6 | the far days: Allegris D+5..D+9, 787 and A350 Munich D+3..D+4 (empty since 7 Nov) |
 | 7 | numbers no pool has flown lately (one read a day each, so a new flight finds its pool) |
 
 Inside a class the nearest day first, then the earliest flight. About 350
@@ -147,6 +157,11 @@ could count D+3 only as often as the passes had read it (about twice a day).
 The first runs after a shut spell read the backlog, 150 a run; at night,
 when the feed is often shut, what falls due waits for the morning, so the
 real count is somewhat lower.
+
+With the 747-8 and the A380 only (the rows of 7 Nov 2026, 01:01 UTC): about
+390 lookups a day — 747-8 ~272, A380 ~115, numbers no pool has flown 3 — and
+the census's ~47. At a lookup every ~11 s that is about 70 minutes of open
+feed a day; it let more through on five of the seven days to 5 Nov.
 
 **What a run records.** `batch_runs.coverage` of a run of the plan holds
 `plan: "due"` (written as it starts: the monitor tells the hourly runs from the
@@ -341,7 +356,7 @@ flights had fallen out of every 787 set (and of the wide tier).
 ## Regime boundaries
 
 Any analysis of this data must filter on `flight_date`, because the cadence has
-changed four times and staleness statistics are meaningless across the seams:
+changed several times and staleness statistics are meaningless across the seams:
 
 | from | regime |
 |---|---|
@@ -355,6 +370,7 @@ changed four times and staleness statistics are meaningless across the seams:
 | 2026-10-30 (written 10-13) | the 22:00 pulse also asks the wide tier's unread flight days of D+5..D+8; census at 08:15; an empty answer is stored as one (`raw` = `{}`) |
 | 2026-10-30 | a run waits for the feed when it is shut (`door.py`) and gives way to the next slot; sweeps and the far pass read the 747-8/A380 first; a flight day answered "no such flight" is not asked again |
 | first hourly run (`batch_runs.coverage->>'plan' = 'due'`) | the read plan: pools, a run every hour, outbounds through their return legs, flown tails from ADS-B, the A350 Frankfurt not read; 747-8/A380 every 6 h at D+1..D+3 and daily to D+9, A350 Allegris daily to D+9, 787/A350 Munich daily to D+4 |
+| 2026-11-07 (the deploy) | the 747-8 and A380 only: no 787 or A350 read (their pools off, their watched tails too) |
 
 `tools/reassignment_timing.py --since 2026-07-21` is the honest floor for
 anything measuring coverage or staleness.
